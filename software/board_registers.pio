@@ -1,0 +1,122 @@
+.pio_version 1
+.define CLOCK_15B_PIN 31 
+.define CLOCK_5_PIN  30
+.define ALE_PIN 27 
+
+.define ADDRESS_RD_WR_SIZE 22
+.define ADDRESS_BUS_SIZE 20
+.define REGISTER_SIZE 12
+.define DATA_SIZE 8
+
+.program dma_registers
+
+.side_set 1 opt;
+
+; --- Pre-amble ---
+; This code runs once at the start for each state machine initialization
+; It expects a bitmask of the 12 MSBs of the address bus to be used for the DMA Board Registers
+pull block          ; Pull bitmask for the 0xEF300 MSB that I'll match against later
+mov y, osr          ; Store bitmask in Y register
+
+.wrap_target
+T0:
+    set pins, 0b000                 ; set all buffer control pins to low Victor 9K -> pico direction
+    mov isr, null                   ; clear ISR
+    mov pindirs, null               ; set bus control pins to input / T1 state, LVC245 B->A
+    wait 0 GPIO CLOCK_5_PIN             ; Wait for ALE to go low //might need to move this above the earlier JMP //test me
+    
+T1:   
+    wait 1 GPIO ALE_PIN             ; wait for ALE to go high = T1 start
+    wait 0 GPIO CLOCK_15B_PIN
+    in pins, ADDRESS_BUS_SIZE       ; shift 12 bits of address into ISR
+    in null, 20                     ; move the address into the lower 12 bits of the register, dropping 8 LSB to compare against 12 MSB
+    mov x, isr                      ; X = 20 address bits
+    jmp x!=y, T0                    ; if we're not at 0xEF300, restart T0 to try again
+    in pins, ADDRESS_BUS_SIZE side 0b1      ; gather full address to send to arm
+    ;set pins, 0b010
+    ;push                            ; push address to arm
+T2:
+    wait 1 GPIO CLOCK_5_PIN     ; Wait for CLK5 to go high //waiting two CLK15 cycles for signal setup time
+    wait 0 GPIO CLOCK_5_PIN side 0b0     ; Wait for CLK5 to go low
+    wait 1 GPIO CLOCK_15B_PIN      ; Wait for CLK15 to go high
+    wait 0 GPIO CLOCK_15B_PIN      ; Wait for CLK15 to go low
+    jmp pin T3_WRITE side 0b1              ; if RD pin is high 8088 is writing, if low 8088 is reading
+T3_READ:                           ; 8088 read cycle // pico's writing
+    mov osr, ~null side 0b0                 ; set OSR to all 1`'s
+    in osr, 12                     ; Shift in 12 bits of 1's (0xFFF) to signal arm we're reading
+    push                            ; Push the current ISR address + read signal onto RX FIFO
+    ;set pins, 0b010
+   ; out pindirs, DATA_SIZE side 0b1  ; set output pins to output mode, LVC245 A->B from ~null OSR above
+    ;pull block
+    ;out pins, DATA_SIZE            ; set BD0-BD7 to data for 8088 to read
+    wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
+    wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go low
+.wrap
+
+T3_WRITE:                          ; 8088 write cycle // pico's reading
+    wait 1 GPIO CLOCK_5_PIN side 0b0       ; Wait for CLK5 to go high
+    wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go low
+    in pins, DATA_SIZE             ; read data the 8088 is writing max 0xFF
+    in null, 4                     ; shift in 4 null bits to signal it's a write
+    push                           ; send address from earlier and data to arm for storage
+    jmp T0                         ; jump to T4 for the next clock cycle
+
+% c-sdk {
+#include <stdio.h>
+#include "../dma.h"
+#define ADDRESS_RD_WR_SIZE 22 
+
+static inline void dma_registers_program_init(PIO pio, uint sm, uint offset) {
+    printf("starting to configure dma_registers_program_init\n");
+    pio_sm_config c = dma_registers_program_get_default_config(offset);
+
+    // init all the pins i'll be using as output
+    for (int i = 0; i < ADDRESS_RD_WR_SIZE; i++) {
+        uint pin = BD0_PIN + i;
+        pio_gpio_init(pio, pin);
+        printf("pio_gpio_init %d\n", pin);
+    }
+   pio_sm_set_consecutive_pindirs(pio, sm, BD0_PIN, ADDRESS_RD_WR_SIZE, false);  
+
+   pio_gpio_init(pio, ALE_PIN);
+   pio_gpio_init(pio, CLOCK_5_PIN);
+   pio_gpio_init(pio, CLOCK_15B_PIN);
+   
+   pio_gpio_init(pio, LOW_ADDR_DIR);
+   pio_gpio_init(pio, HOLD_PIN);
+   pio_gpio_init(pio, BUS_CNTRL_DIR);
+
+   sm_config_set_in_pins(&c, BD0_PIN);
+   sm_config_set_in_pin_count(&c, ADDRESS_BUS_SIZE);
+   sm_config_set_out_pins(&c, BD0_PIN, DATA_SIZE);
+   sm_config_set_jmp_pin(&c, RD_PIN); // RD pin is the pin we check for write vs read cycle
+
+   sm_config_set_out_shift(&c, true, false, DATA_SIZE);
+   sm_config_set_in_shift(&c, true, false, ADDRESS_BUS_SIZE);
+   
+   sm_config_set_clkdiv(&c, 1.0f);  
+   
+   pio_sm_clear_fifos(pio, sm);
+
+   sm_config_set_sideset(&c, 2, true, false);
+   sm_config_set_sideset_pin_base(&c, HOLD_PIN);
+
+   sm_config_set_set_pins(&c, LOW_ADDR_DIR, 3);
+   pio_sm_set_consecutive_pindirs(pio, sm, LOW_ADDR_DIR, 3, true);
+
+   // Load our configuration, and jump to the start of the program
+   pio_sm_init(pio, sm, offset, &c);
+   pio_sm_set_enabled(pio, sm, true);
+
+   printf("finished configuring dma_registers_program_init\n");
+   printf("LOW_ADDR_DIR=%d, HOLD_PIN=%d\n", LOW_ADDR_DIR, HOLD_PIN);
+   printf("LOW_ADDR_DIR Pin %d func: %d, dir: %d\n", LOW_ADDR_DIR, gpio_get_function(LOW_ADDR_DIR), gpio_get_dir(LOW_ADDR_DIR));
+   printf("HOLD_PIN Pin %d func: %d, dir: %d\n", HOLD_PIN, gpio_get_function(HOLD_PIN), gpio_get_dir(HOLD_PIN));
+   printf("RD_PIN Pin %d func: %d, dir: %d\n", RD_PIN, gpio_get_function(RD_PIN), gpio_get_dir(RD_PIN));
+   printf("WR_PIN Pin %d func: %d, dir: %d\n", WR_PIN, gpio_get_function(WR_PIN), gpio_get_dir(WR_PIN));
+
+   uint32_t execctrl = pio0->sm[sm].execctrl;
+   uint jmp_pin = (execctrl >> 24) & 0x1F;
+   printf("SM%d EXECCTRL=0x%08x, JMP_PIN=%llu\n", sm, execctrl, jmp_pin);
+}
+%}

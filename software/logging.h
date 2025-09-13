@@ -1,0 +1,1 @@
+void fast_log(const char* format, ...);

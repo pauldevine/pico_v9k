@@ -1,0 +1,438 @@
+#include "pico/stdlib.h"
+#include "hardware/pio.h"
+#include "hardware/dma.h"
+#include "hardware/structs/systick.h"
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+#include <string.h>
+#include "dma.h"
+#include "logging.h"
+
+static dma_registers_t *registers = NULL;
+
+void core1_main() {
+    //run IRQ processing on separate core
+    //configure the IRQs used to indicate a Register has been accessed on the 8088 bus
+    // Set up IRQ when RX FIFO has >= 1 item
+
+    PIO register_pio = PIO_REGISTERS;
+    int register_sm = REGISTERS_SM;
+    
+    printf("Setting up IRQ for PIO%d SM%d\n", pio_get_index(register_pio), register_sm);
+    printf("FIFO source: %d\n", fifo_sources[register_sm]);
+    
+    pio_set_irq0_source_enabled(register_pio, fifo_sources[register_sm], true);
+    irq_set_exclusive_handler(PIO1_IRQ_0, registers_irq_handler);
+    irq_set_enabled(PIO1_IRQ_0, true);
+    printf("Core1 started, PIO: %d SM: %d\n", register_pio, register_sm);
+    
+    // Add a test to see if IRQ is working
+    printf("Testing IRQ setup... FIFO level: %d\n", pio_sm_get_rx_fifo_level(register_pio, register_sm));
+
+    systick_hw->csr = 0x5; // Enable, use processor clock, no interrupt
+    systick_hw->rvr = 0x00FFFFFF; // Max reload value (24-bit)
+
+
+    while (true) {
+        tight_loop_contents();
+    }
+}
+
+
+
+dma_registers_t* dma_get_registers() {
+    if (!registers) {
+        // Allocate memory for registers if not already done
+        registers = malloc(sizeof(dma_registers_t));
+        if (!registers) {
+            // Handle allocation failure
+            printf("Failed to allocate memory for DMA registers\n");
+            return NULL;
+        }
+    }
+
+    return registers;
+
+}
+
+void debug_pio_state(PIO pio, uint sm) {
+    // Check FIFO levels
+    printf("pio: %d sm: %d RX FIFO: %d/8 ", pio, sm, pio_sm_get_rx_fifo_level(pio, sm));
+
+    // Check if the state machine is enabled
+    printf("SM stalled: %d  ", pio_sm_is_exec_stalled(pio, sm));
+    
+    // Check program counter
+    printf("PC: 0x%x  ", pio_sm_get_pc(pio, sm));
+
+    printf("IRQ 0: %d ", pio_interrupt_get(pio, 0));
+    printf("IRQ 1: %d ", pio_interrupt_get(pio, 1));
+    printf("IRQ 2: %d   ", pio_interrupt_get(pio, 2));
+    printf("IRQ 3: %d   ", pio_interrupt_get(pio, 3));
+    
+    // Check stall status
+    printf("rx empty: %d \n", pio_sm_is_rx_fifo_empty(pio, sm));
+
+}
+
+
+void print_segment_offset(uint32_t addr) {
+    // Assumes addr < 1MB.
+    uint16_t seg = addr >> 4;
+    uint16_t off = addr & 0xF;
+    printf("RD %04X:%04X\n", seg, off);
+}
+
+void dma_write_register(dma_registers_t *dma, dma_reg_offsets_t offset, uint8_t value) {
+    //printf("dma_write_register offset (0x%x), value: 0x%02x\n", offset, value);
+    // Lower address bits are ignored (based on MAME implementation)
+    if (offset >= 0x80) {
+        offset &= ~0x1f;
+    } else {
+        offset &= ~0xf;
+    }
+
+    switch (offset) {
+        case REG_CONTROL: // 0x00 - Control register
+            dma->control = value;
+            
+            if (value & DMA_RESET_BIT) {
+                // Handle reset
+                dma_device_reset(dma);
+            } else {
+                // Handle DMA enable with latch mechanism 
+                if (value & DMA_ON_LATCH_BIT) {
+                    dma->state.dma_enabled = (value & DMA_ON_VALUE_BIT);
+                }
+                
+                // Set write mode (1 = write to memory, 0 = read from memory)
+                dma->state.dma_dir_in = (value & DMA_WR_MODE_BIT);
+                
+                // Handle target selection
+                if (value & DMA_SELECT_BIT) {
+                    // Set SEL signal on SASI bus
+                    dma->bus_ctrl |= SASI_SEL_BIT;
+                    printf("SASI SEL asserted\n");
+                } else {
+                    dma->bus_ctrl &= ~SASI_SEL_BIT;
+                }
+            }
+            break;
+
+        case REG_DATA: // 0x10 - Data register
+            dma->command = value; // Store data value
+            
+            // Clear select if it was set (MAME workaround for HDSETUP.EXE)
+            if (dma->control & DMA_SELECT_BIT) {
+                dma->bus_ctrl &= ~SASI_SEL_BIT;
+                dma->control &= ~DMA_SELECT_BIT;
+            }
+            
+            // Handle non-DMA request acknowledgment
+            if (dma->state.non_dma_req) {
+                dma->state.non_dma_req = 0;
+                dma->state.asserting_ack = 1;
+                dma->bus_ctrl |= SASI_ACK_BIT;
+            }
+            break;
+
+        case REG_STATUS: // 0x20 - Status register
+            // Read status information
+            value = dma->status;
+            break;
+
+        case REG_ADDR_L: // 0x80 - DMA address low byte
+            dma->dma_address.full = (dma->dma_address.full & ~0xFF) | value;
+            break;
+
+        case REG_ADDR_M: // 0xA0 - DMA address middle byte
+            dma->dma_address.full = (dma->dma_address.full & ~0xFF00) | (value << 8);
+            break;
+
+        case REG_ADDR_H: // 0xC0 - DMA address high byte (4 bits only)
+            dma->dma_address.full = (dma->dma_address.full & ~0x0F0000) | ((value & 0x0F) << 16);
+            break;
+
+        default:
+            printf("Write to unknown register offset (0x%x), value: 0x%02x\n", offset, value);
+            break;
+    }
+}
+
+uint8_t dma_read_register(dma_registers_t *dma, dma_reg_offsets_t offset) {
+    //printf("dma_read_register offset (0x%x)\n", offset);
+    // Lower address bits are ignored (based on MAME implementation)
+    if (offset >= 0x80) {
+        offset &= ~0x1f;
+    } else {
+        offset &= ~0xf;
+    }
+
+    uint8_t data = 0xff;
+
+    switch (offset) {
+        case REG_CONTROL: // 0x00 - Control register (write-only)
+            // Write-only register, return 0xFF
+            break;
+
+        case REG_DATA: // 0x10 - Data register / Status register
+            // Handle non-DMA read request
+            if (dma->state.non_dma_req) {
+                dma->state.non_dma_req = 0;
+                // Simulate reading data from SASI bus
+                dma->command = 0x00; // Placeholder for SASI data
+                dma->state.asserting_ack = 1;
+                dma->bus_ctrl |= SASI_ACK_BIT;
+            }
+            break;
+
+        case REG_STATUS:
+            // For status register reads, construct from bus control state
+            data = ((dma->bus_ctrl & SASI_INP_BIT) ? SASI_INP_BIT : 0) |
+                   ((dma->bus_ctrl & SASI_CTL_BIT) ? SASI_CTL_BIT : 0) |
+                   ((dma->bus_ctrl & SASI_BSY_BIT) ? SASI_BSY_BIT : 0) |
+                   ((dma->bus_ctrl & SASI_REQ_BIT) ? SASI_REQ_BIT : 0) |
+                   ((dma->bus_ctrl & SASI_MSG_BIT) ? SASI_MSG_BIT : 0);
+
+            // Clear interrupt on status read
+            dma_update_interrupts(dma, false);
+            break;
+
+        case REG_ADDR_L: // 0x80 - DMA address low byte
+            data = dma->dma_address.full & 0xFF;
+            break;
+
+        case REG_ADDR_M: // 0xA0 - DMA address middle byte
+            data = (dma->dma_address.full >> 8) & 0xFF;
+            break;
+
+        case REG_ADDR_H: // 0xC0 - DMA address high byte (4 bits only)
+            data = (dma->dma_address.full >> 16) & 0x0F;
+            break;
+
+        default:
+            fast_log("Read from unknown register offset (0x%x)\n", offset);
+            break;
+    }
+
+    return data;
+}
+
+ void __time_critical_func(registers_irq_handler)() {
+    // Handle IRQ for register PIO
+    //printf("Register IRQ triggered\n");
+    PIO pio = PIO_REGISTERS; 
+    uint sm = REGISTERS_SM; 
+
+    //printf("getting address\n");
+    uint32_t raw_value = pio_sm_get(pio, sm); //retrieve the address from the FIFO
+    
+    uint32_t start_cycles = systick_hw->cvr;
+    uint32_t end_cycles;
+
+    uint32_t address = raw_value & 0xFFFFF; 
+    dma_reg_offsets_t offset = address - DMA_REGISTER_BASE;
+    
+    uint8_t data = (raw_value >> 20) & 0xFF;
+    bool read_flag = (bool)((raw_value >> 28) & 0xF);
+
+    if (address >= 0xEF300) {
+        fast_log("Address: %05X Offset: %02X data: %02X read_flag: %d\n", address, offset, data, read_flag);
+    } else {
+        fast_log("Unknown address: %05X Offset: %02X data: %02X read_flag: %d\n", address, offset, data, read_flag);
+    }
+    
+    dma_registers_t *my_register = dma_get_registers();
+    if (!my_register) {
+        printf("Failed to get DMA registers\n");
+        return;
+    }
+    if (read_flag) {
+        data = dma_read_register(my_register, offset);
+        fast_log("Read address: %08X offset: %02X data: %02X ", address, offset, data);
+        //TODO PUT BACK! dma_read_register(my_register, offset);
+    } else {
+        dma_write_register(my_register, offset, data);
+        fast_log("Write address: %08X offset: %02X data: %02X ", address, offset, data);
+    }
+  
+    end_cycles = systick_hw->cvr;
+    //fast_log("Write address: %08X offset: %02X data: %02X ", address, offset, data);
+    //TODO PUT BACK! dma_write_register(my_register, offset, data);
+    
+    uint32_t cycles_used;
+    if (start_cycles >= end_cycles) {
+        cycles_used = start_cycles - end_cycles;
+    } else {
+        // Handle wraparound
+        cycles_used = start_cycles + (0x00FFFFFF - end_cycles);
+    }
+    //fast_log("cycles: %lu (%.1f ns)\n", cycles_used, cycles_used * 5.0);
+
+
+}
+
+
+// Write function that composes each 32-bit word as follows:
+//  - bits 0-19: Victor RAM destination address (start_address + i)
+//  - bits 20-27: 8-bit payload (data[i])
+//  - bits 28-31: unused (0)
+void dma_write_to_victor_ram(PIO write_pio, int write_sm, uint8_t *data, size_t length, uint32_t start_address) {
+
+    printf("Starting DMA write to Victor RAM\n");
+    printf("Length: %zu\n", length);
+    print_segment_offset(start_address);
+        
+    printf("write_pio: %p, write_sm: %p\n", write_pio, write_sm);
+    debug_pio_state(write_pio, write_sm);
+
+    for (size_t i = 0; i < length; i++) {
+        uint32_t addr = (start_address + i) & 0xFFFFF;                // lower 20 bits
+        uint32_t byte = data[i] & 0xFF;                       // upper 8 bits
+        uint32_t t2_byte_addr = (addr & 0xFFF00) | byte;
+
+        printf("Writing %02X to Victor RAM at address %08X ", data[i], addr);
+        print_segment_offset(addr);
+        //printf("Write SM PC: 0x%x\n", pio_sm_get_pc(write_pio, write_sm));
+        //debug_pio_state(write_pio, write_sm);
+    
+        pio_sm_put_blocking(write_pio, write_sm, addr); // Send the address and data to the PIO state machine
+        pio_sm_put_blocking(write_pio, write_sm, t2_byte_addr); // Send the address and data to the PIO state machine
+    }
+    printf("Finished DMA write to Victor RAM\n");
+}
+
+// Read function (unchanged); assumes the RX PIO program provides
+// the desired data format via its FIFO.
+void dma_read_from_victor_ram(PIO read_pio, int read_sm, uint8_t *data, size_t length, uint32_t start_address) {
+    printf("Starting DMA read from Victor RAM\n");
+    printf("Length: %zu, start_address: %d ", length);
+    print_segment_offset(start_address);
+    
+    uint8_t *temp = malloc((length + 1) * sizeof(uint8_t));
+    if (!temp) {
+        // Handle allocation error as appropriate.
+        printf("Failed to allocate memory for DMA transfer\n");
+        return;
+    }
+
+    uint32_t addr_payload;
+    uint32_t  bus_controls = DMA_BUS_START_POSITION;       // bits 20-31
+    debug_pio_state(read_pio, read_sm);
+    printf("Reading from Victor RAM at address %08X ", start_address);
+    for (size_t i = 0; i < length; i++) {
+        uint32_t addr = (start_address + i) & 0xFFFFF;                // lower 20 bits
+        //uint32_t controls_address = (bus_controls << 20) | addr; // bits 0-19: addr, bits 20-32: bus control signals
+        //uint32_t bus_controls = (DMA_READ <<12) | DMA_BUS_START_POSITION;    //operation control bit plus bus start signal
+        
+        // print_segment_offset(addr);
+
+        //printf("pio_sm_put_blocking %08X ", addr);
+        pio_sm_put_blocking(read_pio, read_sm, addr); 
+
+        // uint32_t rx_fifo_level = pio_sm_get_rx_fifo_level(read_pio, read_sm);
+        // bool is_empty = pio_sm_is_rx_fifo_empty(read_pio, read_sm);
+
+        //printf("PIO%d SM%d: RX FIFO Level: %lu, Is Empty: %d\n",
+        //pio_get_index(read_pio), read_sm, rx_fifo_level, is_empty);
+
+
+        //printf("pio_sm_get_blocking %08X ", addr);
+
+        uint32_t char_data = pio_sm_get_blocking(read_pio, read_sm);
+        temp[i] = char_data & 0xFF; // Extract the lower 8 bits
+        //printf("Read %02X from Victor RAM\n", temp[i]);
+        
+        // debug_pio_state(read_pio, 0);
+        // debug_pio_state(read_pio, 1);
+        // debug_pio_state(read_pio, read_sm);
+    }
+    temp[length] = '\0'; // Null-terminate the string
+    char *str = (char*)temp;
+    printf("Read data: %s\n", str);
+    if (strcmp("Version $ Volume ID not changed--f",str)) {
+        printf("\n<<<<<<<<<<<<<DATA ERROR>>>>>>>>>>>>>>\n");
+    }
+    memcpy(data, temp, length);
+    free(temp);
+    printf("\n\nFinished DMA read from Victor RAM\n");
+}
+
+// Device reset function (based on MAME implementation)
+void dma_device_reset(dma_registers_t *dma) {
+    dma->state.dma_enabled = 0;
+    dma->state.dma_dir_in = 0;
+    dma->dma_address.full = 0;
+    dma->state.asserting_ack = 0;
+    dma->state.non_dma_req = 0;
+    dma->command = 0;
+    dma->bus_ctrl = 0;
+    dma->control = 0;
+    
+    // Clear interrupt
+    dma_update_interrupts(dma, false);
+    
+    printf("DMA device reset\n");
+}
+
+// Update interrupt state
+void dma_update_interrupts(dma_registers_t *dma, bool irq_state) {
+    if (irq_state != dma->state.interrupt_pending) {
+        dma->state.interrupt_pending = irq_state;
+        // In real implementation, this would trigger actual interrupt to CPU
+        printf("DMA interrupt %s\n", irq_state ? "asserted" : "cleared");
+    }
+}
+
+// Handle SASI REQ signal and DMA transfers (based on MAME ctrl_change_handler)
+void dma_handle_sasi_req(dma_registers_t *dma) {
+    if (dma->bus_ctrl & SASI_REQ_BIT) {
+        // Only data (not control or status) transfers can use DMA
+        if (dma->state.dma_enabled && !(dma->bus_ctrl & SASI_CTL_BIT)) {
+            if (dma->state.dma_dir_in) {
+                // Write to system memory (device → RAM)
+                printf("DMA write to RAM at 0x%06X\n", dma->dma_address.full);
+                // TODO: Call your PIO write function here
+                // dma_write_to_victor_ram_single(dma, sasi_data);
+            } else {
+                // Read from system memory (RAM → device) 
+                printf("DMA read from RAM at 0x%06X\n", dma->dma_address.full);
+                // TODO: Call your PIO read function here
+                // uint8_t data = dma_read_from_victor_ram_single(dma);
+            }
+            
+            // Auto-increment address after each transfer (key missing piece!)
+            dma->dma_address.full++;
+            
+            dma->state.asserting_ack = 1;
+            dma->bus_ctrl |= SASI_ACK_BIT;
+        } else {
+            // ACK will be generated upon direct data register access
+            dma->state.non_dma_req = 1;
+        }
+    } else if (dma->state.asserting_ack) {
+        dma->bus_ctrl &= ~SASI_ACK_BIT;
+        dma->state.asserting_ack = 0;
+    }
+    
+    // Command or status request from controller generates interrupt
+    if ((dma->bus_ctrl & (SASI_REQ_BIT|SASI_CTL_BIT)) == (SASI_REQ_BIT|SASI_CTL_BIT)) {
+        dma_update_interrupts(dma, true);
+    }
+}
+
+// Single-byte DMA transfer functions that work with register structure
+void dma_write_single_byte_to_victor_ram(dma_registers_t *dma, uint8_t data) {
+    // Call your existing PIO write function for single byte
+    // This is where you'd integrate with your PIO state machines
+    printf("Writing byte 0x%02X to Victor RAM at 0x%06X\n", data, dma->dma_address.full);
+    // TODO: Implement actual PIO call
+}
+
+uint8_t dma_read_single_byte_from_victor_ram(dma_registers_t *dma) {
+    // Call your existing PIO read function for single byte
+    printf("Reading byte from Victor RAM at 0x%06X\n", dma->dma_address.full);
+    // TODO: Implement actual PIO call
+    return 0x00; // Placeholder
+}

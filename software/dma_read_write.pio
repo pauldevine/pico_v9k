@@ -1,0 +1,135 @@
+;
+; Copyright (c) 2020 Raspberry Pi (Trading) Ltd.
+;
+; SPDX-License-Identifier: BSD-3-Clause
+;
+.pio_version 1 
+.define CLOCK_15B_PIN 31 
+.define CLOCK_5_PIN  30
+.define READY_PIN 28
+.define HLDA_PIN 29
+.define ADDRESS_BUS_SIZE 20
+.define ADDR_CONTROL_SIZE 32
+.define CONTROL_PINCOUNT 12
+.define DATA_SIZE 8
+
+.program dma_read_write
+.side_set 4 opt ; 
+
+; side-set GPIO Pin Mapping:
+; Bit 0 -> HOLD/  (GPIO 24)
+; Bit 1 -> DEN/  (GPIO 25)
+; Bit 2 -> DT/R/  (GPIO 26)
+; Bit 3 -> ALE  (GPIO 27)
+; Bit 4 -> Optional flag
+
+; Set pins
+; Bit 0 -> RD/ (GPIO 20)
+; Bit 1 -> WR/ (GPIO 21)
+; Bit 2 -> Low Address (GPIO 22)
+; Bit 3 -> Bus Direction (GPIO 23)
+; Bit 4 -> HOLD/ (GPIO 24)
+
+; --- Pre-amble ---
+;setup registers to differentiate between read and write
+; This code runs once at the start for each state machine initialization
+pull block          ; Pull operation direction from FIFO DMA 1=Read 0=Write
+mov x, osr          ; Store DMA direction in X
+pull block          ; Pull pindirs for RD cycle from FIFO
+mov y, osr          ; Store pindirs for RD cycle in Y
+
+.wrap_target
+T0:                                ; Address Setup Phase (Put Address on Bus)
+    pull block                     ; Get 20 address bits and if WR 8 data bits from FIFO
+    out pins, ADDRESS_BUS_SIZE     ; set bus control pins to T0 state 
+    set pins, 0b00111 side 0b0100  ; set initial control pin state
+    set pindirs, 0b11111           ; set HOLD pin direction to output low requesting bus
+    wait 1 GPIO HLDA_PIN           ; wait for HLDA to go high
+T1:
+    mov pindirs, ~null             ; Set all address pins' direction to output
+    set pins, 0b01111 side 0b1110  ; Set control pins to T1 state / ALE high
+    wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
+    wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go low
+T2:
+    jmp !x T2_WRITE side 0b0110     ; If write, jump to T2_WRITE, Pull ALE Low 
+    set pins, 0b00010 side 0b0010   ; else set pins for RD control state
+    mov pindirs, y                  ; set BD0-BD7 to input for RD cycle
+T2_CONTINUE:
+    wait 1 GPIO READY_PIN          ; Wait for READY to go high
+T3:
+    wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high, 
+    
+    jmp !x T4 side 0b0011          ; pull HOLD high, skip in pins if write
+    in pins, DATA_SIZE             ; RD case, read data from bus
+T4:
+    wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go low
+    wait 1 GPIO CLOCK_15B_PIN        ; Wait for CLK15 to go high
+    set pins, 0b11111 side 0b0011  ; Set control pins to T4 state
+    wait 0 GPIO HLDA_PIN           ; wait for HLDA to go low
+    
+    wait 0 GPIO CLOCK_5_PIN side 0b0111        ; Wait for CLK5 to go low
+    set pins, 0b11111 side 0b0111  ; Set control pins to T4 state
+    mov pindirs, NULL              ; Tri-state all address outputs (Release Bus)
+    set pins, 0b10111
+    set pindirs, 0b01000 side 0b0101 ; drive only the SN74LVC direction pins
+.wrap
+
+T2_WRITE:
+    set pins, 0b01101 side 0b0010  ; put data on bus for WR control state
+    out pins, ADDRESS_BUS_SIZE     ; set data pins to output    
+    jmp T2_CONTINUE                
+
+% c-sdk {
+#include <stdio.h>
+#include "../dma.h"
+#define CONTROL_PINCOUNT 12 
+#define CONTROL_PLUS_BIT 13
+#define CONTROL_PLUS_INPUT 17 //total count of pins to initialize as pio
+#define PIN_RANGE 32
+
+static inline void dma_read_write_program_init(PIO pio, uint sm, uint offset, uint pin, bool read) {
+    printf("starting to configure dma_read_write_program_init\n");
+    pio_sm_config c = dma_read_write_program_get_default_config(offset);
+
+    sm_config_set_out_pins(&c, pin, ADDRESS_BUS_SIZE);
+    sm_config_set_in_pins(&c, BD0_PIN);
+    sm_config_set_in_pin_count(&c, DATA_SIZE);
+    sm_config_set_set_pins(&c, RD_PIN, 5);
+    sm_config_set_sideset(&c, 5, true, false);
+    sm_config_set_sideset_pin_base(&c, HOLD_PIN);
+   
+
+    //Shift Register configuration settings
+    if (read) {
+        sm_config_set_out_shift(&c, true, false, ADDRESS_BUS_SIZE);
+        sm_config_set_in_shift(&c, false, true, DATA_SIZE);
+    } else {
+        sm_config_set_out_shift(&c, true, true, ADDRESS_BUS_SIZE);
+    }
+    
+    pio_sm_clear_fifos(pio, sm);
+   
+    pio_sm_set_clkdiv(pio, sm, 2.0f);
+
+    // init all the pins i'll be using
+    for (int i = pin; i < PIN_RANGE; i++) {
+        pio_gpio_init(pio, i);
+        gpio_set_drive_strength(i, GPIO_DRIVE_STRENGTH_12MA);
+        printf("dma_read pio_gpio_init %d\n", i);
+    }
+
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, PIN_RANGE, false);
+
+    //set the pins that are behind the BUS_CNTRL_DIR to be output as they're safe to always be output
+    gpio_put(HOLD_PIN, 1);
+    pio_gpio_init(pio, HOLD_PIN);
+    pio_sm_set_consecutive_pindirs(pio, sm, RD_PIN, DATA_SIZE, true);
+    pio_sm_set_consecutive_pindirs(pio, sm, HOLD_PIN, 1, false);   //set HOLD pin back to input, only one above should be initialized as input
+
+    // Load our configuration, and jump to the start of the program
+    pio_sm_init(pio, sm, offset, &c);
+    // Set the state machine running
+    pio_sm_set_enabled(pio, sm, true);
+    printf("finished configuring dma_controller_program_init\n");
+}
+%}
