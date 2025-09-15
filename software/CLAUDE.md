@@ -28,11 +28,12 @@ make
 ### Core Components
 
 - **Main executable**: `dma_board.c` - The primary firmware that runs on the Pico
-- **DMA Controller**: `dma.c/dma.h` - Implements Victor 9000 DMA register emulation and SCSI/SASI bus control
+- **DMA Controller**: `pico_victor/dma.c` - Implements Victor 9000 DMA register emulation and SCSI/SASI bus control
 - **PIO Programs** (`*.pio` files): Handle low-level bus timing and control
-- `board_registers.pio` - Low-level bus interface using RP2350's PIO state machines
-- `dma_read_write.pio`: Overall 8088 DMA read and Write bus interactions
-- **Logging System**: `logging.c/logging.h` - Non-blocking logging for timing-critical code
+- `pico_victor/board_registers.pio` - Low-level bus interface using RP2350's PIO state machines
+- `pico_victor/dma_read_write.pio`: Overall 8088 DMA read and Write bus interactions
+- **FujiNet Integrations** (`pico_fujinet/spi.c`): Handles integrating with the FujiNet over SPI
+- **Logging System**: `logging.c` - Non-blocking logging for timing-critical code
 
 ### Key Architecture Details
 
@@ -84,4 +85,4 @@ The main test runs in `test/register_test.c` and:
 - Register access patterns follow MAME emulator implementation for compatibility
 
 ## Mame Emulator for Reference
-- Mame also has an emulation of the same hardware in the victor9k_hdc.cpp file. It works today to emulate this behavior and is a good reference implementation.
+- Mame also has an emulation of the same hardware in the `notes/victor9k_hdc.cpp` file. It works today to emulate this behavior and is a good reference implementation. In `notes/mame boot example.log` there's the output from booting mame with hard drive register interaction logging enabled. You can see what the typical boot squence looks like.
