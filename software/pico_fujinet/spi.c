@@ -1,0 +1,280 @@
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include "pico/stdlib.h"
+#include "hardware/spi.h"
+#include "hardware/gpio.h"
+
+#include "spi.h"
+
+uint8_t calculate_checksum_buf(uint8_t *buf, size_t len) {
+    unsigned int chk = 0;
+    for (size_t i = 0; i < len; i++) {
+        chk = ((chk + buf[i]) >> 8) + ((chk + buf[i]) & 0xff);
+    }
+    return (uint8_t)chk;
+}
+
+// Simple checksum function (matches your ESP32 code)
+uint8_t calculate_checksum_cmd(cmdFrame_t *cmd)
+{
+    uint8_t cksum = 0;
+    uint8_t *p = (uint8_t*)cmd;
+    
+    // Calculate checksum over frame (excluding cksum field)
+    for (int i = 0; i < offsetof(cmdFrame_t, cksum); i++) {
+        cksum ^= p[i];
+    }
+    
+    return cksum;
+}
+
+// returns a newly-malloc’d buffer, zero-padded to 4-byte align
+uint8_t *pad_to_4(const uint8_t *in, size_t len, size_t *out_len) {
+    size_t pad = pad_multiple_4(len);
+    size_t n   = len + pad;
+    uint8_t *buf = malloc(n);
+    if(!buf) return NULL;
+    memcpy(buf, in, len);
+    if(pad) memset(buf + len, 0, pad);
+    if(out_len) *out_len = n;
+    return buf;
+}
+
+void spi_start_transaction() {
+    gpio_put(PIN_CS, 0);
+    while (gpio_get(PIN_SPI_HANDSHAKE)) {
+        tight_loop_contents();  // optional hint to the SDK that this is a busy-wait
+    }
+}
+
+// Send a command frame to ESP32
+spi_transaction_result send_command_frame(cmdFrame_t cmd) {
+    
+    cmd.sync1 = 0xAA;  // Sync byte 1
+    cmd.sync2 = 0x55;  // Sync byte 2
+    cmd.cksum = calculate_checksum_cmd(&cmd);  // Calculate checksum
+    printf("Command frame: sync1=0x%02X, sync2=0x%02X, device=0x%02X, command=0x%02X, aux1=0x%02X, aux2=0x%02X, aux3=0x%02X, aux4=0x%02X, checksum=0x%02X\n",
+           cmd.sync1, cmd.sync2, cmd.device, cmd.comnd, cmd.aux1, cmd.aux2, cmd.aux3, cmd.aux4, cmd.cksum);
+    uint8_t frame[sizeof(cmdFrame_t)] = {0};
+    memcpy(frame, &cmd, sizeof(cmdFrame_t));
+
+    printf("Sending command frame: ");
+    for (int i = 0; i < sizeof(frame); i++) {
+        printf("%02X ", frame[i]);
+    }
+    printf("\n");
+    
+    spi_start_transaction();
+   
+    int bytes_written = spi_write_blocking(SPI_PORT, frame, sizeof(frame));
+
+    gpio_put(PIN_CS, 1);
+    
+    printf("Bytes written: %d\n", bytes_written);
+
+     // now immediately read the ACK
+    spi_start_transaction();
+    uint8_t ack_byte[4] = {0};
+    spi_read_blocking (SPI_PORT, 0xFF, ack_byte, sizeof(ack_byte));
+
+    //end transaction
+    printf("ACK received: %02X\n", ack_byte[0]);
+    gpio_put(PIN_CS, 1);
+    spi_transaction_result ack = (spi_transaction_result)ack_byte[0];
+    if (ack != SPI_ACK) {
+        printf("Error: Received ACK 0x%02X instead of 0x%02X\n", ack, SPI_ACK);
+        return ack;
+    } else {
+        printf("Command frame sent successfully, ACK received: %02X\n", ack);
+    }
+
+    return ack;
+}
+
+// Send data with checksum
+spi_transaction_result send_data_frame(const char *data) {
+    size_t len = strlen(data); 
+    uint8_t checksum = calculate_checksum_buf((uint8_t*)data, len);
+
+    uint8_t combined_frame[len + 1];
+    memcpy(combined_frame, data, len);
+    combined_frame[len] = checksum;  // Append checksum at the end
+
+    // Pad frame to 4-byte alignment
+    size_t padded_len;
+    uint8_t *padded_frame = pad_to_4(combined_frame, len + 1, &padded_len);
+    if (!padded_frame) {
+        printf("Error: Failed to allocate memory for padded frame\n");
+        return SPI_GENERAL_ERROR;
+    }
+
+    printf("Sending data: '%s' (%d bytes) padded: %d bytes, checksum: 0x%02X\n", data, len, padded_len, checksum);
+
+    // Assert CS
+    spi_start_transaction();
+    
+    // Send data
+    int data_written = spi_write_blocking(SPI_PORT, (uint8_t*)data, len);
+    // Send checksum
+    int chk_written = spi_write_blocking(SPI_PORT, &checksum, 1);
+
+    gpio_put(PIN_CS, 1);
+    printf("Data written: %d bytes, checksum written: %d bytes\n");
+
+    spi_start_transaction();
+    // now immediately read the ACK
+    uint8_t ack[4] = {};
+    spi_read_blocking (SPI_PORT, 0x00, ack, 1);
+
+    //end transaction
+    printf("Data sent: %d bytes, checksum sent: %d bytes, ACK received: 0x%02X\n", 
+           data_written, chk_written, ack[0]);
+    gpio_put(PIN_CS, 1);
+
+    spi_transaction_result ack_result = (spi_transaction_result)ack[0];
+    if (ack_result != SPI_ACK) {
+        printf("Error: Received ACK 0x%02X instead of 0x%02X\n", ack_result, SPI_ACK);
+        return ack_result;
+    }
+
+    return ack_result;
+}
+
+
+// Read data frame with checksum verification
+bool read_data_frame(uint8_t *buffer, size_t expected_len) {
+    spi_start_transaction();
+
+    // Read data
+    int data_read = spi_read_blocking(SPI_PORT, 0x00, buffer, expected_len);
+    
+    // Read checksum
+    uint8_t received_checksum;
+    int chk_read = spi_read_blocking(SPI_PORT, 0x00, &received_checksum, 1);
+    
+ 
+    gpio_put(PIN_CS, 1);
+    
+    if (data_read != expected_len || chk_read != 1) {
+        printf("Read failed: data=%d/%d, checksum=%d/1\n", data_read, expected_len, chk_read);
+        return false;
+    }
+    
+    // Verify checksum
+    uint8_t calculated_checksum = calculate_checksum_buf(buffer, expected_len);
+    if (received_checksum != calculated_checksum) {
+        printf("Checksum mismatch: received=0x%02X, calculated=0x%02X\n", 
+               received_checksum, calculated_checksum);
+        return false;
+    }
+    
+    printf("Received data (%d bytes): ", expected_len);
+    for (size_t i = 0; i < expected_len; i++) {
+        printf("%02X ", buffer[i]);
+    }
+    printf(" checksum: 0x%02X\n", received_checksum);
+    
+    return true;
+}
+
+// Simple hello world transaction
+void hello_world_transaction() {
+    printf("\n=== Starting Hello World Transaction ===\n");
+    const char *hello_msg = "Hello World!";
+    printf("Sending message: '%s'\n", hello_msg);
+
+    cmdFrame_t cmd={0};
+    cmd.device = 0x01;
+    cmd.comnd = 0x02;  //status command
+    cmd.aux = (uint32_t) strlen(hello_msg);  // Length of data to send
+
+    // Step 1: Send command frame
+    if (send_command_frame(cmd) != SPI_ACK) {  // Device 0x31, Hello command, 12 byte data length
+        printf("Failed to send command frame\n");
+        return;
+    }
+    
+    // Step 3: Send data frame
+
+    if (send_data_frame(hello_msg) != SPI_ACK) {
+        printf("Failed to send data frame\n");
+        return;
+    }
+}
+
+// Test bidirectional communication
+void echo_test() {
+    printf("\n=== Starting Echo Test ===\n");
+    const char *test_data = "ANOTHER TEST!";
+    printf("Sending message: '%s'\n", test_data);
+
+    cmdFrame_t cmd={0};
+    cmd.device = 0x31;  // Device ID for ESP32
+    cmd.comnd = 0x02;   // Echo command
+    cmd.aux = (uint32_t) strlen(test_data);  // Length of data to send
+
+
+    // Send command for echo test
+    if (send_command_frame(cmd) != SPI_ACK) {  // Echo command, expect 5 bytes back
+        printf("Failed to send echo command\n");
+        return;
+    }
+    
+    // Send test data
+
+    if (send_data_frame(test_data) != SPI_ACK) {
+        printf("Failed to send test data\n");
+        return;
+    }
+
+}
+
+void init_spi_communication() {
+    stdio_init_all();
+    
+    printf("Pico SPI Master - Victor 9000 to ESP32 Communication Test\n");
+    printf("Waiting for serial connection...\n");
+    sleep_ms(2000);  // Give time for serial connection
+    
+    // Initialize SPI
+    spi_init(SPI_PORT,  1000000);  // 1MHz clock speed
+    
+    // Set SPI format: 8-bit data, CPOL=0, CPHA=0
+    spi_set_format(SPI_PORT, 8, SPI_CPOL_0, SPI_CPHA_0, SPI_MSB_FIRST);
+    
+    // Initialize GPIO pins
+    gpio_set_function(PIN_MISO, GPIO_FUNC_SPI);
+    gpio_set_function(PIN_SCK,  GPIO_FUNC_SPI);
+    gpio_set_function(PIN_MOSI, GPIO_FUNC_SPI);
+
+    //setup handshake pin
+    gpio_init(PIN_SPI_HANDSHAKE);
+    gpio_set_dir(PIN_SPI_HANDSHAKE, GPIO_IN);
+    gpio_pull_up(PIN_SPI_HANDSHAKE);  
+    
+    // CS is manual control
+    gpio_init(PIN_CS);
+    gpio_set_dir(PIN_CS, GPIO_OUT);
+    gpio_put(PIN_CS, 1);  // CS idle high
+    
+    printf("SPI initialized: MOSI=%d, MISO=%d, SCK=%d, CS=%d\n", 
+           PIN_MOSI, PIN_MISO, PIN_SCK, PIN_CS);
+    printf("SPI Speed: 1MHz, Mode: 0 (CPOL=0, CPHA=0)\n");
+    
+    sleep_ms(1000);
+    
+    while (true) {
+        
+        // Simple test - just run hello world every few seconds
+        hello_world_transaction();
+        
+        sleep_ms(3000);
+        
+        echo_test();
+        
+        sleep_ms(5000);
+    }
+    
+    return;
+}

@@ -81,7 +81,7 @@ T2_WRITE:
 
 % c-sdk {
 #include <stdio.h>
-#include "../dma.h"
+#include "pico_victor/dma.h"
 #define CONTROL_PINCOUNT 12 
 #define CONTROL_PLUS_BIT 13
 #define CONTROL_PLUS_INPUT 17 //total count of pins to initialize as pio

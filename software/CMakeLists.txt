@@ -41,14 +41,18 @@ add_executable(dma_board dma_board.c )
 pico_set_program_name(dma_board "dma_board")
 pico_set_program_version(dma_board "0.1")
 
-target_sources(dma_board PRIVATE dma.c logging.c scsi.c)
+target_sources(dma_board PRIVATE  
+    logging.c 
+    scsi.c
+    ${CMAKE_CURRENT_LIST_DIR}/pico_victor/dma.c
+    ${CMAKE_CURRENT_LIST_DIR}/pico_fujinet/spi.c)
 
 # default means the target is to run from flash
 pico_set_binary_type(dma_board default)
 
 # Generate PIO headers
-pico_generate_pio_header(dma_board ${CMAKE_CURRENT_LIST_DIR}/board_registers.pio)
-pico_generate_pio_header(dma_board ${CMAKE_CURRENT_LIST_DIR}/dma_read_write.pio)
+pico_generate_pio_header(dma_board ${CMAKE_CURRENT_LIST_DIR}/pico_victor/board_registers.pio)
+pico_generate_pio_header(dma_board ${CMAKE_CURRENT_LIST_DIR}/pico_victor/dma_read_write.pio)
 
 # Modify the below lines to enable/disable output over UART/USB
 pico_enable_stdio_uart(dma_board 1)
@@ -69,6 +73,7 @@ target_link_libraries(dma_board
         pico_multicore
         pico_util
         hardware_pio
+        hardware_spi
         hardware_dma
         )
 

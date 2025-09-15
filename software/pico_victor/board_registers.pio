@@ -63,7 +63,7 @@ T3_WRITE:                          ; 8088 write cycle // pico's reading
 
 % c-sdk {
 #include <stdio.h>
-#include "../dma.h"
+#include "pico_victor/dma.h"
 #define ADDRESS_RD_WR_SIZE 22 
 
 static inline void dma_registers_program_init(PIO pio, uint sm, uint offset) {

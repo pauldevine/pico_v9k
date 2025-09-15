@@ -6,7 +6,7 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
-#include "dma.h"
+#include "pico_victor/dma.h"
 #include "logging.h"
 #include "scsi.h"
 
