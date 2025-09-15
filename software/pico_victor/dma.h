@@ -181,4 +181,9 @@ void dma_handle_sasi_req(dma_registers_t *dma);
 void dma_write_single_byte_to_victor_ram(dma_registers_t *dma, uint8_t data);
 uint8_t dma_read_single_byte_from_victor_ram(dma_registers_t *dma);
 
+#ifdef UNIT_TEST
+uint8_t* test_get_victor_ram();
+size_t test_get_victor_ram_size();
+#endif
+
 #endif

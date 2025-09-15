@@ -79,3 +79,27 @@ target_link_libraries(dma_board
 
 pico_add_extra_outputs(dma_board)
 
+# On-device test executable (UNIT_TEST mode, no PIO bus activity)
+add_executable(dma_board_tests
+    test/on_device_runner.c
+    logging.c
+    scsi.c
+    ${CMAKE_CURRENT_LIST_DIR}/pico_victor/dma.c)
+
+target_compile_definitions(dma_board_tests PRIVATE UNIT_TEST=1)
+
+pico_set_program_name(dma_board_tests "dma_board_tests")
+pico_set_program_version(dma_board_tests "0.1")
+
+pico_enable_stdio_uart(dma_board_tests 1)
+pico_enable_stdio_usb(dma_board_tests 0)
+
+target_include_directories(dma_board_tests PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+)
+
+target_link_libraries(dma_board_tests
+    pico_stdlib
+)
+
+pico_add_extra_outputs(dma_board_tests)

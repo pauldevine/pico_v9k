@@ -312,6 +312,7 @@ uint8_t dma_read_register(dma_registers_t *dma, dma_reg_offsets_t offset) {
 }
 
 
+#ifndef UNIT_TEST
 // Write function that composes each 32-bit word as follows:
 //  - bits 0-19: Victor RAM destination address (start_address + i)
 //  - bits 20-27: 8-bit payload (data[i])
@@ -332,17 +333,14 @@ void dma_write_to_victor_ram(PIO write_pio, int write_sm, uint8_t *data, size_t 
 
         printf("Writing %02X to Victor RAM at address %08X ", data[i], addr);
         print_segment_offset(addr);
-        //printf("Write SM PC: 0x%x\n", pio_sm_get_pc(write_pio, write_sm));
-        //debug_pio_state(write_pio, write_sm);
     
-        pio_sm_put_blocking(write_pio, write_sm, addr); // Send the address and data to the PIO state machine
-        pio_sm_put_blocking(write_pio, write_sm, t2_byte_addr); // Send the address and data to the PIO state machine
+        pio_sm_put_blocking(write_pio, write_sm, addr);
+        pio_sm_put_blocking(write_pio, write_sm, t2_byte_addr);
     }
     printf("Finished DMA write to Victor RAM\n");
 }
 
-// Read function (unchanged); assumes the RX PIO program provides
-// the desired data format via its FIFO.
+// Read function (PIO-based)
 void dma_read_from_victor_ram(PIO read_pio, int read_sm, uint8_t *data, size_t length, uint32_t start_address) {
     printf("Starting DMA read from Victor RAM\n");
     printf("Length: %zu, start_address: %d ", length);
@@ -350,52 +348,54 @@ void dma_read_from_victor_ram(PIO read_pio, int read_sm, uint8_t *data, size_t l
     
     uint8_t *temp = malloc((length + 1) * sizeof(uint8_t));
     if (!temp) {
-        // Handle allocation error as appropriate.
         printf("Failed to allocate memory for DMA transfer\n");
         return;
     }
 
-    uint32_t addr_payload;
-    uint32_t  bus_controls = DMA_BUS_START_POSITION;       // bits 20-31
     debug_pio_state(read_pio, read_sm);
     printf("Reading from Victor RAM at address %08X ", start_address);
     for (size_t i = 0; i < length; i++) {
-        uint32_t addr = (start_address + i) & 0xFFFFF;                // lower 20 bits
-        //uint32_t controls_address = (bus_controls << 20) | addr; // bits 0-19: addr, bits 20-32: bus control signals
-        //uint32_t bus_controls = (DMA_READ <<12) | DMA_BUS_START_POSITION;    //operation control bit plus bus start signal
-        
-        // print_segment_offset(addr);
-
-        //printf("pio_sm_put_blocking %08X ", addr);
-        pio_sm_put_blocking(read_pio, read_sm, addr); 
-
-        // uint32_t rx_fifo_level = pio_sm_get_rx_fifo_level(read_pio, read_sm);
-        // bool is_empty = pio_sm_is_rx_fifo_empty(read_pio, read_sm);
-
-        //printf("PIO%d SM%d: RX FIFO Level: %lu, Is Empty: %d\n",
-        //pio_get_index(read_pio), read_sm, rx_fifo_level, is_empty);
-
-
-        //printf("pio_sm_get_blocking %08X ", addr);
-
+        uint32_t addr = (start_address + i) & 0xFFFFF;
+        pio_sm_put_blocking(read_pio, read_sm, addr);
         uint32_t char_data = pio_sm_get_blocking(read_pio, read_sm);
-        temp[i] = char_data & 0xFF; // Extract the lower 8 bits
-        //printf("Read %02X from Victor RAM\n", temp[i]);
-        
-        // debug_pio_state(read_pio, 0);
-        // debug_pio_state(read_pio, 1);
-        // debug_pio_state(read_pio, read_sm);
-    }
-    temp[length] = '\0'; // Null-terminate the string
-    char *str = (char*)temp;
-    printf("Read data: %s\n", str);
-    if (strcmp("Version $ Volume ID not changed--f",str)) {
-        printf("\n<<<<<<<<<<<<<DATA ERROR>>>>>>>>>>>>>>\n");
+        temp[i] = char_data & 0xFF;
     }
     memcpy(data, temp, length);
     free(temp);
     printf("\n\nFinished DMA read from Victor RAM\n");
 }
+#else
+// Unit-test in-memory Victor RAM model (1 MiB)
+static uint8_t test_victor_ram[1 << 20];
+static const size_t TEST_VICTOR_RAM_SIZE = (1 << 20);
+
+void dma_write_to_victor_ram(PIO write_pio, int write_sm, uint8_t *data, size_t length, uint32_t start_address) {
+    (void)write_pio; (void)write_sm;
+    for (size_t i = 0; i < length; i++) {
+        uint32_t addr = (start_address + i) & 0xFFFFF;
+        if (addr < TEST_VICTOR_RAM_SIZE) test_victor_ram[addr] = data[i];
+    }
+}
+
+void dma_read_from_victor_ram(PIO read_pio, int read_sm, uint8_t *data, size_t length, uint32_t start_address) {
+    (void)read_pio; (void)read_sm;
+    for (size_t i = 0; i < length; i++) {
+        uint32_t addr = (start_address + i) & 0xFFFFF;
+        data[i] = (addr < TEST_VICTOR_RAM_SIZE) ? test_victor_ram[addr] : 0x00;
+    }
+}
+
+void dma_write_single_byte_to_victor_ram(dma_registers_t *dma, uint8_t data) {
+    if (dma->dma_address.full < TEST_VICTOR_RAM_SIZE) test_victor_ram[dma->dma_address.full] = data;
+}
+
+uint8_t dma_read_single_byte_from_victor_ram(dma_registers_t *dma) {
+    return (dma->dma_address.full < TEST_VICTOR_RAM_SIZE) ? test_victor_ram[dma->dma_address.full] : 0x00;
+}
+
+uint8_t* test_get_victor_ram() { return test_victor_ram; }
+size_t test_get_victor_ram_size() { return TEST_VICTOR_RAM_SIZE; }
+#endif
 
 // Device reset function (based on MAME implementation)
 void dma_device_reset(dma_registers_t *dma) {
