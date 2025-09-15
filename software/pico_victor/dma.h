@@ -130,6 +130,9 @@ typedef struct {
     
     // SASI bus control state (tracks bus signals for status register)
     uint8_t bus_ctrl;
+
+    // Selected SASI target ID (from data bus during selection)
+    uint8_t selected_target;
 } dma_registers_t;
 #pragma pack(pop)
 

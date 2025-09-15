@@ -230,51 +230,49 @@ void echo_test() {
 
 }
 
-void init_spi_communication() {
-    stdio_init_all();
-    
-    printf("Pico SPI Master - Victor 9000 to ESP32 Communication Test\n");
-    printf("Waiting for serial connection...\n");
-    sleep_ms(2000);  // Give time for serial connection
-    
+void spi_bus_init() {
     // Initialize SPI
-    spi_init(SPI_PORT,  1000000);  // 1MHz clock speed
-    
-    // Set SPI format: 8-bit data, CPOL=0, CPHA=0
+    spi_init(SPI_PORT, 1000000);  // 1MHz clock speed
     spi_set_format(SPI_PORT, 8, SPI_CPOL_0, SPI_CPHA_0, SPI_MSB_FIRST);
-    
+
     // Initialize GPIO pins
     gpio_set_function(PIN_MISO, GPIO_FUNC_SPI);
     gpio_set_function(PIN_SCK,  GPIO_FUNC_SPI);
     gpio_set_function(PIN_MOSI, GPIO_FUNC_SPI);
 
-    //setup handshake pin
+    // Handshake pin
     gpio_init(PIN_SPI_HANDSHAKE);
     gpio_set_dir(PIN_SPI_HANDSHAKE, GPIO_IN);
-    gpio_pull_up(PIN_SPI_HANDSHAKE);  
-    
+    gpio_pull_up(PIN_SPI_HANDSHAKE);
+
     // CS is manual control
     gpio_init(PIN_CS);
     gpio_set_dir(PIN_CS, GPIO_OUT);
     gpio_put(PIN_CS, 1);  // CS idle high
-    
-    printf("SPI initialized: MOSI=%d, MISO=%d, SCK=%d, CS=%d\n", 
-           PIN_MOSI, PIN_MISO, PIN_SCK, PIN_CS);
-    printf("SPI Speed: 1MHz, Mode: 0 (CPOL=0, CPHA=0)\n");
-    
-    sleep_ms(1000);
-    
-    while (true) {
-        
-        // Simple test - just run hello world every few seconds
-        hello_world_transaction();
-        
-        sleep_ms(3000);
-        
-        echo_test();
-        
-        sleep_ms(5000);
+}
+
+bool fujinet_read_sector(uint8_t device, uint32_t lba, uint8_t *buffer, size_t len) {
+    if (len != 512) {
+        printf("fujinet_read_sector: invalid length %u (expected 512)\n", (unsigned)len);
+        return false;
     }
-    
-    return;
+
+    cmdFrame_t cmd = {0};
+    cmd.device = device;
+    cmd.comnd  = CMD_DISK_READ;
+    cmd.aux    = lba; // pack 32-bit LBA in aux
+
+    spi_transaction_result ack = send_command_frame(cmd);
+    if (ack != SPI_ACK) {
+        printf("FujiNet read command NAK: 0x%02X\n", ack);
+        return false;
+    }
+
+    // Read back 512 bytes + checksum
+    if (!read_data_frame(buffer, len)) {
+        printf("FujiNet read data failed for LBA %lu\n", (unsigned long)lba);
+        return false;
+    }
+
+    return true;
 }

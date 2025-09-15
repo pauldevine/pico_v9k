@@ -11,6 +11,7 @@
 #include "board_registers.pio.h"
 #include "dma_read_write.pio.h"
 #include "pico_victor/dma.h"
+#include "pico_fujinet/spi.h"
 
 #define UART_ID uart0
 #define BAUD_RATE 230400
@@ -50,6 +51,9 @@ int main() {
 
     printf("Sleeping for %d seconds\n", seconds);
     sleep_ms(timeout);
+
+    // Initialize SPI bus for FujiNet storage
+    spi_bus_init();
     
     //configure the register PIO, used to read/write the DMA registers for controlling the DMA card behavior
     PIO register_pio = PIO_REGISTERS;

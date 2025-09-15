@@ -7,7 +7,11 @@
 #define PIN_SPI_HANDSHAKE 36
 
 // Protocol defines
-#define CMD_HELLO 0x01
+#define CMD_HELLO      0x01
+#define CMD_DISK_READ  0x10   // Read 512 bytes at LBA in aux
+
+// Device addressing (allow per-target channels)
+#define DEVICE_DISK_BASE 0x30 // device = BASE + target id
 
 typedef struct
 {
@@ -53,3 +57,9 @@ static inline size_t pad_multiple_4(size_t len) {
     // & 3 ensures we only add 0, 1, 2, or 3 bytes
     return (4 - (len % 4)) & 3;
 }
+
+// Lightweight SPI init for production firmware (no loops/prints)
+void spi_bus_init();
+
+// Read one 512-byte sector from the given device and LBA
+bool fujinet_read_sector(uint8_t device, uint32_t lba, uint8_t *buffer, size_t len);

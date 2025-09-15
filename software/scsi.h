@@ -11,20 +11,16 @@ typedef enum {
     SASI_PHASE_MESSAGE
 } sasi_phase_t;
 
-// In your DMA register structure, add:
-struct {
-    sasi_phase_t current_phase;
-    uint8_t command_buffer[16];
-    int command_index;
-    bool in_command_phase;
-} sasi_state;
-
-
-void route_to_sasi_target(dma_registers_t *dma, uint8_t *cmd, int len);
+// Command routing and helpers
+void route_to_scsi_target(dma_registers_t *dma, uint8_t *cmd, int len);
 void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd);
-void handle_sasi_command_byte(dma_registers_t *dma, uint8_t cmd_byte);
+void handle_scsi_command_byte(dma_registers_t *dma, uint8_t cmd_byte);
 void handle_test_unit_ready(dma_registers_t *dma);
 void handle_xebec_diagnostic(dma_registers_t *dma, uint8_t diagnostic_type);
-void read_sector_from_disk(uint32_t sector, uint8_t *buffer);
+
+// Disk read (uses FujiNet when available)
+void read_sector_from_disk(dma_registers_t *dma, uint32_t sector, uint8_t *buffer);
+
+// Command lifecycle
 bool command_complete(uint8_t *command_buffer, int cmd_index);
 void signal_command_complete(dma_registers_t *dma);

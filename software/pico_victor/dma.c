@@ -7,6 +7,7 @@
 #include <stdint.h>
 #include <string.h>
 #include "dma.h"
+#include "scsi.h"
 #include "logging.h"
 
 static dma_registers_t *registers = NULL;
@@ -95,40 +96,61 @@ void dma_write_register(dma_registers_t *dma, dma_reg_offsets_t offset, uint8_t 
 
     switch (offset) {
         case REG_CONTROL: // 0x00 - Control register
+        {
+            bool prev_sel = (dma->control & DMA_SELECT_BIT) != 0;
             dma->control = value;
-            
+
             if (value & DMA_RESET_BIT) {
                 // Handle reset
                 dma_device_reset(dma);
-            } else {
-                // Handle DMA enable with latch mechanism 
-                if (value & DMA_ON_LATCH_BIT) {
-                    dma->state.dma_enabled = (value & DMA_ON_VALUE_BIT);
-                }
-                
-                // Set write mode (1 = write to memory, 0 = read from memory)
-                dma->state.dma_dir_in = (value & DMA_WR_MODE_BIT);
-                
-                // Handle target selection
-                if (value & DMA_SELECT_BIT) {
-                    // Set SEL signal on SASI bus
-                    dma->bus_ctrl |= SASI_SEL_BIT;
-                    printf("SASI SEL asserted\n");
-                } else {
-                    dma->bus_ctrl &= ~SASI_SEL_BIT;
-                }
+                break;
+            }
+
+            // Handle DMA enable with latch mechanism 
+            if (value & DMA_ON_LATCH_BIT) {
+                dma->state.dma_enabled = (value & DMA_ON_VALUE_BIT);
+            }
+            
+            // Set write mode (1 = write to memory, 0 = read from memory)
+            dma->state.dma_dir_in = (value & DMA_WR_MODE_BIT);
+            
+            // Handle target selection transitions
+            bool now_sel = (value & DMA_SELECT_BIT) != 0;
+            if (now_sel && !prev_sel) {
+                // Assert SEL
+                dma->bus_ctrl |= SASI_SEL_BIT;
+                printf("SASI SEL asserted\n");
+                // Latch target ID from last data bus value
+                dma->selected_target = (dma->command & 0x07);
+                // Target responds busy after selection (matches log: status 0x04)
+                dma->bus_ctrl |= SASI_BSY_BIT;
+            } else if (!now_sel && prev_sel) {
+                // Deassert SEL and request first command byte (BSY|REQ|CTL)
+                dma->bus_ctrl &= ~SASI_SEL_BIT;
+                dma->bus_ctrl |= (SASI_BSY_BIT | SASI_REQ_BIT | SASI_CTL_BIT);
+                dma->bus_ctrl &= ~SASI_INP_BIT; // host -> device
+                dma->state.non_dma_req = 1;
+                dma_update_interrupts(dma, true);
             }
             break;
+        }
 
         case REG_DATA: // 0x10 - Data register
-            dma->command = value; // Store data value
-            
-            // Clear select if it was set (MAME workaround for HDSETUP.EXE)
+            dma->command = value; // Store last written data value
+
+            // If writing DATA while SELECT is asserted, treat byte as target ID
             if (dma->control & DMA_SELECT_BIT) {
+                dma->selected_target = (value & 0x07);
+                // Workaround like MAME: ensure SEL isn't asserted during data bus change
                 dma->bus_ctrl &= ~SASI_SEL_BIT;
                 dma->control &= ~DMA_SELECT_BIT;
             }
-            
+
+            // During command phase (CTL asserted and REQ expected), route byte to parser
+            if (dma->bus_ctrl & SASI_CTL_BIT) {
+                handle_scsi_command_byte(dma, value);
+            }
+
             // Handle non-DMA request acknowledgment
             if (dma->state.non_dma_req) {
                 dma->state.non_dma_req = 0;
@@ -176,14 +198,30 @@ uint8_t dma_read_register(dma_registers_t *dma, dma_reg_offsets_t offset) {
             // Write-only register, return 0xFF
             break;
 
-        case REG_DATA: // 0x10 - Data register / Status register
-            // Handle non-DMA read request
+        case REG_DATA: // 0x10 - Data register (non-DMA control/status transfers)
             if (dma->state.non_dma_req) {
-                dma->state.non_dma_req = 0;
-                // Simulate reading data from SASI bus
-                dma->command = 0x00; // Placeholder for SASI data
-                dma->state.asserting_ack = 1;
-                dma->bus_ctrl |= SASI_ACK_BIT;
+                // If in message phase, return 0x00 then release bus
+                if (dma->bus_ctrl & SASI_MSG_BIT) {
+                    data = 0x00; // Command Complete
+                    dma->state.non_dma_req = 0;
+                    // Drop REQ then release bus to idle
+                    dma->bus_ctrl &= ~SASI_REQ_BIT;
+                    dma->bus_ctrl &= ~(SASI_CTL_BIT | SASI_INP_BIT | SASI_MSG_BIT | SASI_ACK_BIT);
+                    dma->bus_ctrl &= ~SASI_BSY_BIT;
+                    dma_update_interrupts(dma, false);
+                }
+                // If in status phase, return status then move to message phase
+                else if ((dma->bus_ctrl & (SASI_CTL_BIT | SASI_INP_BIT)) == (SASI_CTL_BIT | SASI_INP_BIT)) {
+                    data = dma->status; // e.g. 0x00 (GOOD)
+                    // Remain asserting BSY and CTL/INP, switch to MSG and REQ for message-in
+                    dma->bus_ctrl |= (SASI_MSG_BIT | SASI_REQ_BIT);
+                    dma->state.non_dma_req = 1; // next read will fetch message byte
+                    dma_update_interrupts(dma, true);
+                } else {
+                    // Unexpected non-DMA read, just return last data value
+                    data = dma->command;
+                    dma->state.non_dma_req = 0;
+                }
             }
             break;
 
@@ -369,6 +407,7 @@ void dma_device_reset(dma_registers_t *dma) {
     dma->command = 0;
     dma->bus_ctrl = 0;
     dma->control = 0;
+    dma->selected_target = 0;
     
     // Clear interrupt
     dma_update_interrupts(dma, false);
