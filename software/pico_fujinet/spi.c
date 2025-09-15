@@ -276,3 +276,52 @@ bool fujinet_read_sector(uint8_t device, uint32_t lba, uint8_t *buffer, size_t l
 
     return true;
 }
+// Send arbitrary binary payload with trailing checksum and read 1-byte ACK
+static spi_transaction_result send_binary_frame(const uint8_t *data, size_t len) {
+    if (!data || len == 0) return SPI_GENERAL_ERROR;
+
+    uint8_t checksum = calculate_checksum_buf((uint8_t*)data, len);
+
+    spi_start_transaction();
+    int data_written = spi_write_blocking(SPI_PORT, data, len);
+    int chk_written  = spi_write_blocking(SPI_PORT, &checksum, 1);
+    gpio_put(PIN_CS, 1);
+
+    spi_start_transaction();
+    uint8_t ack[1] = {0};
+    spi_read_blocking(SPI_PORT, 0x00, ack, 1);
+    gpio_put(PIN_CS, 1);
+
+    spi_transaction_result ack_result = (spi_transaction_result)ack[0];
+    if (ack_result != SPI_ACK) {
+        printf("send_binary_frame: ACK 0x%02X (expected 0x%02X) data=%d chk=%d\n",
+               ack_result, SPI_ACK, data_written, chk_written);
+    }
+    return ack_result;
+}
+
+bool fujinet_write_sector(uint8_t device, uint32_t lba, const uint8_t *buffer, size_t len) {
+    if (len != 512) {
+        printf("fujinet_write_sector: invalid length %u (expected 512)\n", (unsigned)len);
+        return false;
+    }
+
+    cmdFrame_t cmd = {0};
+    cmd.device = device;
+    cmd.comnd  = CMD_DISK_WRITE;
+    cmd.aux    = lba; // 32-bit LBA
+
+    spi_transaction_result ack = send_command_frame(cmd);
+    if (ack != SPI_ACK) {
+        printf("FujiNet write command NAK: 0x%02X\n", ack);
+        return false;
+    }
+
+    // Send 512 bytes + checksum
+    ack = send_binary_frame(buffer, len);
+    if (ack != SPI_ACK) {
+        printf("FujiNet write data NAK for LBA %lu, ack=0x%02X\n", (unsigned long)lba, ack);
+        return false;
+    }
+    return true;
+}

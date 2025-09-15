@@ -41,6 +41,13 @@ static void sasi_release_bus(dma_registers_t *dma) {
     dma_update_interrupts(dma, false);
 }
 
+static bool is_request_sense_cdb(const uint8_t *cmd, int len) {
+    if (len < 6) return false;
+    if (cmd[0] != 0x03) return false;
+    // Heuristic: RS has reserved bytes 2/3 = 0, allocation length > 0
+    return (cmd[2] == 0x00 && cmd[3] == 0x00 && cmd[4] > 0);
+}
+
 void route_to_scsi_target(dma_registers_t *dma, uint8_t *cmd, int len) {
     switch (cmd[0]) {
         case 0x01: // Test Unit Ready
@@ -52,8 +59,20 @@ void route_to_scsi_target(dma_registers_t *dma, uint8_t *cmd, int len) {
             break;
             
         case 0x08: // Read(6)
-        case 0x03: // Older SASI/Xebec Read
             handle_read_sectors(dma, cmd);
+            break;
+        case 0x03: // Either Request Sense or SASI Read
+            if (is_request_sense_cdb(cmd, len)) {
+                handle_request_sense(dma, cmd);
+            } else {
+                handle_read_sectors(dma, cmd); // observed in Victor logs
+            }
+            break;
+        case 0x0A: // Write(6)
+            handle_write_sectors(dma, cmd);
+            break;
+        case 0x15: // Mode Select(6)
+            handle_mode_select(dma, cmd);
             break;
     }
 }
@@ -127,6 +146,74 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
     signal_command_complete(dma);
 }
 
+void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
+    // Parse Write(6)
+    uint32_t sector = ((cmd[1] & 0x1F) << 16) | (cmd[2] << 8) | cmd[3];
+    uint8_t count = cmd[4] ? cmd[4] : 256;
+
+    printf("Writing %d sectors starting at %d\n", count, sector);
+
+    // Indicate busy during data transfer (matching observed status polling)
+    dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_INP_BIT | SASI_MSG_BIT);
+    dma->bus_ctrl |= (SASI_BSY_BIT | SASI_CTL_BIT);
+
+    for (int i = 0; i < count; i++) {
+        uint8_t sector_data[512];
+        // Read from Victor RAM into local buffer
+        dma_read_from_victor_ram(PIO_DMA, READ_SM, sector_data, 512, dma->dma_address.full);
+        dma->dma_address.full += 512;
+
+        // Write to disk via FujiNet
+        uint8_t target = dma ? (dma->selected_target & 0x07) : 0;
+        uint8_t device = DEVICE_DISK_BASE + target;
+        if (!fujinet_write_sector(device, sector + i, sector_data, 512)) {
+            // For now, ignore failures and continue
+            printf("Warning: write sector LBA %lu failed, continuing\n", (unsigned long)(sector + i));
+        }
+    }
+
+    signal_command_complete(dma);
+}
+
+void handle_request_sense(dma_registers_t *dma, uint8_t *cmd) {
+    uint8_t alloc_len = cmd[4];
+    uint8_t sense_len = alloc_len ? alloc_len : 0; // if 0, return nothing
+    if (sense_len > 18) sense_len = 18; // minimal fixed format sense
+
+    uint8_t sense[18] = {0};
+    // Minimal sense: all zeros indicates no error for old SASI targets
+
+    // Data-in transfer to Victor RAM
+    if (sense_len) {
+        // Mirror read-phase busy style during DMA
+        dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT);
+        dma->bus_ctrl |= (SASI_BSY_BIT | SASI_CTL_BIT | SASI_INP_BIT);
+
+        dma_write_to_victor_ram(PIO_DMA, WRITE_SM, sense, sense_len, dma->dma_address.full);
+        dma->dma_address.full += sense_len;
+    }
+
+    signal_command_complete(dma);
+}
+
+void handle_mode_select(dma_registers_t *dma, uint8_t *cmd) {
+    uint8_t param_len = cmd[4];
+    if (param_len) {
+        uint8_t params[256];
+        if (param_len > sizeof(params)) param_len = sizeof(params);
+
+        // Busy during host->device data transfer
+        dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_INP_BIT | SASI_MSG_BIT);
+        dma->bus_ctrl |= (SASI_BSY_BIT | SASI_CTL_BIT);
+
+        // Read parameter list from Victor RAM (ignore content for now)
+        dma_read_from_victor_ram(PIO_DMA, READ_SM, params, param_len, dma->dma_address.full);
+        dma->dma_address.full += param_len;
+    }
+
+    // Respond GOOD
+    signal_command_complete(dma);
+}
 void handle_xebec_diagnostic(dma_registers_t *dma, uint8_t diagnostic_type) {
     printf("SASI: Executing diagnostic 0x%02X\n", diagnostic_type);
 

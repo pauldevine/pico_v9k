@@ -14,6 +14,9 @@ typedef enum {
 // Command routing and helpers
 void route_to_scsi_target(dma_registers_t *dma, uint8_t *cmd, int len);
 void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd);
+void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd);
+void handle_request_sense(dma_registers_t *dma, uint8_t *cmd);
+void handle_mode_select(dma_registers_t *dma, uint8_t *cmd);
 void handle_scsi_command_byte(dma_registers_t *dma, uint8_t cmd_byte);
 void handle_test_unit_ready(dma_registers_t *dma);
 void handle_xebec_diagnostic(dma_registers_t *dma, uint8_t diagnostic_type);
