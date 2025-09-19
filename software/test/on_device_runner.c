@@ -5,9 +5,8 @@
 
 #include "pico/stdlib.h"
 
-#define UNIT_TEST
 #include "../pico_victor/dma.h"
-#include "../scsi.h"
+#include "../sasi.h"
 #include "../pico_fujinet/spi.h"
 
 // Simple test macros
@@ -42,14 +41,38 @@ static bool test_selection_and_status() {
 }
 
 // FujiNet stubs for tests (force read to use fallback pattern)
-bool fujinet_read_sector(uint8_t device, uint32_t lba, uint8_t *buffer, size_t len) {
+bool __attribute__((weak)) fujinet_read_sector(uint8_t device, uint32_t lba, uint8_t *buffer, size_t len) {
     (void)device; (void)lba; (void)buffer; (void)len;
-    return false; // cause scsi.c to use deterministic fallback
+    return false; // cause sasi.c to use deterministic fallback
 }
 
-bool fujinet_write_sector(uint8_t device, uint32_t lba, const uint8_t *buffer, size_t len) {
+bool __attribute__((weak)) fujinet_write_sector(uint8_t device, uint32_t lba, const uint8_t *buffer, size_t len) {
     (void)device; (void)lba; (void)buffer; (void)len;
     return true; // accept writes
+}
+
+#define TEST_FUJINET_KNOWN_LBA 0x00000002u
+static const uint8_t EXPECTED_FUJINET_PREFIX[8] = {
+    0xFA, 0xCE, 0x90, 0x0D, 0xF0, 0x0D, 0xBA, 0xBE
+};
+
+static bool test_spi_known_sector(void) {
+    printf("\n-- FujiNet SPI known sector smoke test --\n");
+
+    dma_registers_t *dma = dma_get_registers();
+    dma_device_reset(dma);
+    dma->selected_target = 0; // Victor host selects target 0 for disk 0
+
+    uint8_t sector[512] = {0};
+    read_sector_from_disk(dma, TEST_FUJINET_KNOWN_LBA, sector);
+
+    for (size_t i = 0; i < sizeof(EXPECTED_FUJINET_PREFIX); i++) {
+        char msg[48];
+        snprintf(msg, sizeof(msg), "FujiNet prefix byte %u", (unsigned)i);
+        ASSERT_EQ(msg, sector[i], EXPECTED_FUJINET_PREFIX[i]);
+    }
+
+    return true;
 }
 
 static bool test_xebec_diag_sequence() {
@@ -172,11 +195,14 @@ int main() {
     printf("\nVictor DMA On-Device Tests\n");
 
     bool ok = true;
+    // Initialize SPI bus for FujiNet storage
+    spi_bus_init();
     ok &= test_selection_and_status();
     ok &= test_xebec_diag_sequence();
     ok &= test_read6_one_sector();
     ok &= test_request_sense();
     ok &= test_mode_select();
+    ok &= test_spi_known_sector();
 
     printf("\nRESULT: %s\n", ok ? "PASS" : "FAIL");
     return ok ? 0 : 1;

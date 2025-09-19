@@ -16,24 +16,24 @@ uint32_t pis_sm3_rx_fifo_not_empty = 3;
 #include <stdbool.h>
 #include <string.h>
 #include <assert.h>
-#include "../dma.h"
-#include "../scsi.h"
+#include "../pico_victor/dma.h"
+#include "../sasi.h"
 
 
 // Test state tracking
 typedef struct {
-    scsi_phase_t current_phase;
+    sasi_phase_t current_phase;
     uint8_t command_buffer[16];
     int command_index;
     bool target_selected;
     bool diagnostic_complete;
-} test_scsi_state_t;
+} test_sasi_state_t;
 
-static test_scsi_state_t test_state = {0};
+static test_sasi_state_t test_state = {0};
 
-// Mock SCSI target responses
-void mock_scsi_response(dma_registers_t *dma, uint8_t status_bits) {
-    printf("Mock SCSI: Setting bus status to 0x%02X\n", status_bits);
+// Mock SASI target responses
+void mock_sasi_response(dma_registers_t *dma, uint8_t status_bits) {
+    printf("Mock SASI: Setting bus status to 0x%02X\n", status_bits);
     dma->bus_ctrl = status_bits;
     
     // Generate interrupt if controller wants attention (REQ + CMD)
@@ -42,22 +42,22 @@ void mock_scsi_response(dma_registers_t *dma, uint8_t status_bits) {
     }
 }
 
-void handle_scsi_command_byte(dma_registers_t *dma, uint8_t cmd_byte) {
+void handle_sasi_command_byte(dma_registers_t *dma, uint8_t cmd_byte) {
     test_state.command_buffer[test_state.command_index++] = cmd_byte;
     
-    printf("SCSI Command byte[%d]: 0x%02X\n", test_state.command_index-1, cmd_byte);
+    printf("SASI Command byte[%d]: 0x%02X\n", test_state.command_index-1, cmd_byte);
     
     // First byte is opcode
     if (test_state.command_index == 1) {
         switch (cmd_byte) {
             case 0x01:
-                printf("SCSI: Test Unit Ready command\n");
+                printf("SASI: Test Unit Ready command\n");
                 break;
             case 0xE0:
-                printf("SCSI: Xebec Diagnostic E0 command\n");
+                printf("SASI: Xebec Diagnostic E0 command\n");
                 break;
             default:
-                printf("SCSI: Unknown command 0x%02X\n", cmd_byte);
+                printf("SASI: Unknown command 0x%02X\n", cmd_byte);
                 break;
         }
     }
@@ -65,8 +65,8 @@ void handle_scsi_command_byte(dma_registers_t *dma, uint8_t cmd_byte) {
     // Simulate controller requesting next byte (for multi-byte commands)
     if (test_state.command_index < 6) { // Assume 6-byte commands
         // Drop REQ briefly, then assert again for next byte
-        mock_scsi_response(dma, SASI_BSY);  // Just busy
-        mock_scsi_response(dma, SASI_BSY | SASI_REQ | SASI_CTL); // Want next command byte
+        mock_sasi_response(dma, SASI_BSY);  // Just busy
+        mock_sasi_response(dma, SASI_BSY | SASI_REQ | SASI_CTL); // Want next command byte
     } else {
         // Command complete - handle it
         handle_command_complete(dma);
@@ -76,20 +76,20 @@ void handle_scsi_command_byte(dma_registers_t *dma, uint8_t cmd_byte) {
 void handle_command_complete(dma_registers_t *dma) {
     uint8_t opcode = test_state.command_buffer[0];
     
-    printf("SCSI: Command complete - opcode 0x%02X\n", opcode);
+    printf("SASI: Command complete - opcode 0x%02X\n", opcode);
     
     switch (opcode) {
         case 0x01: // Test Unit Ready
-            printf("SCSI: Test Unit Ready - responding OK\n");
+            printf("SASI: Test Unit Ready - responding OK\n");
             // Transition to status phase
-            mock_scsi_response(dma, SASI_BSY | SASI_REQ | SASI_INP); // Status phase
+            mock_sasi_response(dma, SASI_BSY | SASI_REQ | SASI_INP); // Status phase
             break;
             
         case 0xE0: // Xebec Diagnostic
-            printf("SCSI: Diagnostic E0 complete - responding OK\n");
+            printf("SASI: Diagnostic E0 complete - responding OK\n");
             test_state.diagnostic_complete = true;
             // Transition to status phase  
-            mock_scsi_response(dma, SASI_BSY | SASI_REQ | SASI_INP); // Status phase
+            mock_sasi_response(dma, SASI_BSY | SASI_REQ | SASI_INP); // Status phase
             break;
     }
     
@@ -98,26 +98,26 @@ void handle_command_complete(dma_registers_t *dma) {
     memset(test_state.command_buffer, 0, sizeof(test_state.command_buffer));
 }
 
-// Enhanced DMA write function that handles SCSI command tracking
+// Enhanced DMA write function that handles SASI command tracking
 void test_dma_write_register(dma_registers_t *dma, dma_reg_offsets_t offset, uint8_t value) {
     printf("DMA Write: offset 0x%02X data 0x%02X\n", offset, value);
     
     // Call your existing function
     dma_write_register(dma, offset, value);
     
-    // Additional test logic for SCSI command tracking
+    // Additional test logic for SASI command tracking
     if (offset == REG_DATA) {
         // Check if we're in command phase
         if (dma->bus_ctrl & SASI_CTL) {
-            handle_scsi_command_byte(dma, value);
+            handle_sasi_command_byte(dma, value);
         }
     } else if (offset == REG_CONTROL) {
         // Track target selection
         if (value & SELECT_BIT) {
-            printf("Test: SCSI target selection initiated\n");
+            printf("Test: SASI target selection initiated\n");
             test_state.target_selected = true;
             // Simulate target responding to selection
-            mock_scsi_response(dma, SASI_BSY);
+            mock_sasi_response(dma, SASI_BSY);
         }
     }
 }
@@ -195,9 +195,9 @@ bool test_step2_dma_address_config() {
     return true;
 }
 
-// Test Step 3: SCSI Target Selection  
+// Test Step 3: SASI Target Selection  
 bool test_step3_target_selection() {
-    printf("\n=== STEP 3: SCSI TARGET SELECTION ===\n");
+    printf("\n=== STEP 3: SASI TARGET SELECTION ===\n");
     
     dma_registers_t *dma = dma_get_registers();
     test_state.target_selected = false;
@@ -221,7 +221,7 @@ bool test_step3_target_selection() {
         return false;
     }
     
-    printf("PASS: SCSI target selection successful\n");
+    printf("PASS: SASI target selection successful\n");
     return true;
 }
 
@@ -233,7 +233,7 @@ bool test_step4_diagnostic_command() {
     test_state.diagnostic_complete = false;
     
     // Simulate controller wanting command (REQ + CMD + BSY)
-    mock_scsi_response(dma, SASI_BSY | SASI_REQ | SASI_CTL);
+    mock_sasi_response(dma, SASI_BSY | SASI_REQ | SASI_CTL);
     
     // Send diagnostic command sequence (from trace)
     test_dma_write_register(dma, REG_DATA, 0x01); // First command byte

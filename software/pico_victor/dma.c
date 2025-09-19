@@ -7,7 +7,7 @@
 #include <stdint.h>
 #include <string.h>
 #include "dma.h"
-#include "scsi.h"
+#include "sasi.h"
 #include "logging.h"
 
 static dma_registers_t *registers = NULL;
@@ -146,16 +146,19 @@ void dma_write_register(dma_registers_t *dma, dma_reg_offsets_t offset, uint8_t 
                 dma->control &= ~DMA_SELECT_BIT;
             }
 
-            // During command phase (CTL asserted and REQ expected), route byte to parser
-            if (dma->bus_ctrl & SASI_CTL_BIT) {
-                handle_scsi_command_byte(dma, value);
-            }
+            bool pending_non_dma = dma->state.non_dma_req;
+            bool host_to_device_phase = !(dma->bus_ctrl & SASI_INP_BIT);
 
-            // Handle non-DMA request acknowledgment
-            if (dma->state.non_dma_req) {
+            // Ack host->device non-DMA cycles (command/message out) before parsing the byte
+            if (pending_non_dma && host_to_device_phase) {
                 dma->state.non_dma_req = 0;
                 dma->state.asserting_ack = 1;
                 dma->bus_ctrl |= SASI_ACK_BIT;
+            }
+
+            // During command phase (CTL asserted and REQ expected), route byte to parser
+            if (dma->bus_ctrl & SASI_CTL_BIT) {
+                handle_sasi_command_byte(dma, value);
             }
             break;
 
@@ -365,9 +368,9 @@ void dma_read_from_victor_ram(PIO read_pio, int read_sm, uint8_t *data, size_t l
     printf("\n\nFinished DMA read from Victor RAM\n");
 }
 #else
-// Unit-test in-memory Victor RAM model (1 MiB)
-static uint8_t test_victor_ram[1 << 20];
-static const size_t TEST_VICTOR_RAM_SIZE = (1 << 20);
+// Unit-test in-memory Victor RAM model (64 KiB to fit SRAM)
+static uint8_t test_victor_ram[1 << 16];
+static const size_t TEST_VICTOR_RAM_SIZE = (1 << 16);
 
 void dma_write_to_victor_ram(PIO write_pio, int write_sm, uint8_t *data, size_t length, uint32_t start_address) {
     (void)write_pio; (void)write_sm;
@@ -459,19 +462,4 @@ void dma_handle_sasi_req(dma_registers_t *dma) {
     if ((dma->bus_ctrl & (SASI_REQ_BIT|SASI_CTL_BIT)) == (SASI_REQ_BIT|SASI_CTL_BIT)) {
         dma_update_interrupts(dma, true);
     }
-}
-
-// Single-byte DMA transfer functions that work with register structure
-void dma_write_single_byte_to_victor_ram(dma_registers_t *dma, uint8_t data) {
-    // Call your existing PIO write function for single byte
-    // This is where you'd integrate with your PIO state machines
-    printf("Writing byte 0x%02X to Victor RAM at 0x%06X\n", data, dma->dma_address.full);
-    // TODO: Implement actual PIO call
-}
-
-uint8_t dma_read_single_byte_from_victor_ram(dma_registers_t *dma) {
-    // Call your existing PIO read function for single byte
-    printf("Reading byte from Victor RAM at 0x%06X\n", dma->dma_address.full);
-    // TODO: Implement actual PIO call
-    return 0x00; // Placeholder
 }

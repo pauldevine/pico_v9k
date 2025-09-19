@@ -268,6 +268,16 @@ bool fujinet_read_sector(uint8_t device, uint32_t lba, uint8_t *buffer, size_t l
         return false;
     }
 
+    // Pull the FujiNet status byte ('C' or 'E') before the sector payload
+    spi_start_transaction();
+    uint8_t status = 0;
+    spi_read_blocking(SPI_PORT, 0x00, &status, 1);
+    gpio_put(PIN_CS, 1);
+    if (status != 'C') {
+        printf("FujiNet reported error status 0x%02X\n", status);
+        return false;
+    }
+
     // Read back 512 bytes + checksum
     if (!read_data_frame(buffer, len)) {
         printf("FujiNet read data failed for LBA %lu\n", (unsigned long)lba);

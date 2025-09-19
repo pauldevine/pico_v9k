@@ -43,9 +43,9 @@ pico_set_program_version(dma_board "0.1")
 
 target_sources(dma_board PRIVATE  
     logging.c 
-    scsi.c
-    ${CMAKE_CURRENT_LIST_DIR}/pico_victor/dma.c
-    ${CMAKE_CURRENT_LIST_DIR}/pico_fujinet/spi.c)
+    sasi.c
+    pico_victor/dma.c
+    pico_fujinet/spi.c)
 
 # default means the target is to run from flash
 pico_set_binary_type(dma_board default)
@@ -65,6 +65,8 @@ target_link_libraries(dma_board
 # Add the standard include files to the build
 target_include_directories(dma_board PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}
+        ${CMAKE_CURRENT_LIST_DIR}/pico_victor
+        ${CMAKE_CURRENT_LIST_DIR}/pico_fujinet
 )
 
 # Add any user requested libraries
@@ -83,8 +85,9 @@ pico_add_extra_outputs(dma_board)
 add_executable(dma_board_tests
     test/on_device_runner.c
     logging.c
-    scsi.c
-    ${CMAKE_CURRENT_LIST_DIR}/pico_victor/dma.c)
+    sasi.c
+    ${CMAKE_CURRENT_LIST_DIR}/pico_victor/dma.c
+    ${CMAKE_CURRENT_LIST_DIR}/pico_fujinet/spi.c)
 
 target_compile_definitions(dma_board_tests PRIVATE UNIT_TEST=1)
 
@@ -96,10 +99,17 @@ pico_enable_stdio_usb(dma_board_tests 0)
 
 target_include_directories(dma_board_tests PRIVATE
     ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/pico_victor
+    ${CMAKE_CURRENT_LIST_DIR}/pico_fujinet
 )
 
 target_link_libraries(dma_board_tests
     pico_stdlib
+    pico_multicore
+    pico_util
+    hardware_pio
+    hardware_spi
+    hardware_dma
 )
 
 pico_add_extra_outputs(dma_board_tests)

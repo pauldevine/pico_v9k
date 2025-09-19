@@ -8,7 +8,7 @@
 #include <string.h>
 #include "pico_victor/dma.h"
 #include "logging.h"
-#include "scsi.h"
+#include "sasi.h"
 #include "pico_fujinet/spi.h"
 
 static void sasi_request_cmd_byte(dma_registers_t *dma) {
@@ -48,7 +48,7 @@ static bool is_request_sense_cdb(const uint8_t *cmd, int len) {
     return (cmd[2] == 0x00 && cmd[3] == 0x00 && cmd[4] > 0);
 }
 
-void route_to_scsi_target(dma_registers_t *dma, uint8_t *cmd, int len) {
+void route_to_sasi_target(dma_registers_t *dma, uint8_t *cmd, int len) {
     switch (cmd[0]) {
         case 0x01: // Test Unit Ready
             handle_test_unit_ready(dma);
@@ -77,7 +77,7 @@ void route_to_scsi_target(dma_registers_t *dma, uint8_t *cmd, int len) {
     }
 }
 
-void handle_scsi_command_byte(dma_registers_t *dma, uint8_t cmd_byte) {
+void handle_sasi_command_byte(dma_registers_t *dma, uint8_t cmd_byte) {
     static uint8_t command_buffer[16];
     static int cmd_index = 0;
     
@@ -87,19 +87,19 @@ void handle_scsi_command_byte(dma_registers_t *dma, uint8_t cmd_byte) {
     if (cmd_index == 1) {
         switch (cmd_byte) {
             case 0x01: // Test Unit Ready
-                printf("SCSI: Test Unit Ready\n");
+                printf("SASI: Test Unit Ready\n");
                 break;
             case XEBEC_RAM_DIAG: // Xebec RAM diagnostic command
-                printf("SCSI: Xebec RAM Diagnostic E0\n");
+                printf("SASI: Xebec RAM Diagnostic E0\n");
                 break;
             case XEBEC_DRIVE_DIAG: // Xebec drive diagnostic command
-                printf("SCSI: Xebec Drive Diagnostic E3\n");
+                printf("SASI: Xebec Drive Diagnostic E3\n");
                 break;
             case XEBEC_INTERNAL_DIAG: // Xebec diagnostic command
-                printf("SCSI: Xebec Diagnostic E4\n");
+                printf("SASI: Xebec Diagnostic E4\n");
                 break;
             case 0x08: // Read sectors
-                printf("SCSI: Read Command\n");
+                printf("SASI: Read Command\n");
                 break;
             // Add other opcodes as needed
         }
@@ -107,7 +107,7 @@ void handle_scsi_command_byte(dma_registers_t *dma, uint8_t cmd_byte) {
     
     // When command is complete, route to appropriate handler
     if (command_complete(command_buffer, cmd_index)) {
-        route_to_scsi_target(dma, command_buffer, cmd_index);
+        route_to_sasi_target(dma, command_buffer, cmd_index);
         cmd_index = 0; // Reset for next command
     } else {
         // Request next byte per log sequence (BSY|REQ|CTL)
@@ -120,7 +120,7 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
     // For Read(6): cmd[1] (5 MSBs), cmd[2], cmd[3], cmd[4]=count
     // For SASI/Xebec variant in logs (0x03), bytes match 3-byte LBA + count
     uint32_t sector = ((cmd[1] & 0x1F) << 16) | (cmd[2] << 8) | cmd[3];
-    uint8_t count = cmd[4] ? cmd[4] : 256; // SCSI Read(6): 0 means 256 blocks
+    uint8_t count = cmd[4] ? cmd[4] : 256; // SASI Read(6): 0 means 256 blocks
     
     printf("Reading %d sectors starting at %d\n", count, sector);
     
@@ -197,7 +197,7 @@ void handle_request_sense(dma_registers_t *dma, uint8_t *cmd) {
 }
 
 void handle_mode_select(dma_registers_t *dma, uint8_t *cmd) {
-    uint8_t param_len = cmd[4];
+    size_t param_len = cmd[4];
     if (param_len) {
         uint8_t params[256];
         if (param_len > sizeof(params)) param_len = sizeof(params);
