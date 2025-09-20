@@ -7,7 +7,9 @@
 
 #include "spi.h"
 
-uint8_t calculate_checksum_buf(uint8_t *buf, size_t len) {
+#define VICTOR_SECTOR_COUNT_SINGLE 1
+
+uint8_t calculate_checksum_buf(const uint8_t *buf, size_t len) {
     unsigned int chk = 0;
     for (size_t i = 0; i < len; i++) {
         chk = ((chk + buf[i]) >> 8) + ((chk + buf[i]) & 0xff);
@@ -46,6 +48,35 @@ void spi_start_transaction() {
     while (gpio_get(PIN_SPI_HANDSHAKE)) {
         tight_loop_contents();  // optional hint to the SDK that this is a busy-wait
     }
+}
+
+static bool receive_status_byte(const char *label, uint8_t *status_out) {
+    if (!status_out) return false;
+
+    const uint32_t timeout_us = 500000; // 0.5s timeout
+    uint32_t waited = 0;
+
+    gpio_put(PIN_CS, 0);
+    while (gpio_get(PIN_SPI_HANDSHAKE)) {
+        sleep_us(10);
+        waited += 10;
+        if (waited >= timeout_us) {
+            gpio_put(PIN_CS, 1);
+            printf("%s: timeout waiting for handshake low\n", label);
+            return false;
+        }
+    }
+
+    int read = spi_read_blocking(SPI_PORT, 0x00, status_out, 1);
+    gpio_put(PIN_CS, 1);
+
+    if (read != 1) {
+        printf("%s: failed to read status byte (read=%d)\n", label, read);
+        return false;
+    }
+
+    printf("%s: 0x%02X\n", label, *status_out);
+    return true;
 }
 
 // Send a command frame to ESP32
@@ -92,50 +123,52 @@ spi_transaction_result send_command_frame(cmdFrame_t cmd) {
     return ack;
 }
 
-// Send data with checksum
-spi_transaction_result send_data_frame(const char *data) {
-    size_t len = strlen(data); 
-    uint8_t checksum = calculate_checksum_buf((uint8_t*)data, len);
-
-    uint8_t combined_frame[len + 1];
-    memcpy(combined_frame, data, len);
-    combined_frame[len] = checksum;  // Append checksum at the end
-
-    // Pad frame to 4-byte alignment
-    size_t padded_len;
-    uint8_t *padded_frame = pad_to_4(combined_frame, len + 1, &padded_len);
-    if (!padded_frame) {
-        printf("Error: Failed to allocate memory for padded frame\n");
+// Send data with checksum (binary-safe)
+spi_transaction_result send_data_frame(const uint8_t *data, size_t len) {
+    if (!data && len > 0) {
+        printf("send_data_frame: null data pointer\n");
         return SPI_GENERAL_ERROR;
     }
 
-    printf("Sending data: '%s' (%d bytes) padded: %d bytes, checksum: 0x%02X\n", data, len, padded_len, checksum);
+    uint8_t checksum = calculate_checksum_buf(data, len);
 
-    // Assert CS
+    size_t combined_len = len + 1;
+    uint8_t *combined = malloc(combined_len);
+    if (!combined) {
+        printf("send_data_frame: failed to allocate combined buffer\n");
+        return SPI_GENERAL_ERROR;
+    }
+
+    if (len > 0) memcpy(combined, data, len);
+    combined[len] = checksum;
+
+    size_t padded_len;
+    uint8_t *padded_frame = pad_to_4(combined, combined_len, &padded_len);
+    free(combined);
+    if (!padded_frame) {
+        printf("send_data_frame: failed to allocate padded frame\n");
+        return SPI_GENERAL_ERROR;
+    }
+
+    printf("Sending data frame (%zu bytes, padded to %zu), checksum: 0x%02X\n",
+           len, padded_len, checksum);
+
     spi_start_transaction();
-    
-    // Send data
-    int data_written = spi_write_blocking(SPI_PORT, (uint8_t*)data, len);
-    // Send checksum
-    int chk_written = spi_write_blocking(SPI_PORT, &checksum, 1);
-
+    int bytes_written = spi_write_blocking(SPI_PORT, padded_frame, padded_len);
     gpio_put(PIN_CS, 1);
-    printf("Data written: %d bytes, checksum written: %d bytes\n");
+
+    free(padded_frame);
 
     spi_start_transaction();
-    // now immediately read the ACK
-    uint8_t ack[4] = {};
-    spi_read_blocking (SPI_PORT, 0x00, ack, 1);
-
-    //end transaction
-    printf("Data sent: %d bytes, checksum sent: %d bytes, ACK received: 0x%02X\n", 
-           data_written, chk_written, ack[0]);
+    uint8_t ack[4] = {0};
+    spi_read_blocking(SPI_PORT, 0x00, ack, 1);
     gpio_put(PIN_CS, 1);
+
+    printf("Data sent: %d bytes (padded), ACK received: 0x%02X\n", bytes_written, ack[0]);
 
     spi_transaction_result ack_result = (spi_transaction_result)ack[0];
     if (ack_result != SPI_ACK) {
         printf("Error: Received ACK 0x%02X instead of 0x%02X\n", ack_result, SPI_ACK);
-        return ack_result;
     }
 
     return ack_result;
@@ -197,7 +230,7 @@ void hello_world_transaction() {
     
     // Step 3: Send data frame
 
-    if (send_data_frame(hello_msg) != SPI_ACK) {
+    if (send_data_frame((const uint8_t *)hello_msg, strlen(hello_msg)) != SPI_ACK) {
         printf("Failed to send data frame\n");
         return;
     }
@@ -223,7 +256,7 @@ void echo_test() {
     
     // Send test data
 
-    if (send_data_frame(test_data) != SPI_ACK) {
+    if (send_data_frame((const uint8_t *)test_data, strlen(test_data)) != SPI_ACK) {
         printf("Failed to send test data\n");
         return;
     }
@@ -257,10 +290,16 @@ bool fujinet_read_sector(uint8_t device, uint32_t lba, uint8_t *buffer, size_t l
         return false;
     }
 
+    victor_disk_rw_payload_t payload = {
+        .lba = lba,
+        .sector_count = VICTOR_SECTOR_COUNT_SINGLE,
+        .flags = 0,
+    };
+
     cmdFrame_t cmd = {0};
     cmd.device = device;
     cmd.comnd  = CMD_DISK_READ;
-    cmd.aux    = lba; // pack 32-bit LBA in aux
+    cmd.aux    = (uint32_t)sizeof(payload);
 
     spi_transaction_result ack = send_command_frame(cmd);
     if (ack != SPI_ACK) {
@@ -268,11 +307,21 @@ bool fujinet_read_sector(uint8_t device, uint32_t lba, uint8_t *buffer, size_t l
         return false;
     }
 
-    // Pull the FujiNet status byte ('C' or 'E') before the sector payload
-    spi_start_transaction();
+    ack = send_data_frame((const uint8_t *)&payload, sizeof(payload));
+    if (ack != SPI_ACK) {
+        printf("FujiNet read payload NAK: 0x%02X\n", ack);
+        return false;
+    }
+
     uint8_t status = 0;
-    spi_read_blocking(SPI_PORT, 0x00, &status, 1);
-    gpio_put(PIN_CS, 1);
+    if (!receive_status_byte("FujiNet command status", &status)) {
+        return false;
+    }
+    if (status == 'A') {
+        if (!receive_status_byte("FujiNet command completion", &status)) {
+            return false;
+        }
+    }
     if (status != 'C') {
         printf("FujiNet reported error status 0x%02X\n", status);
         return false;
@@ -286,40 +335,26 @@ bool fujinet_read_sector(uint8_t device, uint32_t lba, uint8_t *buffer, size_t l
 
     return true;
 }
-// Send arbitrary binary payload with trailing checksum and read 1-byte ACK
-static spi_transaction_result send_binary_frame(const uint8_t *data, size_t len) {
-    if (!data || len == 0) return SPI_GENERAL_ERROR;
-
-    uint8_t checksum = calculate_checksum_buf((uint8_t*)data, len);
-
-    spi_start_transaction();
-    int data_written = spi_write_blocking(SPI_PORT, data, len);
-    int chk_written  = spi_write_blocking(SPI_PORT, &checksum, 1);
-    gpio_put(PIN_CS, 1);
-
-    spi_start_transaction();
-    uint8_t ack[1] = {0};
-    spi_read_blocking(SPI_PORT, 0x00, ack, 1);
-    gpio_put(PIN_CS, 1);
-
-    spi_transaction_result ack_result = (spi_transaction_result)ack[0];
-    if (ack_result != SPI_ACK) {
-        printf("send_binary_frame: ACK 0x%02X (expected 0x%02X) data=%d chk=%d\n",
-               ack_result, SPI_ACK, data_written, chk_written);
-    }
-    return ack_result;
-}
-
 bool fujinet_write_sector(uint8_t device, uint32_t lba, const uint8_t *buffer, size_t len) {
     if (len != 512) {
         printf("fujinet_write_sector: invalid length %u (expected 512)\n", (unsigned)len);
         return false;
     }
 
+    victor_disk_rw_payload_t header = {
+        .lba = lba,
+        .sector_count = VICTOR_SECTOR_COUNT_SINGLE,
+        .flags = 0,
+    };
+
+    uint8_t payload[sizeof(header) + 512] = {0};
+    memcpy(payload, &header, sizeof(header));
+    memcpy(payload + sizeof(header), buffer, len);
+
     cmdFrame_t cmd = {0};
     cmd.device = device;
     cmd.comnd  = CMD_DISK_WRITE;
-    cmd.aux    = lba; // 32-bit LBA
+    cmd.aux    = (uint32_t)(sizeof(header) + len);
 
     spi_transaction_result ack = send_command_frame(cmd);
     if (ack != SPI_ACK) {
@@ -327,10 +362,24 @@ bool fujinet_write_sector(uint8_t device, uint32_t lba, const uint8_t *buffer, s
         return false;
     }
 
-    // Send 512 bytes + checksum
-    ack = send_binary_frame(buffer, len);
+    // Send header + sector payload + checksum
+    ack = send_data_frame(payload, sizeof(header) + len);
     if (ack != SPI_ACK) {
         printf("FujiNet write data NAK for LBA %lu, ack=0x%02X\n", (unsigned long)lba, ack);
+        return false;
+    }
+
+    uint8_t status = 0;
+    if (!receive_status_byte("FujiNet write status", &status)) {
+        return false;
+    }
+    if (status == 'A') {
+        if (!receive_status_byte("FujiNet write completion", &status)) {
+            return false;
+        }
+    }
+    if (status != 'C') {
+        printf("FujiNet write status 0x%02X for LBA %lu\n", status, (unsigned long)lba);
         return false;
     }
     return true;

@@ -8,11 +8,11 @@
 
 // Protocol defines
 #define CMD_HELLO      0x01
-#define CMD_DISK_READ   0x10   // Read 512 bytes at LBA in aux
-#define CMD_DISK_WRITE  0x11   // Write 512 bytes at LBA in aux
+#define CMD_DISK_READ   0x52   // Read 512 bytes at LBA in aux
+#define CMD_DISK_WRITE  0x57   // Write 512 bytes at LBA in aux
 
 // Device addressing (allow per-target channels)
-#define DEVICE_DISK_BASE 0x30 // device = BASE + target id
+#define DEVICE_DISK_BASE 0x31 // device = BASE + target id
 
 typedef struct
 {
@@ -45,6 +45,7 @@ typedef enum
     SPI_GENERAL_ERROR = 0x04 // General transaction error, 4=ASCII End of Transmission (EOT)
 } spi_transaction_result;
 
+
 // compute how many bytes to add so total is a multiple of 4
 // This is used to ensure DMA transfers are aligned correctly
 // Returns 0 if length is already a multiple of 4
@@ -58,6 +59,12 @@ static inline size_t pad_multiple_4(size_t len) {
     // & 3 ensures we only add 0, 1, 2, or 3 bytes
     return (4 - (len % 4)) & 3;
 }
+
+typedef struct __attribute__((packed)) {
+    uint32_t lba;
+    uint16_t sector_count;
+    uint16_t flags;
+} victor_disk_rw_payload_t;
 
 // Lightweight SPI init for production firmware (no loops/prints)
 void spi_bus_init();
