@@ -203,6 +203,11 @@ int main() {
         ok = false;
     }
 
+    if (!fujinet_mount_host(0, FUJINET_DISK_ACCESS_READ)) {
+        printf("FAIL: FujiNet mount host 0\n");
+        ok = false;
+    }
+
     if (!fujinet_mount_disk_slot(0, FUJINET_DISK_ACCESS_READ)) {
         printf("FAIL: FujiNet mount disk slot 0\n");
         ok = false;

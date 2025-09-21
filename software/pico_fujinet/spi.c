@@ -254,6 +254,30 @@ bool read_data_frame(uint8_t *buffer, size_t expected_len) {
     return true;
 }
 
+static bool send_sector_payload(uint8_t device, uint8_t command, const uint8_t *buffer, size_t len) {
+    cmdFrame_t payload_cmd = {0};
+    payload_cmd.device = device;
+    payload_cmd.comnd = command;
+    payload_cmd.aux = (uint32_t)len;
+
+    printf("Queueing sector payload: device=0x%02X command=0x%02X length=%zu\n",
+           device, command, len);
+
+    spi_transaction_result ack = send_command_frame(payload_cmd);
+    if (ack != SPI_ACK) {
+        printf("Sector payload command NAK: 0x%02X\n", ack);
+        return false;
+    }
+
+    ack = send_data_frame(buffer, len);
+    if (ack != SPI_ACK) {
+        printf("Sector payload data NAK: 0x%02X\n", ack);
+        return false;
+    }
+
+    return true;
+}
+
 // Simple hello world transaction
 void hello_world_transaction() {
     printf("\n=== Starting Hello World Transaction ===\n");
@@ -333,7 +357,7 @@ bool fujinet_read_sector(uint8_t device, uint32_t lba, uint8_t *buffer, size_t l
         return false;
     }
 
-    victor_disk_rw_payload_t payload = {
+    victor_disk_rw_payload_t header = {
         .lba = lba,
         .sector_count = VICTOR_SECTOR_COUNT_SINGLE,
         .flags = 0,
@@ -342,7 +366,7 @@ bool fujinet_read_sector(uint8_t device, uint32_t lba, uint8_t *buffer, size_t l
     cmdFrame_t cmd = {0};
     cmd.device = device;
     cmd.comnd  = CMD_DISK_READ;
-    cmd.aux    = (uint32_t)sizeof(payload);
+    cmd.aux    = 0;
 
     spi_transaction_result ack = send_command_frame(cmd);
     if (ack != SPI_ACK) {
@@ -350,7 +374,7 @@ bool fujinet_read_sector(uint8_t device, uint32_t lba, uint8_t *buffer, size_t l
         return false;
     }
 
-    ack = send_data_frame((const uint8_t *)&payload, sizeof(payload));
+    ack = send_data_frame((const uint8_t *)&header, sizeof(header));
     if (ack != SPI_ACK) {
         printf("FujiNet read payload NAK: 0x%02X\n", ack);
         return false;
@@ -390,14 +414,10 @@ bool fujinet_write_sector(uint8_t device, uint32_t lba, const uint8_t *buffer, s
         .flags = 0,
     };
 
-    uint8_t payload[sizeof(header) + 512] = {0};
-    memcpy(payload, &header, sizeof(header));
-    memcpy(payload + sizeof(header), buffer, len);
-
     cmdFrame_t cmd = {0};
     cmd.device = device;
     cmd.comnd  = CMD_DISK_WRITE;
-    cmd.aux    = (uint32_t)(sizeof(header) + len);
+    cmd.aux    = 0;
 
     spi_transaction_result ack = send_command_frame(cmd);
     if (ack != SPI_ACK) {
@@ -405,10 +425,14 @@ bool fujinet_write_sector(uint8_t device, uint32_t lba, const uint8_t *buffer, s
         return false;
     }
 
-    // Send header + sector payload + checksum
-    ack = send_data_frame(payload, sizeof(header) + len);
+    ack = send_data_frame((const uint8_t *)&header, sizeof(header));
     if (ack != SPI_ACK) {
-        printf("FujiNet write data NAK for LBA %lu, ack=0x%02X\n", (unsigned long)lba, ack);
+        printf("FujiNet write header NAK for LBA %lu, ack=0x%02X\n", (unsigned long)lba, ack);
+        return false;
+    }
+
+    if (!send_sector_payload(device, CMD_DISK_WRITE, buffer, len)) {
+        printf("FujiNet write sector payload failed for LBA %lu\n", (unsigned long)lba);
         return false;
     }
 
@@ -439,6 +463,20 @@ bool fujinet_config_boot(bool enable) {
     }
 
     return finish_simple_command("FujiNet config boot");
+}
+
+bool fujinet_mount_host(uint8_t host_slot, uint8_t access_mode) {
+    cmdFrame_t cmd = {0};
+    cmd.device = DEVICE_FUJINET_CONTROL;
+    cmd.comnd = FUJICMD_MOUNT_HOST;
+    cmd.aux1 = host_slot;
+    cmd.aux2 = access_mode;
+
+    if (send_command_frame(cmd) != SPI_ACK) {
+        return false;
+    }
+
+    return finish_simple_command("FujiNet mount host");
 }
 
 bool fujinet_mount_disk_slot(uint8_t slot, uint8_t access_mode) {

@@ -8,8 +8,8 @@
 
 // Protocol defines
 #define CMD_HELLO      0x01
-#define CMD_DISK_READ   0x52   // Read 512 bytes at LBA in aux
-#define CMD_DISK_WRITE  0x57   // Write 512 bytes at LBA in aux
+#define CMD_DISK_READ   0x52   // Disk read command; VictorDiskRWPayload header follows
+#define CMD_DISK_WRITE  0x57   // Disk write command; header first, sector data sent on request
 
 // FujiNet control device id
 #define DEVICE_FUJINET_CONTROL 0x70
@@ -81,4 +81,5 @@ bool fujinet_read_sector(uint8_t device, uint32_t lba, uint8_t *buffer, size_t l
 bool fujinet_write_sector(uint8_t device, uint32_t lba, const uint8_t *buffer, size_t len);
 
 bool fujinet_config_boot(bool enable);
+bool fujinet_mount_host(uint8_t host_slot, uint8_t access_mode);
 bool fujinet_mount_disk_slot(uint8_t slot, uint8_t access_mode);
