@@ -197,6 +197,17 @@ int main() {
     bool ok = true;
     // Initialize SPI bus for FujiNet storage
     spi_bus_init();
+
+    if (!fujinet_config_boot(false)) {
+        printf("FAIL: FujiNet CONFIG boot disable\n");
+        ok = false;
+    }
+
+    if (!fujinet_mount_disk_slot(0, FUJINET_DISK_ACCESS_READ)) {
+        printf("FAIL: FujiNet mount disk slot 0\n");
+        ok = false;
+    }
+
     ok &= test_selection_and_status();
     ok &= test_xebec_diag_sequence();
     ok &= test_read6_one_sector();

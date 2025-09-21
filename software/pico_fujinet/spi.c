@@ -6,6 +6,7 @@
 #include "hardware/gpio.h"
 
 #include "spi.h"
+#include "fujiCmd.h"
 
 #define VICTOR_SECTOR_COUNT_SINGLE 1
 
@@ -53,7 +54,7 @@ void spi_start_transaction() {
 static bool receive_status_byte(const char *label, uint8_t *status_out) {
     if (!status_out) return false;
 
-    const uint32_t timeout_us = 500000; // 0.5s timeout
+    const uint32_t timeout_us = 5000000; // allow up to 5s for firmware to respond
     uint32_t waited = 0;
 
     gpio_put(PIN_CS, 0);
@@ -76,6 +77,28 @@ static bool receive_status_byte(const char *label, uint8_t *status_out) {
     }
 
     printf("%s: 0x%02X\n", label, *status_out);
+    return true;
+}
+
+static bool finish_simple_command(const char *label) {
+    uint8_t status = 0;
+    if (!receive_status_byte(label, &status)) {
+        return false;
+    }
+
+    if (status == 'A') {
+        char completion_label[64];
+        snprintf(completion_label, sizeof(completion_label), "%s completion", label);
+        if (!receive_status_byte(completion_label, &status)) {
+            return false;
+        }
+    }
+
+    if (status != 'C') {
+        printf("%s: unexpected status 0x%02X\n", label, status);
+        return false;
+    }
+
     return true;
 }
 
@@ -383,4 +406,31 @@ bool fujinet_write_sector(uint8_t device, uint32_t lba, const uint8_t *buffer, s
         return false;
     }
     return true;
+}
+
+bool fujinet_config_boot(bool enable) {
+    cmdFrame_t cmd = {0};
+    cmd.device = DEVICE_FUJINET_CONTROL;
+    cmd.comnd = FUJICMD_CONFIG_BOOT;
+    cmd.aux1 = enable ? 1 : 0;
+
+    if (send_command_frame(cmd) != SPI_ACK) {
+        return false;
+    }
+
+    return finish_simple_command("FujiNet config boot");
+}
+
+bool fujinet_mount_disk_slot(uint8_t slot, uint8_t access_mode) {
+    cmdFrame_t cmd = {0};
+    cmd.device = DEVICE_FUJINET_CONTROL;
+    cmd.comnd = FUJICMD_MOUNT_IMAGE;
+    cmd.aux1 = slot;
+    cmd.aux2 = access_mode;
+
+    if (send_command_frame(cmd) != SPI_ACK) {
+        return false;
+    }
+
+    return finish_simple_command("FujiNet mount image");
 }

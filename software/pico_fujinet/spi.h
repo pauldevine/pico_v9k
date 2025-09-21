@@ -11,6 +11,13 @@
 #define CMD_DISK_READ   0x52   // Read 512 bytes at LBA in aux
 #define CMD_DISK_WRITE  0x57   // Write 512 bytes at LBA in aux
 
+// FujiNet control device id
+#define DEVICE_FUJINET_CONTROL 0x70
+
+// Disk access modes (match firmware definitions)
+#define FUJINET_DISK_ACCESS_READ  0x01
+#define FUJINET_DISK_ACCESS_WRITE 0x02
+
 // Device addressing (allow per-target channels)
 #define DEVICE_DISK_BASE 0x31 // device = BASE + target id
 
@@ -72,3 +79,6 @@ void spi_bus_init();
 // Read one 512-byte sector from the given device and LBA
 bool fujinet_read_sector(uint8_t device, uint32_t lba, uint8_t *buffer, size_t len);
 bool fujinet_write_sector(uint8_t device, uint32_t lba, const uint8_t *buffer, size_t len);
+
+bool fujinet_config_boot(bool enable);
+bool fujinet_mount_disk_slot(uint8_t slot, uint8_t access_mode);
