@@ -8,6 +8,7 @@
 #include "spi.h"
 #include "fujiCmd.h"
 
+#define SPI_PHASE_TIMEOUT_US 5000000
 #define VICTOR_SECTOR_COUNT_SINGLE 1
 
 uint8_t calculate_checksum_buf(const uint8_t *buf, size_t len) {
@@ -44,32 +45,41 @@ uint8_t *pad_to_4(const uint8_t *in, size_t len, size_t *out_len) {
     return buf;
 }
 
-void spi_start_transaction() {
+static bool spi_start_transaction_phase(const char *phase, uint32_t timeout_us)
+{
+    printf("Pico SPI [%s]: CS LOW\n", phase);
     gpio_put(PIN_CS, 0);
+
+    uint32_t waited = 0;
     while (gpio_get(PIN_SPI_HANDSHAKE)) {
-        tight_loop_contents();  // optional hint to the SDK that this is a busy-wait
+        sleep_us(10);
+        waited += 10;
+        if (waited >= timeout_us) {
+            printf("Pico SPI [%s]: timeout waiting for handshake low\n", phase);
+            gpio_put(PIN_CS, 1);
+            return false;
+        }
     }
+
+    printf("Pico SPI [%s]: handshake low after %u us\n", phase, waited);
+    return true;
+}
+
+static void spi_end_transaction_phase(const char *phase)
+{
+    gpio_put(PIN_CS, 1);
+    printf("Pico SPI [%s]: CS HIGH (handshake=%d)\n", phase, gpio_get(PIN_SPI_HANDSHAKE));
 }
 
 static bool receive_status_byte(const char *label, uint8_t *status_out) {
     if (!status_out) return false;
 
-    const uint32_t timeout_us = 5000000; // allow up to 5s for firmware to respond
-    uint32_t waited = 0;
-
-    gpio_put(PIN_CS, 0);
-    while (gpio_get(PIN_SPI_HANDSHAKE)) {
-        sleep_us(10);
-        waited += 10;
-        if (waited >= timeout_us) {
-            gpio_put(PIN_CS, 1);
-            printf("%s: timeout waiting for handshake low\n", label);
-            return false;
-        }
+    if (!spi_start_transaction_phase(label, SPI_PHASE_TIMEOUT_US)) {
+        return false;
     }
 
     int read = spi_read_blocking(SPI_PORT, 0x00, status_out, 1);
-    gpio_put(PIN_CS, 1);
+    spi_end_transaction_phase(label);
 
     if (read != 1) {
         printf("%s: failed to read status byte (read=%d)\n", label, read);
@@ -99,6 +109,7 @@ static bool finish_simple_command(const char *label) {
         return false;
     }
 
+    printf("%s: COMPLETE\n", label);
     return true;
 }
 
@@ -119,23 +130,26 @@ spi_transaction_result send_command_frame(cmdFrame_t cmd) {
     }
     printf("\n");
     
-    spi_start_transaction();
-   
+    if (!spi_start_transaction_phase("CMD_TX", SPI_PHASE_TIMEOUT_US)) {
+        return SPI_GENERAL_ERROR;
+    }
+
     int bytes_written = spi_write_blocking(SPI_PORT, frame, sizeof(frame));
 
-    gpio_put(PIN_CS, 1);
-    
+    spi_end_transaction_phase("CMD_TX");
     printf("Bytes written: %d\n", bytes_written);
 
      // now immediately read the ACK
-    spi_start_transaction();
-    uint8_t ack_byte[4] = {0};
-    spi_read_blocking (SPI_PORT, 0xFF, ack_byte, sizeof(ack_byte));
+    if (!spi_start_transaction_phase("CMD_ACK_RX", SPI_PHASE_TIMEOUT_US)) {
+        return SPI_GENERAL_ERROR;
+    }
+    uint8_t ack_byte = 0;
+    spi_read_blocking (SPI_PORT, 0xFF, &ack_byte, 1);
 
     //end transaction
-    printf("ACK received: %02X\n", ack_byte[0]);
-    gpio_put(PIN_CS, 1);
-    spi_transaction_result ack = (spi_transaction_result)ack_byte[0];
+    spi_end_transaction_phase("CMD_ACK_RX");
+    printf("ACK received: %02X\n", ack_byte);
+    spi_transaction_result ack = (spi_transaction_result)ack_byte;
     if (ack != SPI_ACK) {
         printf("Error: Received ACK 0x%02X instead of 0x%02X\n", ack, SPI_ACK);
         return ack;
@@ -176,20 +190,25 @@ spi_transaction_result send_data_frame(const uint8_t *data, size_t len) {
     printf("Sending data frame (%zu bytes, padded to %zu), checksum: 0x%02X\n",
            len, padded_len, checksum);
 
-    spi_start_transaction();
+    if (!spi_start_transaction_phase("DATA_TX", SPI_PHASE_TIMEOUT_US)) {
+        free(padded_frame);
+        return SPI_GENERAL_ERROR;
+    }
     int bytes_written = spi_write_blocking(SPI_PORT, padded_frame, padded_len);
-    gpio_put(PIN_CS, 1);
+    spi_end_transaction_phase("DATA_TX");
 
     free(padded_frame);
 
-    spi_start_transaction();
-    uint8_t ack[4] = {0};
-    spi_read_blocking(SPI_PORT, 0x00, ack, 1);
-    gpio_put(PIN_CS, 1);
+    if (!spi_start_transaction_phase("DATA_ACK_RX", SPI_PHASE_TIMEOUT_US)) {
+        return SPI_GENERAL_ERROR;
+    }
+    uint8_t ack = 0;
+    spi_read_blocking(SPI_PORT, 0x00, &ack, 1);
+    spi_end_transaction_phase("DATA_ACK_RX");
 
-    printf("Data sent: %d bytes (padded), ACK received: 0x%02X\n", bytes_written, ack[0]);
+    printf("Data sent: %d bytes (padded), ACK received: 0x%02X\n", bytes_written, ack);
 
-    spi_transaction_result ack_result = (spi_transaction_result)ack[0];
+    spi_transaction_result ack_result = (spi_transaction_result)ack;
     if (ack_result != SPI_ACK) {
         printf("Error: Received ACK 0x%02X instead of 0x%02X\n", ack_result, SPI_ACK);
     }
@@ -200,7 +219,9 @@ spi_transaction_result send_data_frame(const uint8_t *data, size_t len) {
 
 // Read data frame with checksum verification
 bool read_data_frame(uint8_t *buffer, size_t expected_len) {
-    spi_start_transaction();
+    if (!spi_start_transaction_phase("DATA_RX", SPI_PHASE_TIMEOUT_US)) {
+        return false;
+    }
 
     // Read data
     int data_read = spi_read_blocking(SPI_PORT, 0x00, buffer, expected_len);
@@ -209,8 +230,7 @@ bool read_data_frame(uint8_t *buffer, size_t expected_len) {
     uint8_t received_checksum;
     int chk_read = spi_read_blocking(SPI_PORT, 0x00, &received_checksum, 1);
     
- 
-    gpio_put(PIN_CS, 1);
+    spi_end_transaction_phase("DATA_RX");
     
     if (data_read != expected_len || chk_read != 1) {
         printf("Read failed: data=%d/%d, checksum=%d/1\n", data_read, expected_len, chk_read);
@@ -225,7 +245,7 @@ bool read_data_frame(uint8_t *buffer, size_t expected_len) {
         return false;
     }
     
-    printf("Received data (%d bytes): ", expected_len);
+    printf("Received data (%zu bytes): ", expected_len);
     for (size_t i = 0; i < expected_len; i++) {
         printf("%02X ", buffer[i]);
     }
