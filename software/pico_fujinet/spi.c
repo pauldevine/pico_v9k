@@ -8,7 +8,7 @@
 #include "spi.h"
 #include "fujiCmd.h"
 
-#define SPI_PHASE_TIMEOUT_US 5000000
+#define SPI_PHASE_TIMEOUT_US 10000000
 #define VICTOR_SECTOR_COUNT_SINGLE 1
 
 uint8_t calculate_checksum_buf(const uint8_t *buf, size_t len) {
