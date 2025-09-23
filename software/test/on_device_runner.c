@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <string.h>
 #include <stdbool.h>
+#include <stdarg.h>
 
 #include "pico/stdlib.h"
 
@@ -9,16 +10,52 @@
 #include "../sasi.h"
 #include "../pico_fujinet/spi.h"
 
+static char test_summary[1024];
+static size_t test_summary_len;
+
+static void append_test_summary(const char *fmt, ...) {
+    if (test_summary_len >= sizeof(test_summary)) {
+        return;
+    }
+
+    va_list args;
+    va_start(args, fmt);
+    int written = vsnprintf(test_summary + test_summary_len,
+                            sizeof(test_summary) - test_summary_len,
+                            fmt,
+                            args);
+    va_end(args);
+
+    if (written < 0) {
+        return;
+    }
+
+    if ((size_t)written >= sizeof(test_summary) - test_summary_len) {
+        test_summary_len = sizeof(test_summary) - 1;
+        test_summary[test_summary_len] = '\0';
+    } else {
+        test_summary_len += (size_t)written;
+    }
+}
+
 // Simple test macros
 #define ASSERT_EQ(msg, a, b) do { \
-    if ((a) != (b)) { \
-        printf("FAIL: %s (0x%02X != 0x%02X)\n", msg, (unsigned)(a), (unsigned)(b)); \
+    unsigned _assert_eq_a = (unsigned)(a); \
+    unsigned _assert_eq_b = (unsigned)(b); \
+    if (_assert_eq_a != _assert_eq_b) { \
+        append_test_summary("FAIL: %s (0x%02X != 0x%02X)\n", msg, _assert_eq_a, _assert_eq_b); \
+        printf("FAIL: %s (0x%02X != 0x%02X)\n", msg, _assert_eq_a, _assert_eq_b); \
         return false; \
     } \
 } while (0)
 
 #define ASSERT_TRUE(msg, cond) do { \
-    if (!(cond)) { printf("FAIL: %s\n", msg); return false; } \
+    bool _assert_true_cond = (cond); \
+    if (!_assert_true_cond) { \
+        append_test_summary("FAIL: %s\n", msg); \
+        printf("FAIL: %s\n", msg); \
+        return false; \
+    } \
 } while (0)
 
 static bool test_selection_and_status() {
@@ -52,8 +89,11 @@ bool __attribute__((weak)) fujinet_write_sector(uint8_t device, uint32_t lba, co
 }
 
 #define TEST_FUJINET_KNOWN_LBA 0x00000002u
-static const uint8_t EXPECTED_FUJINET_PREFIX[8] = {
-    0xFA, 0xCE, 0x90, 0x0D, 0xF0, 0x0D, 0xBA, 0xBE
+static const uint8_t EXPECTED_FUJINET_PREFIX[32] = {
+    0x01, 0x00, 0x56, 0x4F, 0x4C, 0x55, 0x4D, 0x45, 
+    0x20, 0x31, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
+    0x20, 0x20, 0x42, 0x00, 0x00, 0x00, 0x00, 0x00, 
+    0x0C, 0x13, 0x00, 0x00, 0x00, 0x00, 0x20, 0x4E
 };
 
 static bool test_spi_known_sector(void) {
@@ -67,7 +107,7 @@ static bool test_spi_known_sector(void) {
     read_sector_from_disk(dma, TEST_FUJINET_KNOWN_LBA, sector);
 
     for (size_t i = 0; i < sizeof(EXPECTED_FUJINET_PREFIX); i++) {
-        char msg[48];
+        char msg[52];
         snprintf(msg, sizeof(msg), "FujiNet prefix byte %u", (unsigned)i);
         ASSERT_EQ(msg, sector[i], EXPECTED_FUJINET_PREFIX[i]);
     }
@@ -120,16 +160,23 @@ static bool test_read6_one_sector() {
     dma_write_register(dma, REG_CONTROL, 0x14);
     dma_write_register(dma, REG_CONTROL, 0x04);
 
-    // CDB: 0x03 00 02 00 01 00 -> Read 1 sector at LBA 0x000200
-    uint8_t cdb[6] = {0x03, 0x00, 0x02, 0x00, 0x01, 0x00};
+    // CDB: 0x03 00 00 02 01 00 -> Read 1 sector at LBA 0x000002
+    uint8_t cdb[6] = {0x03, 0x00, 0x00, 0x02, 0x01, 0x00};
     for (int i = 0; i < 6; i++) dma_write_register(dma, REG_DATA, cdb[i]);
 
-    // After completion, first 16 bytes at destination should match deterministic fallback pattern
+    // After completion, first 32 bytes should match the expected Volume Label payload
     uint8_t *mem = test_get_victor_ram();
     uint32_t addr = (0x00 << 16) | (0x20 << 8) | 0x00;
-    for (int i = 0; i < 16; i++) {
-        uint8_t expected = (uint8_t)((0x000200 + i) & 0xFF);
-        ASSERT_EQ("Read6 data pattern", mem[addr + i], expected);
+    static const uint8_t expected_volume_header[32] = {
+        0x01, 0x00, 0x56, 0x4F, 0x4C, 0x55, 0x4D, 0x45,
+        0x20, 0x31, 0x20, 0x20, 0x20, 0x20, 0x20, 0x20,
+        0x20, 0x20, 0x42, 0x00, 0x00, 0x00, 0x00, 0x00,
+        0x0C, 0x13, 0x00, 0x00, 0x00, 0x00, 0x20, 0x4E
+    };
+    for (size_t i = 0; i < sizeof(expected_volume_header); i++) {
+        char msg[48];
+        snprintf(msg, sizeof(msg), "Read6 volume byte %u", (unsigned)i);
+        ASSERT_EQ(msg, mem[addr + i], expected_volume_header[i]);
     }
     return true;
 }
@@ -219,6 +266,10 @@ int main() {
     ok &= test_request_sense();
     ok &= test_mode_select();
     ok &= test_spi_known_sector();
+
+    if (test_summary_len > 0) {
+        printf("\nTest Summary:\n%s", test_summary);
+    }
 
     printf("\nRESULT: %s\n", ok ? "PASS" : "FAIL");
     return ok ? 0 : 1;
