@@ -9,6 +9,88 @@
 #include "dma.h"
 #include "sasi.h"
 #include "logging.h"
+#include "pico_fujinet/spi.h"
+
+#define SASI_SECTOR_SIZE 512
+
+static inline uint8_t sasi_dma_target_device(const dma_registers_t *dma) {
+    uint8_t target = dma ? (dma->selected_target & 0x07) : 0;
+    return DEVICE_DISK_BASE + target;
+}
+
+static inline uint32_t sasi_dma_bytes_requested(const dma_registers_t *dma) {
+    return dma ? dma->block_count.full : 0;
+}
+
+static bool sasi_dma_device_to_ram(dma_registers_t *dma) {
+    uint8_t device = sasi_dma_target_device(dma);
+    uint32_t lba = dma->logical_block.full;
+    uint32_t remaining = sasi_dma_bytes_requested(dma);
+    uint32_t addr = dma->dma_address.full;
+
+    if (remaining == 0) {
+        return false;
+    }
+
+    while (remaining > 0) {
+        size_t chunk = remaining > SASI_SECTOR_SIZE ? SASI_SECTOR_SIZE : remaining;
+        uint8_t sector[SASI_SECTOR_SIZE];
+
+        if (!fujinet_read_sector(device, lba, sector, SASI_SECTOR_SIZE)) {
+            printf("Warning: FujiNet read LBA %lu failed\n", (unsigned long)lba);
+            return false;
+        }
+
+        dma_write_to_victor_ram(PIO_DMA, WRITE_SM, sector, chunk, addr);
+
+        addr += chunk;
+        remaining -= chunk;
+        lba++;
+    }
+
+    dma->dma_address.full = addr;
+    dma->logical_block.full = lba;
+    dma->block_count.full = 0;
+    return true;
+}
+
+static bool sasi_dma_ram_to_device(dma_registers_t *dma) {
+    uint8_t device = sasi_dma_target_device(dma);
+    uint32_t lba = dma->logical_block.full;
+    uint32_t remaining = sasi_dma_bytes_requested(dma);
+    uint32_t addr = dma->dma_address.full;
+
+    if (remaining == 0) {
+        return false;
+    }
+
+    while (remaining > 0) {
+        size_t chunk = remaining > SASI_SECTOR_SIZE ? SASI_SECTOR_SIZE : remaining;
+        uint8_t sector[SASI_SECTOR_SIZE];
+
+        if (chunk < SASI_SECTOR_SIZE) {
+            if (!fujinet_read_sector(device, lba, sector, SASI_SECTOR_SIZE)) {
+                memset(sector, 0, sizeof(sector));
+            }
+        }
+
+        dma_read_from_victor_ram(PIO_DMA, READ_SM, sector, chunk, addr);
+
+        if (!fujinet_write_sector(device, lba, sector, SASI_SECTOR_SIZE)) {
+            printf("Warning: FujiNet write LBA %lu failed\n", (unsigned long)lba);
+            return false;
+        }
+
+        addr += chunk;
+        remaining -= chunk;
+        lba++;
+    }
+
+    dma->dma_address.full = addr;
+    dma->logical_block.full = lba;
+    dma->block_count.full = 0;
+    return true;
+}
 
 static dma_registers_t *registers = NULL;
 
@@ -400,10 +482,12 @@ void dma_device_reset(dma_registers_t *dma) {
     dma->bus_ctrl = 0;
     dma->control = 0;
     dma->selected_target = 0;
-    
+    dma->block_count.full = 0;
+    dma->logical_block.full = 0;
+
     // Clear interrupt
     dma_update_interrupts(dma, false);
-    
+
     printf("DMA device reset\n");
 }
 
@@ -421,21 +505,22 @@ void dma_handle_sasi_req(dma_registers_t *dma) {
     if (dma->bus_ctrl & SASI_REQ_BIT) {
         // Only data (not control or status) transfers can use DMA
         if (dma->state.dma_enabled && !(dma->bus_ctrl & SASI_CTL_BIT)) {
+            bool ok = false;
             if (dma->state.dma_dir_in) {
-                // Write to system memory (device → RAM)
+                // Device → Victor RAM
+                ok = sasi_dma_device_to_ram(dma);
                 printf("DMA write to RAM at 0x%06X\n", dma->dma_address.full);
-                // TODO: Call your PIO write function here
-                // dma_write_to_victor_ram_single(dma, sasi_data);
             } else {
-                // Read from system memory (RAM → device) 
+                // Victor RAM → Device
+                ok = sasi_dma_ram_to_device(dma);
                 printf("DMA read from RAM at 0x%06X\n", dma->dma_address.full);
-                // TODO: Call your PIO read function here
-                // uint8_t data = dma_read_from_victor_ram_single(dma);
+            }
+
+            if (!ok) {
+                printf("Warning: SASI DMA transfer failed\n");
             }
             
             // Auto-increment address after each transfer (key missing piece!)
-            dma->dma_address.full++;
-            
             dma->state.asserting_ack = 1;
             dma->bus_ctrl |= SASI_ACK_BIT;
         } else {
