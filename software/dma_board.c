@@ -14,7 +14,7 @@
 #include "pico_fujinet/spi.h"
 
 #define UART_ID uart0
-#define BAUD_RATE 230400
+#define BAUD_RATE 115200
 #define UART_TX_PIN 46
 #define UART_RX_PIN 45
 
@@ -50,7 +50,8 @@ int main() {
     uint32_t timeout = seconds * millis_per_second;
 
     printf("Sleeping for %d seconds\n", seconds);
-    sleep_ms(timeout);
+    //sleep_ms(timeout);
+    printf("Awake!\n");
 
     // Initialize SPI bus for FujiNet storage
     spi_bus_init();
