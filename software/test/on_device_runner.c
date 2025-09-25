@@ -5,6 +5,7 @@
 #include <stdarg.h>
 
 #include "pico/stdlib.h"
+#include "hardware/clocks.h"
 
 #include "../pico_victor/dma.h"
 #include "../sasi.h"
@@ -12,6 +13,24 @@
 
 static char test_summary[1024];
 static size_t test_summary_len;
+
+#define UART_ID uart0
+#define BAUD_RATE 115200
+#define UART_TX_PIN 46
+#define UART_RX_PIN 45
+
+void initialize_uart() {
+    // Initialize UART with high priority
+    gpio_init(UART_TX_PIN);
+    gpio_init(UART_RX_PIN);
+
+    gpio_set_dir(UART_TX_PIN, GPIO_OUT);
+    gpio_set_dir(UART_RX_PIN, GPIO_IN);
+    stdio_uart_init_full(UART_ID, BAUD_RATE, UART_TX_PIN, UART_RX_PIN);
+    uart_set_fifo_enabled(UART_ID, false);
+
+    return;
+}
 
 static void append_test_summary(const char *fmt, ...) {
     if (test_summary_len >= sizeof(test_summary)) {
@@ -239,6 +258,11 @@ static bool test_mode_select() {
 int main() {
     stdio_init_all();
     sleep_ms(500);
+
+    set_sys_clock_khz(200000, true);
+
+    initialize_uart();    
+
     printf("\nVictor DMA On-Device Tests\n");
 
     bool ok = true;
