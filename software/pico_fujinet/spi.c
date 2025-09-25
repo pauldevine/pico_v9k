@@ -10,6 +10,7 @@
 
 #define SPI_PHASE_TIMEOUT_US 10000000
 #define VICTOR_SECTOR_COUNT_SINGLE 1
+#define SPI_PHASE_GUARD_US 1500
 
 uint8_t calculate_checksum_buf(const uint8_t *buf, size_t len) {
     unsigned int chk = 0;
@@ -68,7 +69,27 @@ static bool spi_start_transaction_phase(const char *phase, uint32_t timeout_us)
 static void spi_end_transaction_phase(const char *phase)
 {
     gpio_put(PIN_CS, 1);
-    printf("Pico SPI [%s]: CS HIGH (handshake=%d)\n", phase, gpio_get(PIN_SPI_HANDSHAKE));
+
+    uint32_t waited = 0;
+    while (!gpio_get(PIN_SPI_HANDSHAKE)) {
+        sleep_us(10);
+        waited += 10;
+        if (waited >= SPI_PHASE_TIMEOUT_US) {
+            printf("Pico SPI [%s]: timeout waiting for handshake high\n", phase);
+            break;
+        }
+    }
+
+    /*
+     * Give the FujiNet task a scheduling window to observe CS high before the
+     * next phase pulls it low again. Without this guard the ESP code can stay
+     * parked in its "wait for CS release" loop, so it never queues the next
+     * SPI transaction and we spin forever waiting for handshake low.
+     */
+    sleep_us(SPI_PHASE_GUARD_US);
+
+    printf("Pico SPI [%s]: CS HIGH (handshake=%d, wait=%u us)\n",
+           phase, gpio_get(PIN_SPI_HANDSHAKE), waited);
 }
 
 static bool receive_status_byte(const char *label, uint8_t *status_out) {
@@ -347,6 +368,7 @@ void spi_bus_init() {
 
     // CS is manual control
     gpio_init(PIN_CS);
+    gpio_set_pulls (PIN_CS, true, false); // pull-up pin, up, down
     gpio_set_dir(PIN_CS, GPIO_OUT);
     gpio_put(PIN_CS, 1);  // CS idle high
 }

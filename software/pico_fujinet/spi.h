@@ -1,10 +1,10 @@
 // SPI defines
-#define SPI_PORT spi0
-#define PIN_MISO 32
-#define PIN_CS   33
-#define PIN_SCK  34
-#define PIN_MOSI 35
-#define PIN_SPI_HANDSHAKE 36
+#define SPI_PORT spi1
+#define PIN_MISO 40
+#define PIN_CS   41
+#define PIN_SCK  42
+#define PIN_MOSI 43
+#define PIN_SPI_HANDSHAKE 44
 
 // Protocol defines
 #define CMD_HELLO      0x01
