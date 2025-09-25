@@ -256,7 +256,7 @@ uint8_t dma_read_register(dma_registers_t *dma, dma_reg_offsets_t offset) {
             fast_log("Read from unknown register offset (0x%x)\n", offset);
             break;
     }
-
+    fast_log("dma_read_register offset (0x%x) returning 0x%02x\n", offset, data);
     return data;
 }
 
@@ -292,15 +292,12 @@ uint8_t dma_read_register(dma_registers_t *dma, dma_reg_offsets_t offset) {
     if (read_flag) {
         data = dma_read_register(my_register, offset);
         fast_log("Read address: %08X offset: %02X data: %02X ", address, offset, data);
-        //TODO PUT BACK! dma_read_register(my_register, offset);
     } else {
         dma_write_register(my_register, offset, data);
         fast_log("Write address: %08X offset: %02X data: %02X ", address, offset, data);
     }
   
     end_cycles = systick_hw->cvr;
-    //fast_log("Write address: %08X offset: %02X data: %02X ", address, offset, data);
-    //TODO PUT BACK! dma_write_register(my_register, offset, data);
     
     uint32_t cycles_used;
     if (start_cycles >= end_cycles) {
@@ -386,14 +383,6 @@ void dma_read_from_victor_ram(PIO read_pio, int read_sm, uint8_t *data, size_t l
         uint32_t addr = (start_address + i) & 0xFFFFF;
         data[i] = (addr < TEST_VICTOR_RAM_SIZE) ? test_victor_ram[addr] : 0x00;
     }
-}
-
-void dma_write_single_byte_to_victor_ram(dma_registers_t *dma, uint8_t data) {
-    if (dma->dma_address.full < TEST_VICTOR_RAM_SIZE) test_victor_ram[dma->dma_address.full] = data;
-}
-
-uint8_t dma_read_single_byte_from_victor_ram(dma_registers_t *dma) {
-    return (dma->dma_address.full < TEST_VICTOR_RAM_SIZE) ? test_victor_ram[dma->dma_address.full] : 0x00;
 }
 
 uint8_t* test_get_victor_ram() { return test_victor_ram; }
