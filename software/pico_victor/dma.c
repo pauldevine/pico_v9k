@@ -18,22 +18,25 @@ static inline uint8_t sasi_dma_target_device(const dma_registers_t *dma) {
     return DEVICE_DISK_BASE + target;
 }
 
-static inline uint32_t sasi_dma_bytes_requested(const dma_registers_t *dma) {
+static inline uint32_t sasi_dma_sector_count(const dma_registers_t *dma) {
     return dma ? dma->block_count.full : 0;
+}
+
+static inline uint32_t sasi_dma_bytes_requested(const dma_registers_t *dma) {
+    return sasi_dma_sector_count(dma) * SASI_SECTOR_SIZE;
 }
 
 static bool sasi_dma_device_to_ram(dma_registers_t *dma) {
     uint8_t device = sasi_dma_target_device(dma);
     uint32_t lba = dma->logical_block.full;
-    uint32_t remaining = sasi_dma_bytes_requested(dma);
+    uint32_t sectors_remaining = sasi_dma_sector_count(dma);
     uint32_t addr = dma->dma_address.full;
 
-    if (remaining == 0) {
+    if (sectors_remaining == 0) {
         return false;
     }
 
-    while (remaining > 0) {
-        size_t chunk = remaining > SASI_SECTOR_SIZE ? SASI_SECTOR_SIZE : remaining;
+    while (sectors_remaining > 0) {
         uint8_t sector[SASI_SECTOR_SIZE];
 
         if (!fujinet_read_sector(device, lba, sector, SASI_SECTOR_SIZE)) {
@@ -41,10 +44,10 @@ static bool sasi_dma_device_to_ram(dma_registers_t *dma) {
             return false;
         }
 
-        dma_write_to_victor_ram(PIO_DMA, WRITE_SM, sector, chunk, addr);
+        dma_write_to_victor_ram(PIO_DMA, WRITE_SM, sector, SASI_SECTOR_SIZE, addr);
 
-        addr += chunk;
-        remaining -= chunk;
+        addr += SASI_SECTOR_SIZE;
+        sectors_remaining--;
         lba++;
     }
 
@@ -57,32 +60,25 @@ static bool sasi_dma_device_to_ram(dma_registers_t *dma) {
 static bool sasi_dma_ram_to_device(dma_registers_t *dma) {
     uint8_t device = sasi_dma_target_device(dma);
     uint32_t lba = dma->logical_block.full;
-    uint32_t remaining = sasi_dma_bytes_requested(dma);
+    uint32_t sectors_remaining = sasi_dma_sector_count(dma);
     uint32_t addr = dma->dma_address.full;
 
-    if (remaining == 0) {
+    if (sectors_remaining == 0) {
         return false;
     }
 
-    while (remaining > 0) {
-        size_t chunk = remaining > SASI_SECTOR_SIZE ? SASI_SECTOR_SIZE : remaining;
+    while (sectors_remaining > 0) {
         uint8_t sector[SASI_SECTOR_SIZE];
 
-        if (chunk < SASI_SECTOR_SIZE) {
-            if (!fujinet_read_sector(device, lba, sector, SASI_SECTOR_SIZE)) {
-                memset(sector, 0, sizeof(sector));
-            }
-        }
-
-        dma_read_from_victor_ram(PIO_DMA, READ_SM, sector, chunk, addr);
+        dma_read_from_victor_ram(PIO_DMA, READ_SM, sector, SASI_SECTOR_SIZE, addr);
 
         if (!fujinet_write_sector(device, lba, sector, SASI_SECTOR_SIZE)) {
             printf("Warning: FujiNet write LBA %lu failed\n", (unsigned long)lba);
             return false;
         }
 
-        addr += chunk;
-        remaining -= chunk;
+        addr += SASI_SECTOR_SIZE;
+        sectors_remaining--;
         lba++;
     }
 

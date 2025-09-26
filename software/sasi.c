@@ -120,16 +120,21 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
     // For Read(6): cmd[1] (5 MSBs), cmd[2], cmd[3], cmd[4]=count
     // For SASI/Xebec variant in logs (0x03), bytes match 3-byte LBA + count
     uint32_t sector = ((cmd[1] & 0x1F) << 16) | (cmd[2] << 8) | cmd[3];
-    uint8_t count = cmd[4] ? cmd[4] : 256; // SASI Read(6): 0 means 256 blocks
-    
-    printf("Reading %d sectors starting at %d\n", count, sector);
-    
+    uint16_t blocks = cmd[4] ? cmd[4] : 256; // SASI Read(6): 0 means 256 blocks
+
+    printf("Reading %u sectors starting at %u\n", (unsigned)blocks, (unsigned)sector);
+
+    if (dma) {
+        dma->logical_block.full = sector;
+        dma->block_count.full = blocks;
+    }
+
     // Indicate busy during data transfer (matches log polling values)
     dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_INP_BIT | SASI_MSG_BIT);
     dma->bus_ctrl |= (SASI_BSY_BIT | SASI_CTL_BIT);
 
     // Simulate reading from disk and DMA to system RAM
-    for (int i = 0; i < count; i++) {
+    for (uint16_t i = 0; i < blocks; i++) {
         uint8_t sector_data[512];
         read_sector_from_disk(dma, sector + i, sector_data);
         
@@ -141,7 +146,12 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
         // Auto-increment DMA address (the missing piece!)
         dma->dma_address.full += 512;
     }
-    
+
+    if (dma) {
+        dma->logical_block.full = sector + blocks;
+        dma->block_count.full = 0;
+    }
+
     // Signal completion to host
     signal_command_complete(dma);
 }
@@ -149,15 +159,20 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
 void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
     // Parse Write(6)
     uint32_t sector = ((cmd[1] & 0x1F) << 16) | (cmd[2] << 8) | cmd[3];
-    uint8_t count = cmd[4] ? cmd[4] : 256;
+    uint16_t blocks = cmd[4] ? cmd[4] : 256;
 
-    printf("Writing %d sectors starting at %d\n", count, sector);
+    printf("Writing %u sectors starting at %u\n", (unsigned)blocks, (unsigned)sector);
+
+    if (dma) {
+        dma->logical_block.full = sector;
+        dma->block_count.full = blocks;
+    }
 
     // Indicate busy during data transfer (matching observed status polling)
     dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_INP_BIT | SASI_MSG_BIT);
     dma->bus_ctrl |= (SASI_BSY_BIT | SASI_CTL_BIT);
 
-    for (int i = 0; i < count; i++) {
+    for (uint16_t i = 0; i < blocks; i++) {
         uint8_t sector_data[512];
         // Read from Victor RAM into local buffer
         dma_read_from_victor_ram(PIO_DMA, READ_SM, sector_data, 512, dma->dma_address.full);
@@ -170,6 +185,11 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
             // For now, ignore failures and continue
             printf("Warning: write sector LBA %lu failed, continuing\n", (unsigned long)(sector + i));
         }
+    }
+
+    if (dma) {
+        dma->logical_block.full = sector + blocks;
+        dma->block_count.full = 0;
     }
 
     signal_command_complete(dma);
