@@ -121,9 +121,10 @@ static inline void dma_read_write_program_init(PIO pio, uint sm, uint offset, ui
     pio_sm_set_consecutive_pindirs(pio, sm, pin, PIN_RANGE, false);
 
     //set the pins that are behind the BUS_CNTRL_DIR to be output as they're safe to always be output
-    gpio_put(HOLD_PIN, 1);
-    pio_gpio_init(pio, HOLD_PIN);
-    pio_sm_set_consecutive_pindirs(pio, sm, RD_PIN, DATA_SIZE, true);
+    pio_sm_set_pins_with_mask(pio, sm, DIR_8088_TO_PICO << LOW_ADDR_DIR, 1u << LOW_ADDR_DIR);
+    pio_sm_set_pins_with_mask(pio, sm, DIR_8088_TO_PICO << BUS_CNTRL_DIR, 1u << BUS_CNTRL_DIR);
+
+    pio_sm_set_consecutive_pindirs(pio, sm, RD_PIN, DATA_SIZE, false);
     pio_sm_set_consecutive_pindirs(pio, sm, HOLD_PIN, 1, false);   //set HOLD pin back to input, only one above should be initialized as input
 
     // Load our configuration, and jump to the start of the program

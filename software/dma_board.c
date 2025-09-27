@@ -79,6 +79,7 @@ int main() {
     printf("LOW_ADDR_DIR=%d, HOLD_PIN=%d\n", LOW_ADDR_DIR, HOLD_PIN);
     printf("Pin %d func: %d, dir: %d\n", LOW_ADDR_DIR, gpio_get_function(LOW_ADDR_DIR), gpio_get_dir(LOW_ADDR_DIR));
     printf("Pin %d func: %d, dir: %d\n", HOLD_PIN, gpio_get_function(HOLD_PIN), gpio_get_dir(HOLD_PIN));
+    
 
     // configure the two pio state machines for DMA reading and writing, the same code is used for both reading and writing
     // the init controls which mode the program runs in, ends up with 2 state machines with different
@@ -100,7 +101,10 @@ int main() {
     pio_sm_put_blocking(dma_pio, write_sm, DMA_WRITE);  //initialize state machine for write operation
     pio_sm_put_blocking(dma_pio, write_sm, DMA_WRITE_T2_PINDIRS);  //not used in WR operation, but needed to keep the state machine happy
 
-    
+    //start with both state machines disabled, will enable when a DMA operation is requested
+    pio_sm_set_enabled(dma_pio, write_sm, false);
+    pio_sm_set_enabled(dma_pio, read_sm, false);
+
     // Debug PIO state
     printf("PIO state: enabled=%d, stalled=%d, PC=0x%x\n", 
            pio_sm_is_claimed(register_pio, register_sm),

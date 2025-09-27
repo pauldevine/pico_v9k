@@ -54,6 +54,9 @@
 #define DMA_READ_T2_PINDIRS 0xFFF00 // Sets up the Address pins so 0-7 are inputs and 8-19 are outputs
 #define DMA_WRITE_T2_PINDIRS 0xFFFFF //these aren't actually used, but are here to send something to the state machine
 
+#define DIR_8088_TO_PICO 0
+#define DIR_PICO_TO_8088 1
+
 // Convert SM number to the corresponding IRQ source
 static const enum pio_interrupt_source fifo_sources[] = {
     pis_sm0_rx_fifo_not_empty,

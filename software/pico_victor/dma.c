@@ -32,6 +32,11 @@ static bool sasi_dma_device_to_ram(dma_registers_t *dma) {
     uint32_t sectors_remaining = sasi_dma_sector_count(dma);
     uint32_t addr = dma->dma_address.full;
 
+    pio_sm_set_enabled(PIO_REGISTERS, REGISTERS_SM, false);
+    pio_sm_set_consecutive_pindirs(PIO_DMA, WRITE_SM, RD_PIN, DATA_SIZE, true);
+    pio_sm_set_enabled(PIO_DMA, WRITE_SM, true);
+    pio_sm_set_enabled(PIO_DMA, READ_SM, false);
+
     if (sectors_remaining == 0) {
         return false;
     }
@@ -54,6 +59,9 @@ static bool sasi_dma_device_to_ram(dma_registers_t *dma) {
     dma->dma_address.full = addr;
     dma->logical_block.full = lba;
     dma->block_count.full = 0;
+
+    pio_sm_set_enabled(PIO_DMA, WRITE_SM, false);
+    pio_sm_set_enabled(PIO_REGISTERS, REGISTERS_SM, true);
     return true;
 }
 
@@ -62,6 +70,11 @@ static bool sasi_dma_ram_to_device(dma_registers_t *dma) {
     uint32_t lba = dma->logical_block.full;
     uint32_t sectors_remaining = sasi_dma_sector_count(dma);
     uint32_t addr = dma->dma_address.full;
+
+    pio_sm_set_enabled(PIO_REGISTERS, REGISTERS_SM, false);
+    pio_sm_set_consecutive_pindirs(PIO_DMA, READ_SM, RD_PIN, DATA_SIZE, true);
+    pio_sm_set_enabled(PIO_DMA, WRITE_SM, false);
+    pio_sm_set_enabled(PIO_DMA, READ_SM, true);
 
     if (sectors_remaining == 0) {
         return false;
@@ -85,6 +98,9 @@ static bool sasi_dma_ram_to_device(dma_registers_t *dma) {
     dma->dma_address.full = addr;
     dma->logical_block.full = lba;
     dma->block_count.full = 0;
+
+    pio_sm_set_enabled(PIO_DMA, READ_SM, false);
+    pio_sm_set_enabled(PIO_REGISTERS, REGISTERS_SM, true);
     return true;
 }
 
@@ -367,12 +383,15 @@ uint8_t dma_read_register(dma_registers_t *dma, dma_reg_offsets_t offset) {
         printf("Failed to get DMA registers\n");
         return;
     }
+    
     if (read_flag) {
         data = dma_read_register(my_register, offset);
-        fast_log("Read address: %08X offset: %02X data: %02X ", address, offset, data);
+        uint32_t pindirs_and_data = (0xFF << 8) | (data & 0xFF); // Set all pins to output / combine with data payload
+        pio_sm_put_blocking(pio, sm, pindirs_and_data); //send the data back to the 8088
+        fast_log("Read address: %08X offset: %02X data: %02X \n", address, offset, data);
     } else {
         dma_write_register(my_register, offset, data);
-        fast_log("Write address: %08X offset: %02X data: %02X ", address, offset, data);
+        fast_log("Write address: %08X offset: %02X data: %02X \n", address, offset, data);
     }
   
     end_cycles = systick_hw->cvr;
