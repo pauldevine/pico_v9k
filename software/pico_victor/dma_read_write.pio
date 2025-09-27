@@ -129,8 +129,8 @@ static inline void dma_read_write_program_init(PIO pio, uint sm, uint offset, ui
 
     // Load our configuration, and jump to the start of the program
     pio_sm_init(pio, sm, offset, &c);
-    // Set the state machine running
-    pio_sm_set_enabled(pio, sm, true);
+    // Don't enable the state machine here - it will be enabled when needed
+    // pio_sm_set_enabled(pio, sm, true);
     printf("finished configuring dma_controller_program_init\n");
 }
 %}

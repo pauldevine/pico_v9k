@@ -101,9 +101,7 @@ int main() {
     pio_sm_put_blocking(dma_pio, write_sm, DMA_WRITE);  //initialize state machine for write operation
     pio_sm_put_blocking(dma_pio, write_sm, DMA_WRITE_T2_PINDIRS);  //not used in WR operation, but needed to keep the state machine happy
 
-    //start with both state machines disabled, will enable when a DMA operation is requested
-    pio_sm_set_enabled(dma_pio, write_sm, false);
-    pio_sm_set_enabled(dma_pio, read_sm, false);
+    //state machines are already disabled from initialization, will enable when a DMA operation is requested
 
     // Debug PIO state
     printf("PIO state: enabled=%d, stalled=%d, PC=0x%x\n", 

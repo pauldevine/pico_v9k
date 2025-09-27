@@ -38,7 +38,7 @@ T2:
     wait 0 GPIO CLOCK_5_PIN            ; Wait for CLK5 to go low
     wait 1 GPIO CLOCK_15B_PIN          ; Wait for CLK15 to go high
     wait 0 GPIO CLOCK_15B_PIN          ; Wait for CLK15 to go low
-    jmp pin T3_WRITE side 0b1          ; if RD pin is high 8088 is writing, if low 8088 is reading
+    jmp pin T3_WRITE                   ; if RD pin is high 8088 is writing, if low 8088 is reading
 
 T3_READ:                               ; 8088 read cycle // pico's writing
     mov osr, ~null                     ; set OSR to all 1's
@@ -81,6 +81,7 @@ static inline void dma_registers_program_init(PIO pio, uint sm, uint offset) {
    pio_gpio_init(pio, CLOCK_15B_PIN);
    
    pio_gpio_init(pio, LOW_ADDR_DIR);
+   pio_gpio_init(pio, BUS_CNTRL_DIR);
 
    sm_config_set_in_pins(&c, BD0_PIN);
    sm_config_set_in_pin_count(&c, ADDRESS_BUS_SIZE);
@@ -101,6 +102,7 @@ static inline void dma_registers_program_init(PIO pio, uint sm, uint offset) {
    sm_config_set_sideset_pin_base(&c, LOW_ADDR_DIR);
 
    pio_sm_set_consecutive_pindirs(pio, sm, LOW_ADDR_DIR, 1, true);
+   pio_sm_set_consecutive_pindirs(pio, sm, BUS_CNTRL_DIR, 1, true);
 
    // Load our configuration, and jump to the start of the program
    pio_sm_init(pio, sm, offset, &c);
