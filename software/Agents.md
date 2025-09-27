@@ -83,6 +83,42 @@ The main test runs in `test/register_test.c` and:
 - Timing is critical - uses cycle-accurate measurements with SysTick
 - The code includes Victor 9000-specific memory addressing and SCSI/SASI protocol handling
 - Register access patterns follow MAME emulator implementation for compatibility
+- Pins LOW_ADDR_DIR and BUS_CNTRL_DIR control 74LVC245s that are connected to the 8088 bus. The LOW_ADDR_DIR connects the 8088 A0-A7 on ports B to the pico corresponding pins on port A. The BUS_CNTRL_DIR controls 8088 A8-A19 and the DMA related bus arbitration pins like ALE, RD, WR. The HOLD pin is outside this control mechanism to allow it to be toggled while these other pins are in read mode. The 74LVC245s are always enabled, and I set the direction of the bus with the direction pins as DIR_8088_TO_PICO or DIR_PICO_TO_8088. These two bus control pins should be actively driven low or high at all times such that the direction doesn't float, as the 74LVC245s are always enabled. While in the DIR_8088_TO_PICO mode the assumption is the high impedenace read mode essentially leaves the 8088 untouched electrically.
+
+## Vintage Hardware Documentation
+
+### Core Technical Manuals
+- **SASI and DMA Card Hardware**: `notes/Manuals/Victor 9000 Sirius 1 Hard Disk Subsystem.pdf` - Complete documentation of the hard disk subsystem including SASI interface and DMA controller
+- **Hardware Reference Manual**: `notes/Manuals/Victor 9000 Hardware Reference Rev 0 - 10.5.1983.pdf` - Overall system technical documentation
+- **256K CPU Theory of Operation**: `notes/Manuals/Victor 9000 Theory of Operation for the 256K CPU.pdf` - Detailed CPU architecture and operation
+- **Service Manual**: `notes/Manuals/VictorServiceMan_Chapt1-5 OCR.pdf` - Field service and maintenance procedures
+- **Systems Programmer's Toolkit**: `notes/Manuals/Victor 9000 Systems Programmer's Tool Kit II Vol II.pdf` - Low-level system programming reference
+
+### BIOS and Boot Documentation
+- **Boot BIOS Implementation Notes**: `notes/Boot BIOS ASM source 3.6/BT1INFO.DOC` - Detailed implementation notes for the boot BIOS
+- **Boot BIOS Source Files**: `notes/Boot BIOS ASM source 3.6/` - Complete assembly source for boot BIOS
+- **Difference Files**: `notes/Boot BIOS ASM source 3.6/DIFFER.TXT` and `DIFFER1.TXT` - Version differences in BIOS implementations
+
+### Operating System Source Code
+- **MS-DOS 3.1 Assembly Listings**: `notes/MS-DOS 3.1 Listings/` - Complete assembly and PL/M-86 source listings including:
+  - Device drivers: `DIOV9000.LST`, `DIOVICKI.LST` (disk I/O)
+  - Console I/O: `CI.LST`, `CO.LST`, `CONS.LST`
+  - Buffer management: `BUFFER.LST`, `BUFFERFL.LST`, `BUFFERHD.LST`
+  - System components: `BELV9000.LST`, `CBV9000.LST`, `ERRORMAP.LST`
+
+### Additional Technical References
+- **Schematics and Circuit Diagrams**:
+  - `notes/Manuals/Victor 9000 Schematics Rev #11.pdf`
+  - `notes/Manuals/Sirius Systems Technology Victor 9000 Schematics.pdf`
+  - `notes/Manuals/Victor_9000_Schematics_revH.pdf`
+- **Memory Architecture**: `notes/Manuals/Victor 9000 Memory Map.pdf`
+- **Programmer's References**:
+  - `notes/Manuals/Victor 9000 Programmers Toolkit Volume I.pdf`
+  - `notes/Manuals/Victor 9000 Programmers Toolkit Volume II.pdf`
+  - `notes/Manuals/Victor 9000 Applications Programmers Toolkit II Volume I.pdf`
+  - `notes/Manuals/Victor 9000 Applications Programmers Toolkit II Volume II.pdf`
+- **Technical Reference Disk**: `notes/Manuals/Technical Reference Disk in ascii/` - Contains detailed technical specifications in text format
+- **June 1982 Technical Reference**: `notes/Manuals/Victor9000TechRef_Jun82_OCR.pdf` - Early technical reference documentation 
 
 ## Mame Emulator for Reference
 - Mame also has an emulation of the same hardware in the `notes/victor9k_hdc.cpp` file. It works today to emulate this behavior and is a good reference implementation. In `notes/mame boot example.log` there's the output from booting mame with hard drive register interaction logging enabled. You can see what the typical boot squence looks like.
