@@ -145,6 +145,9 @@ dma_registers_t* dma_get_registers() {
             printf("Failed to allocate memory for DMA registers\n");
             return NULL;
         }
+        // Initialize all registers to zero
+        memset(registers, 0, sizeof(dma_registers_t));
+        printf("DMA registers initialized\n");
     }
 
     return registers;
@@ -280,7 +283,7 @@ void dma_write_register(dma_registers_t *dma, dma_reg_offsets_t offset, uint8_t 
 }
 
 uint8_t dma_read_register(dma_registers_t *dma, dma_reg_offsets_t offset) {
-    //printf("dma_read_register offset (0x%x)\n", offset);
+    uint8_t orig_offset = offset;
     // Lower address bits are ignored (based on MAME implementation)
     if (offset >= 0x80) {
         offset &= ~0x1f;
@@ -330,6 +333,14 @@ uint8_t dma_read_register(dma_registers_t *dma, dma_reg_offsets_t offset) {
                    ((dma->bus_ctrl & SASI_REQ_BIT) ? SASI_REQ_BIT : 0) |
                    ((dma->bus_ctrl & SASI_MSG_BIT) ? SASI_MSG_BIT : 0);
 
+            printf("returning 0x%02x (BSY:%d REQ:%d CTL:%d INP:%d MSG:%d)\n", 
+                   data, 
+                   !!(dma->bus_ctrl & SASI_BSY_BIT),
+                   !!(dma->bus_ctrl & SASI_REQ_BIT), 
+                   !!(dma->bus_ctrl & SASI_CTL_BIT),
+                   !!(dma->bus_ctrl & SASI_INP_BIT),
+                   !!(dma->bus_ctrl & SASI_MSG_BIT));
+
             // Clear interrupt on status read
             dma_update_interrupts(dma, false);
             break;
@@ -356,6 +367,8 @@ uint8_t dma_read_register(dma_registers_t *dma, dma_reg_offsets_t offset) {
 
  void __time_critical_func(registers_irq_handler)() {
     // Handle IRQ for register PIO
+    static int irq_count = 0;
+    irq_count++;
     //printf("Register IRQ triggered\n");
     PIO pio = PIO_REGISTERS; 
     uint sm = REGISTERS_SM; 
@@ -373,9 +386,14 @@ uint8_t dma_read_register(dma_registers_t *dma, dma_reg_offsets_t offset) {
     bool read_flag = (bool)((raw_value >> 28) & 0xF);
 
     if (address >= 0xEF300) {
-        fast_log("Address: %05X Offset: %02X data: %02X read_flag: %d\n", address, offset, data, read_flag);
+        fast_log("[IRQ#%d] Address: %05X Offset: %02X data: %02X read_flag: %d\n", irq_count, address, offset, data, read_flag);
     } else {
-        fast_log("Unknown address: %05X Offset: %02X data: %02X read_flag: %d\n", address, offset, data, read_flag);
+        fast_log("[IRQ#%d] Unknown address: %05X Offset: %02X data: %02X read_flag: %d\n", irq_count, address, offset, data, read_flag);
+    }
+    
+    // Additional debug for status register attempts
+    if (offset == 0x20 || offset == 0x30) {
+        printf("STATUS REGISTER ACCESS: offset=0x%02x read=%d\n", offset, read_flag);
     }
     
     dma_registers_t *my_register = dma_get_registers();
@@ -386,9 +404,18 @@ uint8_t dma_read_register(dma_registers_t *dma, dma_reg_offsets_t offset) {
     
     if (read_flag) {
         data = dma_read_register(my_register, offset);
+        fast_log("[IRQ#%d] dma_read_register returned 0x%02x for offset 0x%02x\n", irq_count, data, offset);
         uint32_t pindirs_and_data = (0xFF << 8) | (data & 0xFF); // Set all pins to output / combine with data payload
+        
+        // Check TX FIFO status before blocking
+        uint tx_level = pio_sm_get_tx_fifo_level(pio, sm);
+        fast_log("[IRQ#%d] TX FIFO level before put: %d\n", irq_count, tx_level);
+        
         pio_sm_put_blocking(pio, sm, pindirs_and_data); //send the data back to the 8088
-        fast_log("Read address: %08X offset: %02X data: %02X \n", address, offset, data);
+        fast_log("[IRQ#%d] Read complete - sent 0x%02x to 8088\n", irq_count, data);
+        
+        // Force a small delay to ensure data is stable
+        busy_wait_us(1);
     } else {
         dma_write_register(my_register, offset, data);
         fast_log("Write address: %08X offset: %02X data: %02X \n", address, offset, data);
