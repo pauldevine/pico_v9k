@@ -105,6 +105,8 @@ static bool sasi_dma_ram_to_device(dma_registers_t *dma) {
     return true;
 }
 
+// Place the actual registers in time_critical section
+static dma_registers_t registers_storage __attribute__((section(".time_critical.dma_registers")));
 static dma_registers_t *registers = NULL;
 
 void core1_main() {
@@ -114,13 +116,89 @@ void core1_main() {
 
     PIO register_pio = PIO_REGISTERS;
     int register_sm = REGISTERS_SM;
-    
+
     printf("Setting up IRQ for PIO%d SM%d\n", pio_get_index(register_pio), register_sm);
     printf("FIFO source: %d\n", fifo_sources[register_sm]);
-    
+
+    // Pre-initialize and warm up DMA registers
+    registers_irq_handler_ultra_init();  // Initialize ultra handler's static data
+    dma_registers_t *dma = dma_get_registers();
+    if (dma) {
+        // Touch all the critical memory locations to bring them into cache
+        volatile uint8_t dummy = 0;
+
+        // Touch the DMA address registers (most commonly accessed)
+        dma->dma_address.full = 0;
+        dummy = dma->dma_address.bytes.low;
+        dummy = dma->dma_address.bytes.mid;
+        dummy = dma->dma_address.bytes.high;
+
+        // Touch control and status registers
+        dma->control = 0;
+        dma->status = 0;
+        dummy = dma->control;
+        dummy = dma->status;
+
+        // Pre-warm the IRQ handler by calling it with dummy data
+        // This loads the code into I-cache and warms up branch predictors
+        printf("Pre-warming IRQ handler cache...\n");
+
+        // Temporarily disable IRQ while we warm up
+        irq_set_enabled(PIO1_IRQ_0, false);
+
+        // Set handler
+        irq_set_exclusive_handler(PIO1_IRQ_0, registers_irq_handler_ultra_asm);
+
+        // Call handler multiple times with different operations to fully warm caches
+        // This ensures all code paths and data are cached
+        for (int warm_iter = 0; warm_iter < 10; warm_iter++) {
+            // Test different register types to warm all code paths
+            uint32_t test_addresses[] = {
+                0x000EF300,  // Control register write
+                0x100EF310,  // Data register read
+                0x100EF320,  // Status register read
+                0x000EF380,  // DMA address low write
+                0x100EF380,  // DMA address low read
+                0x000EF3A0,  // DMA address mid write
+                0x000EF3C0,  // DMA address high write
+            };
+
+            for (int i = 0; i < 7; i++) {
+                if (pio_sm_is_tx_fifo_empty(register_pio, register_sm)) {
+                    // Put test data
+                    pio_sm_put(register_pio, register_sm, test_addresses[i]);
+
+                    // Call the handler
+                    registers_irq_handler_ultra_asm();
+
+                    // Clear any response data
+                    if (!pio_sm_is_rx_fifo_empty(register_pio, register_sm)) {
+                        pio_sm_get(register_pio, register_sm);
+                    }
+                }
+            }
+        }
+
+        printf("Cache pre-warming complete (70 handler calls)\n");
+
+        // Small delay to let caches settle
+        busy_wait_us(100);
+
+        // One more round of warming after the delay
+        for (int i = 0; i < 5; i++) {
+            if (pio_sm_is_tx_fifo_empty(register_pio, register_sm)) {
+                pio_sm_put(register_pio, register_sm, 0x000EF380);
+                registers_irq_handler_ultra_asm();
+                if (!pio_sm_is_rx_fifo_empty(register_pio, register_sm)) {
+                    pio_sm_get(register_pio, register_sm);
+                }
+            }
+        }
+
+        (void)dummy; // Prevent unused variable warning
+    }
+
     pio_set_irq0_source_enabled(register_pio, fifo_sources[register_sm], true);
-    // Use ultra-fast ASM optimized handler for <80ns performance
-    irq_set_exclusive_handler(PIO1_IRQ_0, registers_irq_handler_ultra_asm);
     irq_set_enabled(PIO1_IRQ_0, true);
     printf("Core1 started, PIO: %d SM: %d\n", register_pio, register_sm);
     
@@ -140,16 +218,11 @@ void core1_main() {
 
 dma_registers_t* dma_get_registers() {
     if (!registers) {
-        // Allocate memory for registers if not already done
-        registers = malloc(sizeof(dma_registers_t));
-        if (!registers) {
-            // Handle allocation failure
-            printf("Failed to allocate memory for DMA registers\n");
-            return NULL;
-        }
+        // Use static storage in time_critical section for fast access
+        registers = &registers_storage;
         // Initialize all registers to zero
         memset(registers, 0, sizeof(dma_registers_t));
-        printf("DMA registers initialized\n");
+        printf("DMA registers initialized in time_critical section\n");
     }
 
     return registers;

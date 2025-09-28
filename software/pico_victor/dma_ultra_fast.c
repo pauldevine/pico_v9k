@@ -1,6 +1,6 @@
 /*
  * dma_ultra_fast.c - Ultra-optimized DMA register implementation
- * 
+ *
  * This implementation eliminates function pointers for the most common case:
  * address registers (0x80-0xFF). These are mapped directly to memory.
  * Only complex registers (0x00-0x2F) use handler functions.
@@ -15,6 +15,7 @@
 #include "dma.h"
 #include "sasi.h"
 #include "logging.h"
+#include "debug_queue.h"
 
 // Define DEBUG_PIN if not already defined
 #ifndef DEBUG_PIN
@@ -34,7 +35,62 @@
 
 // Direct memory mapping for simple registers (0x80-0xFF are address registers)
 // Aligned to cache line for optimal performance
-static uint8_t register_memory[256] __attribute__((aligned(64)));
+// Place in time_critical section to ensure it's in RAM
+static uint8_t register_memory[256] __attribute__((aligned(64), section(".time_critical.register_memory")));
+
+// Forward declarations
+static bool initialized = false;
+static void init_ultra_fast(dma_registers_t *dma);
+
+// Initialization function to pre-warm caches
+void registers_irq_handler_ultra_init(void) {
+    // Touch all register memory to bring it into cache
+    volatile uint8_t dummy = 0;
+    volatile uint32_t dummy32 = 0;
+
+    // First pass: Initialize all register memory
+    for (int i = 0; i < 256; i++) {
+        register_memory[i] = 0xFF;
+    }
+
+    // Second pass: Read all register memory multiple times to ensure caching
+    for (int iter = 0; iter < 3; iter++) {
+        for (int i = 0; i < 256; i++) {
+            dummy = register_memory[i];
+            register_memory[i] = (uint8_t)i;  // Write pattern
+        }
+    }
+
+    // Touch the most commonly accessed addresses multiple times
+    for (int iter = 0; iter < 10; iter++) {
+        register_memory[0x80] = 0;
+        register_memory[0xA0] = 0;
+        register_memory[0xC0] = 0;
+        dummy = register_memory[0x80];
+        dummy = register_memory[0xA0];
+        dummy = register_memory[0xC0];
+    }
+
+    // Ensure complex handlers are initialized
+    if (!initialized) {
+        dma_registers_t *dma = dma_get_registers();
+        if (dma) {
+            init_ultra_fast(dma);
+        }
+    }
+
+    // Touch critical SIO registers to pre-cache them
+    dummy32 = *(volatile uint32_t *)SIO_GPIO_OUT_SET_REG;
+    dummy32 = *(volatile uint32_t *)SIO_GPIO_OUT_CLR_REG;
+
+    // Touch PIO registers
+    dummy32 = PIO_REGISTERS->rxf[REGISTERS_SM];
+    dummy32 = PIO_REGISTERS->txf[REGISTERS_SM];
+    dummy32 = PIO_REGISTERS->fstat;
+
+    (void)dummy; // Prevent unused variable warning
+    (void)dummy32;
+}
 
 // Keep register handlers only for complex registers (0x00-0x2F)
 typedef struct {
@@ -43,7 +99,6 @@ typedef struct {
 } complex_handler_t;
 
 static complex_handler_t complex_handlers[0x30];
-static bool initialized = false;
 
 // Complex register handlers (only for 0x00-0x2F)
 static void handle_control_write(dma_registers_t *dma, uint8_t value) {
@@ -176,9 +231,12 @@ static void init_ultra_fast(dma_registers_t *dma) {
 // Ultra-optimized IRQ handler
 void __time_critical_func(registers_irq_handler_ultra)() {
     gpio_put(DEBUG_PIN, 1);
-    
+
     // Get raw value from PIO FIFO - this is our bottleneck
     uint32_t raw_value = pio_sm_get(PIO_REGISTERS, REGISTERS_SM);
+
+    // Push to debug queue - optimized for minimal overhead when disabled
+    debug_queue_push_fast(raw_value);
     
     // Extract fields using bit operations
     uint32_t address = raw_value & 0xFFFFF;
@@ -210,28 +268,26 @@ void __time_critical_func(registers_irq_handler_ultra)() {
         offset &= ~0x1f;
         
         if (read_flag) {
-            // Direct memory read
-            data = register_memory[offset];
-            
-            // But we need to get actual value from DMA structure
+            // Get actual value from DMA structure (not from register_memory!)
             if (offset == 0x80) {
-                data = dma->dma_address.full & 0xFF;
+                data = dma->dma_address.bytes.low;
             } else if (offset == 0xA0) {
-                data = (dma->dma_address.full >> 8) & 0xFF;
+                data = dma->dma_address.bytes.mid;
             } else if (offset == 0xC0) {
-                data = (dma->dma_address.full >> 16) & 0x0F;
+                data = dma->dma_address.bytes.high & 0x0F;
+            } else {
+                data = 0xFF;  // Unknown register in this range
             }
         } else {
-            // Direct memory write with DMA structure update
-            register_memory[offset] = data;
-            
+            // Write to DMA structure
             if (offset == 0x80) {
-                dma->dma_address.full = (dma->dma_address.full & ~0xFF) | data;
+                dma->dma_address.bytes.low = data;
             } else if (offset == 0xA0) {
-                dma->dma_address.full = (dma->dma_address.full & ~0xFF00) | (data << 8);
+                dma->dma_address.bytes.mid = data;
             } else if (offset == 0xC0) {
-                dma->dma_address.full = (dma->dma_address.full & ~0x0F0000) | ((data & 0x0F) << 16);
+                dma->dma_address.bytes.high = data & 0x0F;
             }
+            // Note: register_memory array is not used for address registers
         }
     } else {
         // Complex registers (0x00-0x2F) - use handlers
@@ -265,15 +321,18 @@ void __time_critical_func(registers_irq_handler_ultra)() {
 
 // Even more optimized version with inline assembly for critical path
 void __time_critical_func(registers_irq_handler_ultra_asm)() {
-    register uint32_t raw_value asm("r4");
-    register uint32_t offset asm("r5");
-    register uint32_t data asm("r6");
+    uint32_t raw_value;
+    uint32_t offset;
+    uint8_t data = 0xFF;
 
     // Set debug pin high
     *(volatile uint32_t *)SIO_GPIO_OUT_SET_REG = DEBUG_PIN_MASK;
 
     // Get value from PIO FIFO
     raw_value = pio_sm_get(PIO_REGISTERS, REGISTERS_SM);
+
+    // Push to debug queue - optimized for minimal overhead when disabled
+    debug_queue_push_fast(raw_value);
 
     // Extract offset
     offset = (raw_value & 0xFFFFF) - DMA_REGISTER_BASE;
@@ -297,13 +356,13 @@ void __time_critical_func(registers_irq_handler_ultra_asm)() {
         if (offset >= 0x80) {
             // Fast path for address registers
             offset &= ~0x1f;
-            
+
             if (offset == 0x80) {
-                data = dma->dma_address.full & 0xFF;
+                data = dma->dma_address.bytes.low;
             } else if (offset == 0xA0) {
-                data = (dma->dma_address.full >> 8) & 0xFF;
+                data = dma->dma_address.bytes.mid;
             } else if (offset == 0xC0) {
-                data = (dma->dma_address.full >> 16) & 0x0F;
+                data = dma->dma_address.bytes.high & 0x0F;
             } else {
                 data = 0xFF;
             }
@@ -315,22 +374,22 @@ void __time_critical_func(registers_irq_handler_ultra_asm)() {
         
         // Send data back
         #ifndef BENCHMARK_MODE
-        pio_sm_put_blocking(PIO_REGISTERS, REGISTERS_SM, (0xFF00 | data));
+        pio_sm_put_blocking(PIO_REGISTERS, REGISTERS_SM, (0xFF00 | (uint32_t)data));
         #endif
     } else {
         // Write path
         data = (raw_value >> 20) & 0xFF;
-        
+
         if (offset >= 0x80) {
             // Fast path for address registers
             offset &= ~0x1f;
-            
+
             if (offset == 0x80) {
-                dma->dma_address.full = (dma->dma_address.full & ~0xFF) | data;
+                dma->dma_address.bytes.low = data;
             } else if (offset == 0xA0) {
-                dma->dma_address.full = (dma->dma_address.full & ~0xFF00) | (data << 8);
+                dma->dma_address.bytes.mid = data;
             } else if (offset == 0xC0) {
-                dma->dma_address.full = (dma->dma_address.full & ~0x0F0000) | ((data & 0x0F) << 16);
+                dma->dma_address.bytes.high = data & 0x0F;
             }
         } else {
             // Complex register write

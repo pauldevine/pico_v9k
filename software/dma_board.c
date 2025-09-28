@@ -11,6 +11,7 @@
 #include "board_registers.pio.h"
 #include "dma_read_write.pio.h"
 #include "pico_victor/dma.h"
+#include "pico_victor/debug_queue.h"
 #include "pico_fujinet/spi.h"
 
 #define UART_ID uart0
@@ -42,6 +43,12 @@ int main() {
     initialize_uart();    
 
     queue_init(&log_queue, sizeof(char[256]), 32); // 32 message buffer
+
+    // Initialize the debug queue for PIO register access logging
+    debug_queue_init();
+    // Debug output is disabled by default for minimal performance impact
+    // Uncomment the next line to enable debug output
+    debug_queue_enable(true);
 
     int ch=0;
     uint32_t millis_per_second = 1000000;
@@ -126,7 +133,10 @@ int main() {
             if (i % 100000 == 0) {
             printf (".");
             }
-        }    
+        }
+
+        // Process debug queue entries (non-blocking)
+        debug_queue_process();    
             
         // Every 10M iterations, check PIO state
         if (i % 10000000 == 0) {

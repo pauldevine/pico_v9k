@@ -122,3 +122,42 @@ The main test runs in `test/register_test.c` and:
 
 ## Mame Emulator for Reference
 - Mame also has an emulation of the same hardware in the `notes/victor9k_hdc.cpp` file. It works today to emulate this behavior and is a good reference implementation. In `notes/mame boot example.log` there's the output from booting mame with hard drive register interaction logging enabled. You can see what the typical boot squence looks like.
+
+## Recent Development Status
+
+### Current Branch: `pico_fast_sitaution`
+Working on performance optimizations for DMA register handling and implementing ultra-fast IRQ response times.
+
+### Latest Changes (as of 2025-09-28)
+
+#### Performance Optimizations
+- **Ultra-fast DMA implementation** (`dma_ultra_fast.c/h`): New optimized register handler that eliminates function pointers for address registers (0x80-0xFF), using direct memory mapping for improved performance
+- **Debug queue system** (`debug_queue.c/h`): Added non-blocking debug logging system for timing-critical code sections
+- **Benchmarking infrastructure** (`test/benchmark_irq.c`): Created IRQ performance benchmarking tools to measure and optimize response times
+- **Cache optimization**: Aligned register memory to cache lines and added pre-warming initialization routines
+
+#### DMA Improvements
+- **Timing debug pins**: Added GPIO pin toggling for precise timing measurements with oscilloscope
+- **Fast DMA variants**: Implemented both `dma_fast.c` and `dma_ultra_fast.c` with progressively optimized register access patterns
+- **LBA support**: Fixed and improved Logical Block Addressing handling in the DMA controller
+
+#### SPI/FujiNet Integration
+- **Protocol cleanup**: Streamlined SPI handshaking and communication with FujiNet device
+- **Transaction phases**: Added proper SPI transaction phase management with `spi_end_transaction_phase()`
+- **Mount process**: Fixed disk mounting process with increased timeout for slow operations
+- **Error handling**: Improved timeout handling and error recovery in SPI communications
+
+#### Testing Infrastructure
+- **DOS DMA test** (`test/dos_dma_test/`): Added DOS-based DMA testing utilities
+- **Register access patterns**: Documented and tested Victor 9000 register access sequences
+- **Performance metrics**: Established baseline measurements for IRQ response times
+
+### Current Work in Progress
+- Debugging ultra-fast DMA implementation for consistent sub-microsecond response times
+- Optimizing PIO state machine interactions
+- Reducing interrupt latency for register access handlers
+- Testing with actual Victor 9000 hardware
+
+### Known Issues
+- Ultra-fast implementation still being debugged for edge cases
+- Need to verify timing compatibility with original SASI hardware specifications

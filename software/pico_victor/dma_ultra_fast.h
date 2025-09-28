@@ -7,6 +7,9 @@
 
 #include "dma.h"
 
+// Initialize the ultra-fast handler and pre-warm caches
+void registers_irq_handler_ultra_init(void);
+
 // Ultra-optimized IRQ handlers
 void registers_irq_handler_ultra(void);
 void registers_irq_handler_ultra_asm(void);

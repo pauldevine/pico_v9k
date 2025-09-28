@@ -41,12 +41,13 @@ add_executable(dma_board dma_board.c )
 pico_set_program_name(dma_board "dma_board")
 pico_set_program_version(dma_board "0.1")
 
-target_sources(dma_board PRIVATE  
-    logging.c 
+target_sources(dma_board PRIVATE
+    logging.c
     sasi.c
     pico_victor/dma.c
     pico_victor/dma_fast.c
     pico_victor/dma_ultra_fast.c
+    pico_victor/debug_queue.c
     pico_fujinet/spi.c)
 
 # default means the target is to run from flash
