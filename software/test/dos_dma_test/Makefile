@@ -1,0 +1,118 @@
+# Makefile for DOS DMA test programs (macOS cross-compilation)
+#
+# Usage: make [target]
+#
+
+# OpenWatcom paths - adjust if needed
+WATCOM_PATH = /Users/pauldevine/projects/open-watcom-v2
+WATCOM_INC = $(WATCOM_PATH)/rel/h
+WATCOM_LIB = $(WATCOM_PATH)/rel/lib286/dos
+
+# Compiler and linker for macOS
+CC = bwcc
+LINK = bwlink
+
+# Compiler flags
+CFLAGS = -bt=dos -ms -0 -os -zq -za99 -d0 -I$(WATCOM_INC)
+CFLAGS_DEBUG = -bt=dos -ms -0 -od -zq -za99 -d2 -I$(WATCOM_INC)
+
+# Linker flags
+LFLAGS = system dos LIBPATH $(WATCOM_LIB)
+
+# Target executables
+TARGETS = dmatest.exe addrtest.exe
+
+# Source and object files
+SOURCES = dmatest.c addrtest.c
+OBJECTS = dmatest.o addrtest.o
+
+# Default target
+.PHONY: all
+all: $(TARGETS)
+
+# Build rules for executables
+dmatest.exe: dmatest.o
+	@echo "Linking $@..."
+	@$(LINK) $(LFLAGS) name $@ file $<
+
+addrtest.exe: addrtest.o
+	@echo "Linking $@..."
+	@$(LINK) $(LFLAGS) name $@ file $<
+
+# Compile rule for C files
+%.o: %.c
+	@echo "Compiling $<..."
+	@$(CC) $(CFLAGS) $<
+
+# Clean build artifacts
+.PHONY: clean
+clean:
+	@echo "Cleaning build artifacts..."
+	@rm -f *.o *.obj *.err *.map *.exe
+	@echo "Clean complete"
+
+# Debug build
+.PHONY: debug
+debug: CFLAGS = $(CFLAGS_DEBUG)
+debug: clean all
+	@echo "Debug build complete"
+
+# Run tests (requires DOS emulator)
+.PHONY: test
+test: all
+	@echo "Test executables built:"
+	@ls -la *.exe
+	@echo ""
+	@echo "To run tests, copy *.exe files to DOS environment or use DOSBox:"
+	@echo "  dosbox -c 'mount c .' -c 'c:' -c 'dmatest.exe'"
+
+# Run address test only
+.PHONY: test-addr
+test-addr: addrtest.exe
+	@echo "Address test built: addrtest.exe"
+	@echo "Copy to DOS environment to run"
+
+# Show help
+.PHONY: help
+help:
+	@echo "DOS DMA Test Programs - macOS Build"
+	@echo ""
+	@echo "Targets:"
+	@echo "  all        - Build all test programs (default)"
+	@echo "  clean      - Remove all build artifacts"
+	@echo "  debug      - Build with debug symbols"
+	@echo "  test       - Build and show run instructions"
+	@echo "  test-addr  - Build address test only"
+	@echo "  help       - Show this help message"
+	@echo ""
+	@echo "Individual programs:"
+	@echo "  dmatest.exe  - Full DMA board test suite"
+	@echo "  addrtest.exe - Address register focused test"
+	@echo ""
+	@echo "Environment:"
+	@echo "  WATCOM_PATH = $(WATCOM_PATH)"
+	@echo "  Compiler    = $(CC)"
+	@echo "  Linker      = $(LINK)"
+
+# Verbose build
+.PHONY: verbose
+verbose:
+	$(MAKE) --no-print-directory VERBOSE=1 all
+
+# Check dependencies
+.PHONY: check
+check:
+	@echo "Checking build environment..."
+	@which $(CC) > /dev/null 2>&1 && echo "✓ Compiler found: $$(which $(CC))" || echo "✗ Compiler not found: $(CC)"
+	@which $(LINK) > /dev/null 2>&1 && echo "✓ Linker found: $$(which $(LINK))" || echo "✗ Linker not found: $(LINK)"
+	@test -d "$(WATCOM_INC)" && echo "✓ Include path exists: $(WATCOM_INC)" || echo "✗ Include path missing: $(WATCOM_INC)"
+	@test -d "$(WATCOM_LIB)" && echo "✓ Library path exists: $(WATCOM_LIB)" || echo "✗ Library path missing: $(WATCOM_LIB)"
+
+# Install to DOS directory (customize the path)
+DOS_DIR = ~/dos_programs
+.PHONY: install
+install: all
+	@mkdir -p $(DOS_DIR)
+	@cp *.exe $(DOS_DIR)/
+	@echo "Installed to $(DOS_DIR):"
+	@ls -la $(DOS_DIR)/*.exe

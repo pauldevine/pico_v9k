@@ -1,0 +1,65 @@
+# Makefile for DMA Test Program
+# OpenWatcom C compiler for DOS
+#
+# Usage: wmake -f makefile.wc
+
+# Compiler and linker
+CC = wcc
+LINK = wlink
+
+# Target executables
+TARGETS = dmatest.exe addrtest.exe
+
+# Object files
+OBJS = dmatest.obj addrtest.obj
+
+# Compiler flags
+# -bt=dos    : Build for DOS target
+# -ms        : Small memory model
+# -0         : 8088/8086 instructions only
+# -os        : Optimize for size
+# -zq        : Quiet mode
+# -d0        : No debug info (change to -d2 for debug)
+CFLAGS = -bt=dos -ms -0 -os -zq -d0
+
+# Linker flags
+LFLAGS = system dos
+
+# Default target
+all: $(TARGETS)
+
+# Build the executables
+dmatest.exe: dmatest.obj
+	$(LINK) $(LFLAGS) name dmatest.exe file dmatest.obj
+
+addrtest.exe: addrtest.obj
+	$(LINK) $(LFLAGS) name addrtest.exe file addrtest.obj
+
+# Compile source files
+.c.obj:
+	$(CC) $(CFLAGS) $<
+
+# Clean build artifacts
+clean:
+	-del *.obj
+	-del *.err
+	-del *.map
+	-del $(TARGET)
+
+# Run the full test program
+run: dmatest.exe
+	dmatest.exe
+
+# Run in interactive mode
+interactive: dmatest.exe
+	dmatest.exe -i
+
+# Run address test
+addr: addrtest.exe
+	addrtest.exe
+
+# Debug build
+debug: CFLAGS = -bt=dos -ms -0 -od -zq -d2
+debug: clean all
+
+.SUFFIXES: .c .obj
