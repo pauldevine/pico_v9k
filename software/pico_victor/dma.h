@@ -152,12 +152,12 @@ typedef enum {
 
 // Control register bits
 typedef enum {
-    DMA_ON_VALUE_BIT = 0x01,  // DMA value bit
+    DMA_ON_VALUE_BIT = 0x20,  // DMA value bit asserted when latch bit set
     DMA_LOCKOUT_BIT  = 0x02,  // DMA lockout
-    DMA_ON_LATCH_BIT = 0x04,  // DMA on latch bit
-    DMA_WR_MODE_BIT  = 0x08,  // Write mode (1=write to memory, 0=read from memory)
-    DMA_SELECT_BIT   = 0x10,  // Target selection
-    DMA_RESET_BIT    = 0x20   // Reset bit
+    DMA_ON_LATCH_BIT = 0x40,  // DMA on latch bit
+    DMA_WR_MODE_BIT  = 0x10,  // Write mode (1=write to memory, 0=read from memory)
+    DMA_SELECT_BIT   = 0x08,  // Target selection
+    DMA_RESET_BIT    = 0x80   // Reset bit
 } dma_control_bits_t;
 
 // SASI bus state bits (for internal state tracking)
