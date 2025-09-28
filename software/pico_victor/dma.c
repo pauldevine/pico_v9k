@@ -10,6 +10,7 @@
 #include "sasi.h"
 #include "logging.h"
 #include "pico_fujinet/spi.h"
+#include "dma_ultra_fast.h"
 
 #define SASI_SECTOR_SIZE 512
 
@@ -118,7 +119,8 @@ void core1_main() {
     printf("FIFO source: %d\n", fifo_sources[register_sm]);
     
     pio_set_irq0_source_enabled(register_pio, fifo_sources[register_sm], true);
-    irq_set_exclusive_handler(PIO1_IRQ_0, registers_irq_handler);
+    // Use ultra-fast ASM optimized handler for <80ns performance
+    irq_set_exclusive_handler(PIO1_IRQ_0, registers_irq_handler_ultra_asm);
     irq_set_enabled(PIO1_IRQ_0, true);
     printf("Core1 started, PIO: %d SM: %d\n", register_pio, register_sm);
     

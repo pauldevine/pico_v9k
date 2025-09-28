@@ -45,6 +45,8 @@ target_sources(dma_board PRIVATE
     logging.c 
     sasi.c
     pico_victor/dma.c
+    pico_victor/dma_fast.c
+    pico_victor/dma_ultra_fast.c
     pico_fujinet/spi.c)
 
 # default means the target is to run from flash
@@ -113,3 +115,30 @@ target_link_libraries(dma_board_tests
 )
 
 pico_add_extra_outputs(dma_board_tests)
+
+# IRQ Handler Benchmark executable
+add_executable(benchmark_irq
+    test/benchmark_irq.c
+    pico_victor/dma.c
+    pico_victor/dma_fast.c
+    pico_victor/dma_ultra_fast.c
+)
+
+pico_set_program_name(benchmark_irq "benchmark_irq")
+pico_set_program_version(benchmark_irq "0.1")
+
+pico_enable_stdio_uart(benchmark_irq 1)
+pico_enable_stdio_usb(benchmark_irq 0)
+
+target_include_directories(benchmark_irq PRIVATE
+    ${CMAKE_CURRENT_LIST_DIR}
+    ${CMAKE_CURRENT_LIST_DIR}/pico_victor
+)
+
+target_link_libraries(benchmark_irq
+    pico_stdlib
+    hardware_pio
+    hardware_dma
+)
+
+pico_add_extra_outputs(benchmark_irq)
