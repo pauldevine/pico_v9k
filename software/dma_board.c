@@ -21,18 +21,17 @@
 extern queue_t log_queue;
 
 void initialize_uart() {
-    // Initialize UART with high priority
+    // Initialize UART for TX only
     gpio_init(UART_TX_PIN);
-    gpio_init(UART_RX_PIN);
-
-    gpio_set_dir(UART_TX_PIN, GPIO_OUT);
-    gpio_set_dir(UART_RX_PIN, GPIO_IN);
-    stdio_uart_init_full(UART_ID, BAUD_RATE, UART_TX_PIN, UART_RX_PIN);
+    gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
+    
+    // Initialize UART hardware
+    uart_init(UART_ID, BAUD_RATE);
     uart_set_fifo_enabled(UART_ID, false);
+    stdio_uart_init_full(UART_ID, BAUD_RATE, UART_TX_PIN, -1);
 
     return;
 }
-
 
 int main() {
 
@@ -55,6 +54,11 @@ int main() {
 
     // Initialize SPI bus for FujiNet storage
     spi_bus_init();
+
+    // Repurpose RX pin as output for logic analyzer trigger
+    gpio_init(UART_RX_PIN);  // or whatever pin you want
+    gpio_set_dir(UART_RX_PIN, GPIO_OUT);  // for logic analyzer flag
+    gpio_put(UART_RX_PIN, 0); // start low
     
     //configure the register PIO, used to read/write the DMA registers for controlling the DMA card behavior
     PIO register_pio = PIO_REGISTERS;

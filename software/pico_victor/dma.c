@@ -333,7 +333,7 @@ uint8_t dma_read_register(dma_registers_t *dma, dma_reg_offsets_t offset) {
                    ((dma->bus_ctrl & SASI_REQ_BIT) ? SASI_REQ_BIT : 0) |
                    ((dma->bus_ctrl & SASI_MSG_BIT) ? SASI_MSG_BIT : 0);
 
-            printf("returning 0x%02x (BSY:%d REQ:%d CTL:%d INP:%d MSG:%d)\n", 
+            fast_log("returning 0x%02x (BSY:%d REQ:%d CTL:%d INP:%d MSG:%d)\n", 
                    data, 
                    !!(dma->bus_ctrl & SASI_BSY_BIT),
                    !!(dma->bus_ctrl & SASI_REQ_BIT), 
@@ -366,6 +366,7 @@ uint8_t dma_read_register(dma_registers_t *dma, dma_reg_offsets_t offset) {
 }
 
  void __time_critical_func(registers_irq_handler)() {
+    gpio_put(DEBUG_PIN, 1);
     // Handle IRQ for register PIO
     static int irq_count = 0;
     irq_count++;
@@ -393,12 +394,12 @@ uint8_t dma_read_register(dma_registers_t *dma, dma_reg_offsets_t offset) {
     
     // Additional debug for status register attempts
     if (offset == 0x20 || offset == 0x30) {
-        printf("STATUS REGISTER ACCESS: offset=0x%02x read=%d\n", offset, read_flag);
+        fast_log("STATUS REGISTER ACCESS: offset=0x%02x read=%d\n", offset, read_flag);
     }
     
     dma_registers_t *my_register = dma_get_registers();
     if (!my_register) {
-        printf("Failed to get DMA registers\n");
+        fast_log("Failed to get DMA registers\n");
         return;
     }
     
@@ -431,7 +432,7 @@ uint8_t dma_read_register(dma_registers_t *dma, dma_reg_offsets_t offset) {
         cycles_used = start_cycles + (0x00FFFFFF - end_cycles);
     }
     //fast_log("cycles: %lu (%.1f ns)\n", cycles_used, cycles_used * 5.0);
-
+    gpio_put(DEBUG_PIN, 0);
 
 }
 

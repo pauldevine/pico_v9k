@@ -42,6 +42,7 @@
 #define DLATCH_PIN 37
 #define CSEN_PIN 38
 #define PHASE_2_PIN 39
+#define DEBUG_PIN 45
 
 #define ADDRESS_DIR_PINCNT 2
 #define DMA_READ 1
