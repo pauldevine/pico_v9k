@@ -124,6 +124,8 @@ add_executable(benchmark_irq
     pico_victor/dma_ultra_fast.c
 )
 
+target_compile_definitions(benchmark_irq PRIVATE BENCHMARK_MODE=1)
+
 pico_set_program_name(benchmark_irq "benchmark_irq")
 pico_set_program_version(benchmark_irq "0.1")
 

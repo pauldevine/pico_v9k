@@ -54,11 +54,10 @@ static test_case_t test_cases[] = {
 static uint32_t simulated_fifo_value;
 static uint32_t simulated_tx_value;
 
-// Mock PIO functions for testing (avoiding conflict with SDK)
+// Mock PIO functions for benchmark mode using macros
+// This avoids redefinition errors with SDK functions
 #define pio_sm_get(pio, sm) (simulated_fifo_value)
-#define pio_sm_put_blocking(pio, sm, data) do { simulated_tx_value = (data); } while(0)
 #define pio_sm_get_tx_fifo_level(pio, sm) (4)
-#define gpio_put(gpio, value) do { } while(0)
 
 // Stub functions for external dependencies
 void fast_log(const char *msg) {
@@ -137,6 +136,7 @@ int main() {
         printf("Failed to initialize DMA registers\n");
         return -1;
     }
+
     
     // Run benchmarks for each test case
     for (size_t i = 0; i < sizeof(test_cases)/sizeof(test_cases[0]); i++) {

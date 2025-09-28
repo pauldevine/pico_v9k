@@ -16,6 +16,22 @@
 #include "sasi.h"
 #include "logging.h"
 
+// Define DEBUG_PIN if not already defined
+#ifndef DEBUG_PIN
+#define DEBUG_PIN 45  // Using UART_RX_PIN as debug output
+#endif
+
+// For pins > 31, we need to use different registers
+#if DEBUG_PIN >= 32
+#define DEBUG_PIN_MASK (1u << (DEBUG_PIN - 32))
+#define SIO_GPIO_OUT_SET_REG (SIO_BASE + SIO_GPIO_HI_OUT_SET_OFFSET)
+#define SIO_GPIO_OUT_CLR_REG (SIO_BASE + SIO_GPIO_HI_OUT_CLR_OFFSET)
+#else
+#define DEBUG_PIN_MASK (1u << DEBUG_PIN)
+#define SIO_GPIO_OUT_SET_REG (SIO_BASE + SIO_GPIO_OUT_SET_OFFSET)
+#define SIO_GPIO_OUT_CLR_REG (SIO_BASE + SIO_GPIO_OUT_CLR_OFFSET)
+#endif
+
 // Direct memory mapping for simple registers (0x80-0xFF are address registers)
 // Aligned to cache line for optimal performance
 static uint8_t register_memory[256] __attribute__((aligned(64)));
@@ -239,7 +255,9 @@ void __time_critical_func(registers_irq_handler_ultra)() {
     // Send data back to 8088 if this was a read
     if (read_flag) {
         uint32_t pindirs_and_data = (0xFF << 8) | data;
+        #ifndef BENCHMARK_MODE
         pio_sm_put_blocking(PIO_REGISTERS, REGISTERS_SM, pindirs_and_data);
+        #endif
     }
     
     gpio_put(DEBUG_PIN, 0);
@@ -250,26 +268,26 @@ void __time_critical_func(registers_irq_handler_ultra_asm)() {
     register uint32_t raw_value asm("r4");
     register uint32_t offset asm("r5");
     register uint32_t data asm("r6");
-    
+
     // Set debug pin high
-    *(volatile uint32_t *)(SIO_BASE + SIO_GPIO_OUT_SET_OFFSET) = (1u << DEBUG_PIN);
-    
+    *(volatile uint32_t *)SIO_GPIO_OUT_SET_REG = DEBUG_PIN_MASK;
+
     // Get value from PIO FIFO
     raw_value = pio_sm_get(PIO_REGISTERS, REGISTERS_SM);
-    
+
     // Extract offset
     offset = (raw_value & 0xFFFFF) - DMA_REGISTER_BASE;
-    
+
     // Bounds check
     if (offset >= 0x100) {
-        *(volatile uint32_t *)(SIO_BASE + SIO_GPIO_OUT_CLR_OFFSET) = (1u << DEBUG_PIN);
+        *(volatile uint32_t *)SIO_GPIO_OUT_CLR_REG = DEBUG_PIN_MASK;
         return;
     }
-    
+
     // Get DMA registers
     dma_registers_t *dma = dma_get_registers();
     if (!dma) {
-        *(volatile uint32_t *)(SIO_BASE + SIO_GPIO_OUT_CLR_OFFSET) = (1u << DEBUG_PIN);
+        *(volatile uint32_t *)SIO_GPIO_OUT_CLR_REG = DEBUG_PIN_MASK;
         return;
     }
     
@@ -296,7 +314,9 @@ void __time_critical_func(registers_irq_handler_ultra_asm)() {
         }
         
         // Send data back
+        #ifndef BENCHMARK_MODE
         pio_sm_put_blocking(PIO_REGISTERS, REGISTERS_SM, (0xFF00 | data));
+        #endif
     } else {
         // Write path
         data = (raw_value >> 20) & 0xFF;
@@ -320,5 +340,5 @@ void __time_critical_func(registers_irq_handler_ultra_asm)() {
     }
     
     // Clear debug pin
-    *(volatile uint32_t *)(SIO_BASE + SIO_GPIO_OUT_CLR_OFFSET) = (1u << DEBUG_PIN);
+    *(volatile uint32_t *)SIO_GPIO_OUT_CLR_REG = DEBUG_PIN_MASK;
 }

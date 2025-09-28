@@ -268,7 +268,9 @@ void __time_critical_func(registers_irq_handler_fast)() {
         
         // Send data back to 8088
         uint32_t pindirs_and_data = (0xFF << 8) | (data & 0xFF);
+        #ifndef BENCHMARK_MODE
         pio_sm_put_blocking(PIO_REGISTERS, REGISTERS_SM, pindirs_and_data);
+        #endif
     } else {
         // For writes, use direct pointer for simple registers
         if (handler->direct_ptr && offset >= 0x80) {

@@ -414,7 +414,9 @@ uint8_t dma_read_register(dma_registers_t *dma, dma_reg_offsets_t offset) {
         uint tx_level = pio_sm_get_tx_fifo_level(pio, sm);
         fast_log("[IRQ#%d] TX FIFO level before put: %d\n", irq_count, tx_level);
         
+        #ifndef BENCHMARK_MODE
         pio_sm_put_blocking(pio, sm, pindirs_and_data); //send the data back to the 8088
+        #endif
         fast_log("[IRQ#%d] Read complete - sent 0x%02x to 8088\n", irq_count, data);
         
         // Force a small delay to ensure data is stable
