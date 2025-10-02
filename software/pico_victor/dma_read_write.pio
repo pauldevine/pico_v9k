@@ -14,7 +14,7 @@
 .define DATA_SIZE 8
 
 .program dma_read_write
-.side_set 4 opt ; 
+.side_set 1 opt ; 
 
 ; side-set GPIO Pin Mapping:
 ; Bit 0 -> HOLD/  (GPIO 24)
@@ -42,40 +42,36 @@ mov y, osr          ; Store pindirs for RD cycle in Y
 T0:                                ; Address Setup Phase (Put Address on Bus)
     pull block                     ; Get 20 address bits and if WR 8 data bits from FIFO
     out pins, ADDRESS_BUS_SIZE     ; set bus control pins to T0 state
-    set pindirs, 0b11111           ; set HOLD pin direction to output FIRST
-    set pins, 0b00111 side 0b0100  ; NOW set initial control pin state with HOLD=0 via side-set
+    set pindirs, 0b10000           ; set HOLD pin direction to output FIRST
+    set pins, 0b00111              ; NOW set initial control pin state with HOLD=0 via side-set
     wait 1 GPIO HLDA_PIN           ; wait for HLDA to go high
 T1:
     mov pindirs, ~null             ; Set all address pins' direction to output
-    set pins, 0b01111 side 0b1110  ; Set control pins to T1 state / ALE high
+    set pins, 0b01111 side 0b1     ; Set control pins to T1 state / DEN high
     wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
     wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go low
 T2:
-    jmp !x T2_WRITE side 0b0110     ; If write, jump to T2_WRITE, Pull ALE Low 
-    set pins, 0b00010 side 0b0010   ; else set pins for RD control state
+    jmp !x T2_WRITE                 ; If write, jump to T2_WRITE 
+    set pins, 0b00110 side 0b0      ; else set pins for RD control state / DEN low
     mov pindirs, y                  ; set BD0-BD7 to input for RD cycle
 T2_CONTINUE:
     wait 1 GPIO READY_PIN          ; Wait for READY to go high
 T3:
     wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high, 
-    
-    jmp !x T4 side 0b0011          ; pull HOLD high, skip in pins if write
+    jmp !x T4                      ; skip in pins if write
     in pins, DATA_SIZE             ; RD case, read data from bus
 T4:
+    set pins, 0b10111              ; Set control pins to T4 state, release HOLD and RD/WR
     wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go low
-    wait 1 GPIO CLOCK_15B_PIN        ; Wait for CLK15 to go high
-    set pins, 0b11111 side 0b0011  ; Set control pins to T4 state
+    wait 1 GPIO CLOCK_15B_PIN      ; Wait for CLK15 to go high
     wait 0 GPIO HLDA_PIN           ; wait for HLDA to go low
     
-    wait 0 GPIO CLOCK_5_PIN side 0b0111        ; Wait for CLK5 to go low
-    set pins, 0b11111 side 0b0111  ; Set control pins to T4 state
-    mov pindirs, NULL              ; Tri-state all address outputs (Release Bus)
-    set pins, 0b10111
-    set pindirs, 0b01000 side 0b0101 ; drive only the SN74LVC direction pins
+    wait 0 GPIO CLOCK_5_PIN side 0b1 ; Wait for CLK5 to go low / release DEN before wait
+    mov pindirs, NULL                ; Tri-state all address outputs (Release Bus)
 .wrap
 
 T2_WRITE:
-    set pins, 0b01101 side 0b0010  ; put data on bus for WR control state
+    set pins, 0b00101 side 0b0     ; put data on bus for WR control state / DEN low
     out pins, ADDRESS_BUS_SIZE     ; set data pins to output    
     jmp T2_CONTINUE                
 
@@ -92,15 +88,14 @@ static inline void dma_read_write_program_init(PIO pio, uint sm, uint offset, ui
     pio_sm_config c = dma_read_write_program_get_default_config(offset);
 
     sm_config_set_out_pins(&c, pin, ADDRESS_BUS_SIZE);
-    sm_config_set_in_pins(&c, BD0_PIN);
-    sm_config_set_in_pin_count(&c, DATA_SIZE);
     sm_config_set_set_pins(&c, RD_PIN, 5);
-    sm_config_set_sideset(&c, 5, true, false);
-    sm_config_set_sideset_pin_base(&c, HOLD_PIN);
-   
+    sm_config_set_sideset(&c, 2, true, false);
+    sm_config_set_sideset_pin_base(&c, DEN_PIN);
 
     //Shift Register configuration settings
     if (read) {
+        sm_config_set_in_pins(&c, BD0_PIN);
+        sm_config_set_in_pin_count(&c, DATA_SIZE);
         sm_config_set_out_shift(&c, true, false, ADDRESS_BUS_SIZE);
         sm_config_set_in_shift(&c, false, true, DATA_SIZE);
     } else {
@@ -108,7 +103,6 @@ static inline void dma_read_write_program_init(PIO pio, uint sm, uint offset, ui
     }
     
     pio_sm_clear_fifos(pio, sm);
-   
     pio_sm_set_clkdiv(pio, sm, 2.0f);
 
     // Init ALL pins for PIO (required for wait instructions to work)
@@ -120,13 +114,6 @@ static inline void dma_read_write_program_init(PIO pio, uint sm, uint offset, ui
 
     // Set all pins as inputs initially
     pio_sm_set_consecutive_pindirs(pio, sm, pin, PIN_RANGE, false);
-
-    //set the pins that are behind the BUS_CNTRL_DIR to be output as they're safe to always be output
-    pio_sm_set_pins_with_mask(pio, sm, DIR_8088_TO_PICO << LOW_ADDR_DIR, 1u << LOW_ADDR_DIR);
-    pio_sm_set_pins_with_mask(pio, sm, DIR_8088_TO_PICO << BUS_CNTRL_DIR, 1u << BUS_CNTRL_DIR);
-
-    pio_sm_set_consecutive_pindirs(pio, sm, RD_PIN, DATA_SIZE, false);
-    pio_sm_set_consecutive_pindirs(pio, sm, HOLD_PIN, 1, false);   //set HOLD pin back to input, only one above should be initialized as input
 
     // Load our configuration, and jump to the start of the program
     pio_sm_init(pio, sm, offset, &c);
