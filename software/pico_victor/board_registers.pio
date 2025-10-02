@@ -31,6 +31,7 @@ T1:
     in null, 20                        ; move the address into the lower 12 bits of the register, dropping 8 LSB to compare against 12 MSB
     mov x, isr                         ; X = 12 MSB address bits
     jmp x!=y, T0                       ; if we're not at 0xEF300, restart T0 to try again
+    mov isr, null                      ; CRITICAL FIX: Clear ISR before reading address again
     in pins, ADDRESS_BUS_SIZE          ; gather full address to send to arm
 
 T2:

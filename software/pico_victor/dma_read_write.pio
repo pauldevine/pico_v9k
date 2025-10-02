@@ -41,9 +41,9 @@ mov y, osr          ; Store pindirs for RD cycle in Y
 .wrap_target
 T0:                                ; Address Setup Phase (Put Address on Bus)
     pull block                     ; Get 20 address bits and if WR 8 data bits from FIFO
-    out pins, ADDRESS_BUS_SIZE     ; set bus control pins to T0 state 
-    set pins, 0b00111 side 0b0100  ; set initial control pin state
-    set pindirs, 0b11111           ; set HOLD pin direction to output low requesting bus
+    out pins, ADDRESS_BUS_SIZE     ; set bus control pins to T0 state
+    set pindirs, 0b11111           ; set HOLD pin direction to output FIRST
+    set pins, 0b00111 side 0b0100  ; NOW set initial control pin state with HOLD=0 via side-set
     wait 1 GPIO HLDA_PIN           ; wait for HLDA to go high
 T1:
     mov pindirs, ~null             ; Set all address pins' direction to output
@@ -111,13 +111,14 @@ static inline void dma_read_write_program_init(PIO pio, uint sm, uint offset, ui
    
     pio_sm_set_clkdiv(pio, sm, 2.0f);
 
-    // init all the pins i'll be using
+    // Init ALL pins for PIO (required for wait instructions to work)
     for (int i = pin; i < PIN_RANGE; i++) {
         pio_gpio_init(pio, i);
         gpio_set_drive_strength(i, GPIO_DRIVE_STRENGTH_12MA);
         printf("dma_read pio_gpio_init %d\n", i);
     }
 
+    // Set all pins as inputs initially
     pio_sm_set_consecutive_pindirs(pio, sm, pin, PIN_RANGE, false);
 
     //set the pins that are behind the BUS_CNTRL_DIR to be output as they're safe to always be output

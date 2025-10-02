@@ -236,7 +236,7 @@ void __time_critical_func(registers_irq_handler_ultra)() {
     uint32_t raw_value = pio_sm_get(PIO_REGISTERS, REGISTERS_SM);
 
     // Push to debug queue - optimized for minimal overhead when disabled
-    debug_queue_push_fast(raw_value);
+    // debug_queue_push_fast(raw_value);
     
     // Extract fields using bit operations
     uint32_t address = raw_value & 0xFFFFF;
@@ -332,10 +332,16 @@ void __time_critical_func(registers_irq_handler_ultra_asm)() {
     raw_value = pio_sm_get(PIO_REGISTERS, REGISTERS_SM);
 
     // Push to debug queue - optimized for minimal overhead when disabled
-    debug_queue_push_fast(raw_value);
+    // debug_queue_push_fast(raw_value);
 
     // Extract offset
     offset = (raw_value & 0xFFFFF) - DMA_REGISTER_BASE;
+
+    // Log only address register accesses to debug the issue
+    if (offset == 0x80 || offset == 0xA0 || offset == 0xC0) {
+        fast_log("ADDR_REG: raw=0x%08x, offset=0x%02x, read=%d\n",
+                 raw_value, offset, (raw_value & 0x10000000) ? 1 : 0);
+    }
 
     // Bounds check
     if (offset >= 0x100) {
@@ -359,10 +365,13 @@ void __time_critical_func(registers_irq_handler_ultra_asm)() {
 
             if (offset == 0x80) {
                 data = dma->dma_address.bytes.low;
+                fast_log("READ 0x80: returning 0x%02x\n", data);
             } else if (offset == 0xA0) {
                 data = dma->dma_address.bytes.mid;
+                fast_log("READ 0xA0: returning 0x%02x\n", data);
             } else if (offset == 0xC0) {
                 data = dma->dma_address.bytes.high & 0x0F;
+                fast_log("READ 0xC0: returning 0x%02x\n", data);
             } else {
                 data = 0xFF;
             }
@@ -374,7 +383,8 @@ void __time_critical_func(registers_irq_handler_ultra_asm)() {
         
         // Send data back
         #ifndef BENCHMARK_MODE
-        pio_sm_put_blocking(PIO_REGISTERS, REGISTERS_SM, (0xFF00 | (uint32_t)data));
+        uint32_t response = (0xFF00 | (uint32_t)data);
+        pio_sm_put_blocking(PIO_REGISTERS, REGISTERS_SM, response);
         #endif
     } else {
         // Write path
@@ -386,10 +396,13 @@ void __time_critical_func(registers_irq_handler_ultra_asm)() {
 
             if (offset == 0x80) {
                 dma->dma_address.bytes.low = data;
+                fast_log("WRITE 0x80: data=0x%02x stored\n", data);
             } else if (offset == 0xA0) {
                 dma->dma_address.bytes.mid = data;
+                fast_log("WRITE 0xA0: data=0x%02x stored\n", data);
             } else if (offset == 0xC0) {
                 dma->dma_address.bytes.high = data & 0x0F;
+                fast_log("WRITE 0xC0: data=0x%02x stored\n", data & 0x0F);
             }
         } else {
             // Complex register write
