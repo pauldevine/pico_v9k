@@ -145,3 +145,7 @@ target_link_libraries(benchmark_irq
 )
 
 pico_add_extra_outputs(benchmark_irq)
+
+add_subdirectory(test)
+
+

@@ -152,12 +152,28 @@ Working on performance optimizations for DMA register handling and implementing 
 - **Register access patterns**: Documented and tested Victor 9000 register access sequences
 - **Performance metrics**: Established baseline measurements for IRQ response times
 
-### Current Work in Progress
-- Debugging ultra-fast DMA implementation for consistent sub-microsecond response times
-- Optimizing PIO state machine interactions
-- Reducing interrupt latency for register access handlers
-- Testing with actual Victor 9000 hardware
+### Current Work in Progress (as of 2025-09-30)
+- **Debugging DMA hardware layer**: Created comprehensive test programs to validate `dma_read_write.pio` independently from `board_registers.pio`
+- **Hardware validation**: Testing revealed issues with DMA write operations not reaching Victor RAM
+- Investigating bus arbitration (HOLD/HLDA) and timing issues
+- Testing with actual Victor 9000 hardware using diagnostic tools
+
+### Test Infrastructure
+- **test_dma_hardware**: Validates DMA read/write operations with 100-byte test patterns
+- **test_dma_diagnostic**: Comprehensive hardware diagnostic that checks:
+  - Bus signal verification (HOLD/HLDA handshaking)
+  - Clock signals (CLK5, CLK15B)
+  - GPIO pin states for all data/address/control lines
+  - 74LVC245 direction control functionality
+  - PIO state machine progression and error states
 
 ### Known Issues
-- Ultra-fast implementation still being debugged for edge cases
-- Need to verify timing compatibility with original SASI hardware specifications
+- **DMA Write Failure**: Writes to Victor RAM are not completing successfully
+  - Data written doesn't appear in Victor memory when checked via debugger
+  - Read operations return sequential data (00,01,02,03...) instead of test pattern
+  - PIO state machines appear stuck at PC=0x4 (`.wrap_target` location)
+- **Possible root causes under investigation**:
+  - Bus arbitration not working (HOLD/HLDA signaling)
+  - Clock timing issues
+  - 74LVC245 direction control problems
+  - PIO state machine initialization issues
