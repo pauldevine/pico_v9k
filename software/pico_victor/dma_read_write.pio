@@ -17,17 +17,13 @@
 .side_set 1 opt ; 
 
 ; side-set GPIO Pin Mapping:
-; Bit 0 -> HOLD/  (GPIO 24)
-; Bit 1 -> DEN/  (GPIO 25)
-; Bit 2 -> DT/R/  (GPIO 26)
-; Bit 3 -> ALE  (GPIO 27)
-; Bit 4 -> Optional flag
+; Bit 0 -> DEN/  (GPIO 25)
 
 ; Set pins
 ; Bit 0 -> RD/ (GPIO 20)
 ; Bit 1 -> WR/ (GPIO 21)
-; Bit 2 -> Low Address (GPIO 22)
-; Bit 3 -> Bus Direction (GPIO 23)
+; Bit 2 -> DT/R/ (GPIO 22)
+; Bit 3 -> ALE  (GPIO 23)
 ; Bit 4 -> HOLD/ (GPIO 24)
 
 ; --- Pre-amble ---
@@ -72,7 +68,7 @@ T4:
 
 T2_WRITE:
     set pins, 0b00101 side 0b0     ; put data on bus for WR control state / DEN low
-    out pins, ADDRESS_BUS_SIZE     ; set data pins to output    
+    out pins, ADDRESS_BUS_SIZE     ; ouput A0-A7 with data value, A8-A19 with MSB of address which needs to remain stable 
     jmp T2_CONTINUE                
 
 % c-sdk {
@@ -103,7 +99,7 @@ static inline void dma_read_write_program_init(PIO pio, uint sm, uint offset, ui
     }
     
     pio_sm_clear_fifos(pio, sm);
-    pio_sm_set_clkdiv(pio, sm, 2.0f);
+    pio_sm_set_clkdiv(pio, sm, 1.0f);
 
     // Init ALL pins for PIO (required for wait instructions to work)
     for (int i = pin; i < PIN_RANGE; i++) {
