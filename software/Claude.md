@@ -83,7 +83,9 @@ The main test runs in `test/register_test.c` and:
 - Timing is critical - uses cycle-accurate measurements with SysTick
 - The code includes Victor 9000-specific memory addressing and SCSI/SASI protocol handling
 - Register access patterns follow MAME emulator implementation for compatibility
-- Pins LOW_ADDR_DIR and BUS_CNTRL_DIR control 74LVC245s that are connected to the 8088 bus. The LOW_ADDR_DIR connects the 8088 A0-A7 on ports B to the pico corresponding pins on port A. The BUS_CNTRL_DIR controls 8088 A8-A19 and the DMA related bus arbitration pins like ALE, RD, WR. The HOLD pin is outside this control mechanism to allow it to be toggled while these other pins are in read mode. The 74LVC245s are always enabled, and I set the direction of the bus with the direction pins as DIR_8088_TO_PICO or DIR_PICO_TO_8088. These two bus control pins should be actively driven low or high at all times such that the direction doesn't float, as the 74LVC245s are always enabled. While in the DIR_8088_TO_PICO mode the assumption is the high impedenace read mode essentially leaves the 8088 untouched electrically.
+- **Direct GPIO connection**: The RP2350 is 5V tolerant, allowing direct connection to the 8088 bus without level shifters
+- The 8088 uses a multiplexed address/data bus where AD0-AD7 carry address bits during T1 (when ALE is high) and data during T2-T3
+- Pin direction management is handled directly through PIO `pindirs` instructions without external buffer control
 
 ## Vintage Hardware Documentation
 
@@ -125,8 +127,8 @@ The main test runs in `test/register_test.c` and:
 
 ## Recent Development Status
 
-### Current Branch: `pico_fast_sitaution`
-Working on performance optimizations for DMA register handling and implementing ultra-fast IRQ response times.
+### Current Branch: `pico_rewire_oct_25`
+Hardware redesign to remove 74LVC245 level shifters and connect RP2350 directly to 8088 bus.
 
 ### Latest Changes (as of 2025-09-28)
 
@@ -164,8 +166,19 @@ Working on performance optimizations for DMA register handling and implementing 
   - Bus signal verification (HOLD/HLDA handshaking)
   - Clock signals (CLK5, CLK15B)
   - GPIO pin states for all data/address/control lines
-  - 74LVC245 direction control functionality
+  - Direct GPIO pin direction management
   - PIO state machine progression and error states
+
+### Latest Hardware Changes (as of 2025-10-25)
+
+#### 74LVC245 Buffer Removal
+- **Hardware simplification**: Removed all 74LVC245 bidirectional buffers from the design
+- **RP2350 5V tolerance**: Leveraging the RP2350's certified 5V-tolerant GPIO for direct 8088 bus connection
+- **PIO code updates**: Modified both `dma_read_write.pio` and `board_registers.pio` to remove buffer control logic:
+  - Removed `.side_set` directives that controlled buffer direction pins
+  - Eliminated all references to LOW_ADDR_DIR and BUS_CNTRL_DIR pins
+  - Simplified pin direction management using only PIO `pindirs` instructions
+- **Code review completed**: Both PIO programs verified to correctly handle 8088 bus protocol without buffers
 
 ### Known Issues
 - **DMA Write Failure**: Writes to Victor RAM are not completing successfully
@@ -175,5 +188,5 @@ Working on performance optimizations for DMA register handling and implementing 
 - **Possible root causes under investigation**:
   - Bus arbitration not working (HOLD/HLDA signaling)
   - Clock timing issues
-  - 74LVC245 direction control problems
+  - Direct GPIO drive strength or signal integrity issues
   - PIO state machine initialization issues

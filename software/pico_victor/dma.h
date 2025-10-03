@@ -25,24 +25,24 @@
 #define RD_PIN 20
 #define WR_PIN 21
 #define DTR_PIN 22       
-#define LOW_ADDR_DIR 23    // LOW ADDRESS direction pin   
+#define ALE_PIN 23    // LOW ADDRESS direction pin   
 #define HOLD_PIN 24
-#define BUS_CNTRL_DIR 25   // BUS CONTROL signals direction pins
-#define DEN_PIN 26 
-#define ALE_PIN 27
-#define Ready_PIN 28
-#define HLDA_PIN 29
-#define CLOCK_5_PIN 30
-#define CLOCK_15B_PIN 31
+#define DEN_PIN 25   // BUS CONTROL signals direction pins
+#define IO_M_PIN 26
+#define Ready_PIN 27
+#define HLDA_PIN 28
+#define CLOCK_5_PIN 29
+#define CLOCK_15B_PIN 30
+#define IR_4_PIN 31
 #define XACK_PIN 32
 #define EXTIO_PIN 33
-#define IR_4_PIN 34
-#define IOM_PIN 35
-#define SSO_PIN 36
-#define DLATCH_PIN 37
-#define CSEN_PIN 38
-#define PHASE_2_PIN 39
-#define DEBUG_PIN 45
+#define IR_5_PIN 34
+#define SSO_PIN 35
+#define DLATCH_PIN 36
+#define CSEN_PIN 37
+#define PHASE_2_PIN 38
+
+#define DEBUG_PIN 44
 
 #define ADDRESS_DIR_PINCNT 2
 #define DMA_READ 1
