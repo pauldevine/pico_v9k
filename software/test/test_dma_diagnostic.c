@@ -67,8 +67,6 @@ void print_gpio_states() {
     printf("  READY (pin %d) = %d\n", Ready_PIN, gpio_get(Ready_PIN));
     printf("  CLOCK_5 (pin %d) = %d\n", CLOCK_5_PIN, gpio_get(CLOCK_5_PIN));
     printf("  CLOCK_15B (pin %d) = %d\n", CLOCK_15B_PIN, gpio_get(CLOCK_15B_PIN));
-    printf("  LOW_ADDR_DIR (pin %d) = %d\n", LOW_ADDR_DIR, gpio_get(LOW_ADDR_DIR));
-    printf("  BUS_CNTRL_DIR (pin %d) = %d\n", BUS_CNTRL_DIR, gpio_get(BUS_CNTRL_DIR));
 }
 
 void check_bus_signals() {
@@ -184,38 +182,6 @@ void signal_simulator_init();
 void signal_simulator_stop();
 void signal_simulator_test();
 
-void initialize_bus_direction() {
-    printf("\n=== Initializing Bus Direction ===\n");
-
-    // Initialize direction control pins
-    gpio_init(LOW_ADDR_DIR);
-    gpio_init(BUS_CNTRL_DIR);
-
-    // Set as outputs
-    gpio_set_dir(LOW_ADDR_DIR, GPIO_OUT);
-    gpio_set_dir(BUS_CNTRL_DIR, GPIO_OUT);
-
-    // Set initial direction to 8088->Pico (read mode)
-    gpio_put(LOW_ADDR_DIR, DIR_8088_TO_PICO);
-    gpio_put(BUS_CNTRL_DIR, DIR_8088_TO_PICO);
-
-    printf("Bus direction pins set to 8088->Pico mode\n");
-
-    // Try toggling to check they work
-    printf("Testing direction pin toggle...\n");
-    gpio_put(LOW_ADDR_DIR, DIR_PICO_TO_8088);
-    gpio_put(BUS_CNTRL_DIR, DIR_PICO_TO_8088);
-    sleep_ms(1);
-    printf("  After toggle to Pico->8088: LOW_ADDR=%d, BUS_CNTRL=%d\n",
-           gpio_get(LOW_ADDR_DIR), gpio_get(BUS_CNTRL_DIR));
-
-    gpio_put(LOW_ADDR_DIR, DIR_8088_TO_PICO);
-    gpio_put(BUS_CNTRL_DIR, DIR_8088_TO_PICO);
-    sleep_ms(1);
-    printf("  After toggle back to 8088->Pico: LOW_ADDR=%d, BUS_CNTRL=%d\n",
-           gpio_get(LOW_ADDR_DIR), gpio_get(BUS_CNTRL_DIR));
-}
-
 int main() {
     stdio_init_all();
     set_sys_clock_khz(200000, true);
@@ -226,9 +192,6 @@ int main() {
 
     // Sleep briefly to ensure serial output is visible
     sleep_ms(2000);
-
-    // Initialize bus direction control
-    initialize_bus_direction();
 
     // Toggle HOLD pin like in hello.c to wake up DMA arbitration
     printf("\n=== Toggling HOLD Pin ===\n");
