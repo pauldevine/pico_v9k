@@ -39,24 +39,8 @@ void initialize_uart() {
     stdio_uart_init_full(UART_ID, BAUD_RATE, UART_TX_PIN, -1);
 }
 
-// Initialize the 74LVC245 direction control pins
-void initialize_bus_direction() {
-    // Initialize direction control pins
-    gpio_init(LOW_ADDR_DIR);
-    gpio_init(BUS_CNTRL_DIR);
-
-    // Set as outputs
-    gpio_set_dir(LOW_ADDR_DIR, GPIO_OUT);
-    gpio_set_dir(BUS_CNTRL_DIR, GPIO_OUT);
-
-    // Set initial direction to 8088->Pico (read mode)
-    gpio_put(LOW_ADDR_DIR, DIR_8088_TO_PICO);
-    gpio_put(BUS_CNTRL_DIR, DIR_8088_TO_PICO);
-
-    printf("Bus direction pins initialized:\n");
-    printf("  LOW_ADDR_DIR (pin %d) = %d\n", LOW_ADDR_DIR, gpio_get(LOW_ADDR_DIR));
-    printf("  BUS_CNTRL_DIR (pin %d) = %d\n", BUS_CNTRL_DIR, gpio_get(BUS_CNTRL_DIR));
-}
+// Bus direction control removed - RP2350 directly connects to 8088 bus
+// Pin directions are now handled by PIO pindirs instructions
 
 // Generate test pattern
 void generate_test_pattern(uint8_t *buffer, size_t size) {
@@ -107,9 +91,6 @@ int main() {
 
     // Sleep briefly to ensure serial output is visible
     sleep_ms(2000);
-
-    // Initialize bus direction control
-    initialize_bus_direction();
 
     // Launch stub core1 (not doing register handling for this test)
     multicore_launch_core1(core1_test_stub);

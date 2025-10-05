@@ -169,6 +169,17 @@ Hardware redesign to remove 74LVC245 level shifters and connect RP2350 directly 
   - Direct GPIO pin direction management
   - PIO state machine progression and error states
 
+### PIO GPIO Initialization Requirements
+
+#### Critical distinction for PIO pin initialization:
+- **Output pins** (address bus, data bus during writes, control outputs): Use `pio_gpio_init()` which sets both the GPIO function multiplexer AND enables PIO control of pin direction
+- **Input-only pins** (clocks, READY, HLDA, etc.): Use `gpio_set_function(pin, GPIO_FUNC_PIO0)` to route the pin to PIO without giving PIO control over pin direction
+- **Why this matters**: The PIO `wait` instruction requires the GPIO to be routed to the PIO peripheral via the function multiplexer, even for input-only operations. The SDK documentation is misleading when it says initialization isn't needed for inputs - it's only not needed if the pin was already initialized elsewhere.
+- **Symptoms of incorrect initialization**:
+  - `wait` instructions hang forever if pins aren't routed to PIO
+  - `mov pindirs, ~null` affects ALL pins initialized with `pio_gpio_init()`, not just OUT pins
+  - Using `pio_gpio_init()` on input-only pins can cause them to briefly glitch to output mode during `pindirs` operations
+
 ### Latest Hardware Changes (as of 2025-10-25)
 
 #### 74LVC245 Buffer Removal

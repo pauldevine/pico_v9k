@@ -55,6 +55,7 @@ int main() {
     uint32_t seconds = 5;
     uint32_t timeout = seconds * millis_per_second;
 
+    printf("\n=== DMA Board Initialization ===\n");
     printf("Sleeping for %d seconds\n", seconds);
     //sleep_ms(timeout);
     printf("Awake!\n");
@@ -87,8 +88,7 @@ int main() {
     systick_hw->rvr = 0x00FFFFFF; // Max reload value (24-bit)
 
     printf("back to main loop\n");
-    printf("LOW_ADDR_DIR=%d, HOLD_PIN=%d\n", LOW_ADDR_DIR, HOLD_PIN);
-    printf("Pin %d func: %d, dir: %d\n", LOW_ADDR_DIR, gpio_get_function(LOW_ADDR_DIR), gpio_get_dir(LOW_ADDR_DIR));
+    printf("HOLD_PIN=%d\n", HOLD_PIN);
     printf("Pin %d func: %d, dir: %d\n", HOLD_PIN, gpio_get_function(HOLD_PIN), gpio_get_dir(HOLD_PIN));
     
 

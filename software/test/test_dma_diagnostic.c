@@ -72,9 +72,9 @@ void print_gpio_states() {
 void check_bus_signals() {
     printf("\n=== Bus Signal Check ===\n");
 
-    // Check clock signals WITHOUT taking them from PIO control
+    // Check clock signals after initing them on the arm core
     // Just read their current state
-    printf("Clock signals (reading without init):\n");
+    printf("Clock signals (reading after init):\n");
     int clk5_samples = 0;
     int clk15_samples = 0;
 
@@ -191,37 +191,29 @@ int main() {
     printf("Running comprehensive diagnostics...\n\n");
 
     // Sleep briefly to ensure serial output is visible
-    sleep_ms(2000);
+    sleep_ms(500);
 
     // Toggle HOLD pin like in hello.c to wake up DMA arbitration
-    printf("\n=== Toggling HOLD Pin ===\n");
-    gpio_init(HOLD_PIN);
-    gpio_set_dir(HOLD_PIN, GPIO_OUT);
-    gpio_put(HOLD_PIN, 0);
-    gpio_put(HOLD_PIN, 1);
-    gpio_put(HOLD_PIN, 1);
-    gpio_put(HOLD_PIN, 0);
-    printf("HOLD pin toggled\n");
+    // printf("\n=== Toggling HOLD Pin ===\n");
+    // gpio_init(HOLD_PIN);
+    // gpio_set_dir(HOLD_PIN, GPIO_OUT);
+    // gpio_put(HOLD_PIN, 0);
+    // gpio_put(HOLD_PIN, 1);
+    // gpio_put(HOLD_PIN, 1);
+    // gpio_put(HOLD_PIN, 0);
+    // printf("HOLD pin toggled\n");
 
     // Ensure clock and handshake pins are configured as inputs for real hardware
-    printf("\n=== Configuring Hardware Input Pins ===\n");
-    gpio_init(CLOCK_5_PIN);
-    gpio_init(CLOCK_15B_PIN);
-    gpio_init(Ready_PIN);
-    gpio_init(HLDA_PIN);
-    gpio_set_dir(CLOCK_5_PIN, GPIO_IN);
-    gpio_set_dir(CLOCK_15B_PIN, GPIO_IN);
-    gpio_set_dir(Ready_PIN, GPIO_IN);
-    gpio_set_dir(HLDA_PIN, GPIO_IN);
-    printf("Clock and handshake pins configured as inputs\n");
-
-    // Comment out simulator since we're using real hardware
-    // // Initialize signal simulator for testing without real hardware
-    // printf("\n=== Starting Signal Simulator ===\n");
-    // printf("This simulates CLK5, CLK15B, READY, and HLDA signals\n");
-    // signal_simulator_init();
-    // // Test the simulator
-    // signal_simulator_test();
+    // printf("\n=== Configuring Hardware Input Pins ===\n");
+    // gpio_init(CLOCK_5_PIN);
+    // gpio_init(CLOCK_15B_PIN);
+    // gpio_init(Ready_PIN);
+    // gpio_init(HLDA_PIN);
+    // gpio_set_dir(CLOCK_5_PIN, GPIO_IN);
+    // gpio_set_dir(CLOCK_15B_PIN, GPIO_IN);
+    // gpio_set_dir(Ready_PIN, GPIO_IN);
+    // gpio_set_dir(HLDA_PIN, GPIO_IN);
+    // printf("Clock and handshake pins configured as inputs\n");
 
     // Check initial GPIO states
     print_gpio_states();
@@ -276,7 +268,9 @@ int main() {
     // Put ALL data in FIFO before enabling
     printf("Loading TX FIFO (4 slots total)...\n");
 
-    // X and Y for init (2 slots)
+    //one time initialization of X and Y(2 slots)
+    //x = direction (read or write)
+    //y = pin directions for T2
     printf("  Slot 1: DMA_WRITE (0x%08x)\n", DMA_WRITE);
     pio_sm_put_blocking(dma_pio, write_sm, DMA_WRITE);
 
@@ -285,19 +279,26 @@ int main() {
 
     // First write operation (2 more slots = full!)
     uint32_t addr = TEST_ADDRESS & 0xFFFFF;
-    uint32_t data_word = (addr & 0xFFF00) | (0xAA & 0xFF);
+    uint32_t data = (0xAA & 0xFF);
+    uint32_t t2_byte_addr = (addr & 0xFFF00) | data;  // Address with data in low byte. A0-A7 = data, A8-A19 = address bits
 
-    printf("  Slot 3: Address (0x%05x)\n", addr);
+    printf("  Slot 3: put Address alone (0x%05x)\n", addr);
     pio_sm_put_blocking(dma_pio, write_sm, addr);
 
-    printf("  Slot 4: Data word (0x%08x) - data byte is 0xAA\n", data_word);
-    pio_sm_put_blocking(dma_pio, write_sm, data_word);
+    printf("  Slot 4: put T2 (0x%08x) - data byte is 0xAA plus address A8-A19\n", t2_byte_addr);
+    pio_sm_put_blocking(dma_pio, write_sm, t2_byte_addr);
 
     // Check FIFO before enabling
     printf("Before enabling - TX FIFO level: %d/4\n",
            pio_sm_get_tx_fifo_level(dma_pio, write_sm));
 
     printf("Enabling write SM...\n");
+    printf("Flashing DEBUG pin\n");
+    gpio_init(DEBUG_PIN);
+    gpio_set_dir(DEBUG_PIN, GPIO_OUT);
+    gpio_put(DEBUG_PIN, 1);
+    sleep_us(10);
+    gpio_put(DEBUG_PIN, 0);
     pio_sm_set_enabled(dma_pio, write_sm, true);
 
     // Check immediately

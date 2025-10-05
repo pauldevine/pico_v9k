@@ -53,10 +53,7 @@
 #define DMA_BUS_START_POSITION (0xDF6 & 0xFFF)  // Sets up the BUS CONTROL pins to start DMA transfers
 #define DMA_READ_START_POSITION (0xDF6 & 0xFFF)  // Sets up the BUS CONTROL pins to start DMA transfers
 #define DMA_READ_T2_PINDIRS 0xFFF00 // Sets up the Address pins so 0-7 are inputs and 8-19 are outputs
-#define DMA_WRITE_T2_PINDIRS 0xFFFFF //these aren't actually used, but are here to send something to the state machine
-
-#define DIR_8088_TO_PICO 0
-#define DIR_PICO_TO_8088 1
+#define DMA_WRITE_T2_PINDIRS 0x7FFFFFF //sets up the Address pins so 0-19 are outputs and 20-27 are outputs
 
 // Convert SM number to the corresponding IRQ source
 static const enum pio_interrupt_source fifo_sources[] = {
