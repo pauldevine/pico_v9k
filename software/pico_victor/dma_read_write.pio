@@ -55,9 +55,11 @@ T2_CONTINUE:
     wait 1 GPIO READY_PIN          ; Wait for READY to go high
 T3:
     wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high, 
+    wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high, 
     jmp !x T4                      ; skip in pins if write
     in pins, DATA_SIZE             ; RD case, read data from bus
 T4:
+    wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
     set pins, 0b10111              ; Set control pins to T4 state, release HOLD and RD/WR
     wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go low
     wait 1 GPIO CLOCK_15B_PIN      ; Wait for CLK15 to go high
@@ -68,9 +70,9 @@ T4:
 .wrap
 
 T2_WRITE:
-    set pins, 0b00101 side 0b00    ; put data on bus for WR control state / DEN low
     pull block
     out pins, ADDRESS_BUS_SIZE     ; ouput A0-A7 with data value, A8-A19 with MSB of address which needs to remain stable 
+    set pins, 0b00101 side 0b00    ; put data on bus for WR control state / DEN low
     jmp T2_CONTINUE                
 
 % c-sdk {
