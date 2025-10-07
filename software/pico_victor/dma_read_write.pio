@@ -43,8 +43,8 @@ T0:                                ; Address Setup Phase (Put Address on Bus)
     set pindirs, 0b10000 ;side 0b11 ; set HOLD pin direction to output FIRST
     wait 1 GPIO HLDA_PIN           ; wait for HLDA to go high
 T1:
-    mov pindirs, y                 ; Set all address pins' direction to output
-    set pins, 0b01111 side 0b01    ; Set control pins to T1 state / DEN high
+    mov pindirs, ~null side 0b01   ; Set all address pins' direction to output
+    set pins, 0b01111              ; Set control pins to T1 state / DEN high
     wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
     wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go low
 T2:
@@ -101,20 +101,24 @@ static inline void dma_read_write_program_init(PIO pio, uint sm, uint offset, ui
     printf("starting to configure dma_read_write_program_init\n");
     pio_sm_config c = dma_read_write_program_get_default_config(offset);
 
+    printf("setting out pin mapping to %d, count %d\n", pin, OUTPUT_PIN_COUNT);
     sm_config_set_out_pins(&c, pin, OUTPUT_PIN_COUNT);
+    printf("setting set pin mapping to %d, count 5\n", RD_PIN);
     sm_config_set_set_pins(&c, RD_PIN, 5);
+    printf("setting sideset pin mapping to %d, count 2\n", DEN_PIN);
     sm_config_set_sideset_pins(&c, DEN_PIN);
     pio_sm_set_consecutive_pindirs(pio, sm, DEN_PIN, 2, true);
+    gpio_set_pulls(IO_M_PIN, true, false);
 
     //Shift Register configuration settings
     if (read) {
-        printf("Configuring for read mode\n");
+        printf("Configuring in/out pins for read mode\n");
         sm_config_set_in_pins(&c, BD0_PIN);
         sm_config_set_in_pin_count(&c, DATA_SIZE);
         sm_config_set_out_shift(&c, true, false, OUTPUT_PIN_COUNT);
         sm_config_set_in_shift(&c, false, true, DATA_SIZE);
     } else {
-        printf("Configuring for write mode\n");
+        printf("Configuring in/out pins for write mode\n");
         sm_config_set_out_shift(&c, true, true, OUTPUT_PIN_COUNT);
     }
     
@@ -128,10 +132,12 @@ static inline void dma_read_write_program_init(PIO pio, uint sm, uint offset, ui
         printf("dma %s pio_gpio_init %d\n", mode, i);
     }
 
-    for (int i = OUTPUT_PIN_LAST; i <= IR_4_PIN; i++) {
+    for (int i = OUTPUT_PIN_LAST+1; i <= IR_4_PIN; i++) {
         gpio_init(i);
         gpio_set_dir(i, GPIO_IN);
         gpio_set_drive_strength(i, GPIO_DRIVE_STRENGTH_12MA);
+        gpio_set_function(i, PIO_FUNCSEL_NUM(pio, i)); 
+        pio_gpio_init(pio, i);
         printf("dma %s gpio_init %d\n", mode, i);
     }
 
