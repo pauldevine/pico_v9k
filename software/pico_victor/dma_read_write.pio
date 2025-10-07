@@ -4,10 +4,10 @@
 ; SPDX-License-Identifier: BSD-3-Clause
 ;
 .pio_version 1 
-.define CLOCK_15B_PIN 31 
-.define CLOCK_5_PIN  30
-.define READY_PIN 28
-.define HLDA_PIN 29
+.define CLOCK_15B_PIN 30 
+.define CLOCK_5_PIN  29
+.define READY_PIN 27
+.define HLDA_PIN 28
 .define ADDRESS_BUS_SIZE 20
 .define ADDR_CONTROL_SIZE 32
 .define CONTROL_PINCOUNT 12
@@ -40,10 +40,10 @@ T0:                                ; Address Setup Phase (Put Address on Bus)
     pull block                     ; Get 20 address bits and if WR 8 data bits from FIFO
     out pins, ADDRESS_BUS_SIZE     ; set bus control pins to T0 state
     set pins, 0b00111              ; NOW set initial control pin state with HOLD=0 via side-set
-    set pindirs, 0b10000 side 0b10 ; set HOLD pin direction to output FIRST
+    set pindirs, 0b10000 ;side 0b11 ; set HOLD pin direction to output FIRST
     wait 1 GPIO HLDA_PIN           ; wait for HLDA to go high
 T1:
-    mov pindirs, y             ; Set all address pins' direction to output
+    mov pindirs, y                 ; Set all address pins' direction to output
     set pins, 0b01111 side 0b01    ; Set control pins to T1 state / DEN high
     wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
     wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go low
@@ -69,62 +69,80 @@ T4:
 
 T2_WRITE:
     set pins, 0b00101 side 0b00    ; put data on bus for WR control state / DEN low
+    pull block
     out pins, ADDRESS_BUS_SIZE     ; ouput A0-A7 with data value, A8-A19 with MSB of address which needs to remain stable 
     jmp T2_CONTINUE                
 
 % c-sdk {
 #include <stdio.h>
+#include <string.h>
+#include "hardware/pio.h"
+#include "hardware/gpio.h"
+#include "hardware/clocks.h"
 #include "pico_victor/dma.h"
 #define CONTROL_PINCOUNT 12 
 #define CONTROL_PLUS_BIT 13
 #define CONTROL_PLUS_INPUT 17 //total count of pins to initialize as pio
-#define OUTPUT_PIN_RANGE 26
-#define INPUT_PIN_MAX 31
+#define OUTPUT_PIN_FIRST BD0_PIN
+#define OUTPUT_PIN_LAST  IO_M_PIN
+#define OUTPUT_PIN_COUNT (OUTPUT_PIN_LAST - OUTPUT_PIN_FIRST + 1)
+
 
 static inline void dma_read_write_program_init(PIO pio, uint sm, uint offset, uint pin, bool read) {
+    char* mode;
+    if (read) {
+        printf("Configuring PIO for DMA READ operation\n");
+        mode = "READ";
+    } else {
+        printf("Configuring PIO for DMA WRITE operation\n");
+        mode = "WRITE";
+    }
+
     printf("starting to configure dma_read_write_program_init\n");
     pio_sm_config c = dma_read_write_program_get_default_config(offset);
 
-    sm_config_set_out_pins(&c, pin, ADDRESS_BUS_SIZE);
+    sm_config_set_out_pins(&c, pin, OUTPUT_PIN_COUNT);
     sm_config_set_set_pins(&c, RD_PIN, 5);
-    sm_config_set_sideset(&c, 3, true, false);
-    sm_config_set_sideset_pin_base(&c, DEN_PIN);
+    sm_config_set_sideset_pins(&c, DEN_PIN);
+    pio_sm_set_consecutive_pindirs(pio, sm, DEN_PIN, 2, true);
 
     //Shift Register configuration settings
     if (read) {
         printf("Configuring for read mode\n");
         sm_config_set_in_pins(&c, BD0_PIN);
         sm_config_set_in_pin_count(&c, DATA_SIZE);
-        sm_config_set_out_shift(&c, true, false, ADDRESS_BUS_SIZE);
+        sm_config_set_out_shift(&c, true, false, OUTPUT_PIN_COUNT);
         sm_config_set_in_shift(&c, false, true, DATA_SIZE);
     } else {
         printf("Configuring for write mode\n");
-        sm_config_set_out_shift(&c, true, true, ADDRESS_BUS_SIZE);
+        sm_config_set_out_shift(&c, true, true, OUTPUT_PIN_COUNT);
     }
     
     pio_sm_clear_fifos(pio, sm);
     pio_sm_set_clkdiv(pio, sm, 1.0f);
 
     // Init ALL pins for PIO (required for wait instructions to work)
-    for (int i = pin; i <= OUTPUT_PIN_RANGE; i++) {
+    for (int i = pin; i <= OUTPUT_PIN_LAST; i++) {
         pio_gpio_init(pio, i);
         gpio_set_drive_strength(i, GPIO_DRIVE_STRENGTH_12MA);
-        printf("dma_read pio_gpio_init %d\n", i);
+        printf("dma %s pio_gpio_init %d\n", mode, i);
     }
 
-    for (int i = OUTPUT_PIN_RANGE+1; i <= INPUT_PIN_MAX; i++) {
-        gpio_set_function(i, GPIO_FUNC_PIO0);
+    for (int i = OUTPUT_PIN_LAST; i <= IR_4_PIN; i++) {
+        gpio_init(i);
+        gpio_set_dir(i, GPIO_IN);
         gpio_set_drive_strength(i, GPIO_DRIVE_STRENGTH_12MA);
-        printf("dma_read gpio_init %d\n", i);
+        printf("dma %s gpio_init %d\n", mode, i);
     }
+
 
     // Set all pins as inputs initially
-    pio_sm_set_consecutive_pindirs(pio, sm, pin, INPUT_PIN_MAX, false);
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, OUTPUT_PIN_COUNT, false);
 
     // Load our configuration, and jump to the start of the program
     pio_sm_init(pio, sm, offset, &c);
     // Don't enable the state machine here - it will be     enabled when needed
     // pio_sm_set_enabled(pio, sm, true);
-    printf("finished configuring dma_controller_program_init\n");
+    printf("finished configuring dma_controller_program_init %s\n", mode);
 }
 %}

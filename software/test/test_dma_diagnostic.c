@@ -297,15 +297,13 @@ int main() {
     gpio_init(DEBUG_PIN);
     gpio_set_dir(DEBUG_PIN, GPIO_OUT);
     gpio_put(DEBUG_PIN, 1);
-    sleep_us(10);
-    gpio_put(DEBUG_PIN, 0);
     pio_sm_set_enabled(dma_pio, write_sm, true);
 
     // Check immediately
     printf("Immediately after enabling - TX FIFO: %d/4, PC=0x%x\n",
            pio_sm_get_tx_fifo_level(dma_pio, write_sm),
            pio_sm_get_pc(dma_pio, write_sm));
-
+    gpio_put(DEBUG_PIN, 0);
     // Check HOLD and HLDA states immediately
     printf("HOLD pin: %d, HLDA pin: %d\n", gpio_get(HOLD_PIN), gpio_get(HLDA_PIN));
 
