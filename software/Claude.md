@@ -179,6 +179,7 @@ Hardware redesign to remove 74LVC245 level shifters and connect RP2350 directly 
   - `wait` instructions hang forever if pins aren't routed to PIO
   - `mov pindirs, ~null` affects ALL pins initialized with `pio_gpio_init()`, not just OUT pins
   - Using `pio_gpio_init()` on input-only pins can cause them to briefly glitch to output mode during `pindirs` operations
+- **Side-set note**: With `.side_set N opt` the assembler automatically sets the optional-enable bit for any instruction that uses a `side` value, so missing activity on DEN/ or IO/M/ almost always traces back to pin direction or pin mapping mistakes rather than the literal side value.
 
 ### Latest Hardware Changes (as of 2025-10-25)
 
@@ -196,8 +197,9 @@ Hardware redesign to remove 74LVC245 level shifters and connect RP2350 directly 
   - Data written doesn't appear in Victor memory when checked via debugger
   - Read operations return sequential data (00,01,02,03...) instead of test pattern
   - PIO state machines appear stuck at PC=0x4 (`.wrap_target` location)
+   - Bus arbitration is working now (HOLD/HLDA signaling)
 - **Possible root causes under investigation**:
-  - Bus arbitration not working (HOLD/HLDA signaling)
+  - sideset pins aren't being driven correctly during the T cycles
   - Clock timing issues
   - Direct GPIO drive strength or signal integrity issues
   - PIO state machine initialization issues
