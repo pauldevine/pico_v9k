@@ -9,7 +9,7 @@
 .define READY_PIN 27
 .define HLDA_PIN 28
 .define ADDRESS_BUS_SIZE 20
-.define ADDR_CONTROL_SIZE 32
+.define ADDR_CONTROL_SIZE 27
 .define CONTROL_PINCOUNT 12
 .define DATA_SIZE 8
 
@@ -38,41 +38,39 @@ mov y, osr          ; Store pindirs for RD cycle in Y
 .wrap_target
 T0:                                ; Address Setup Phase (Put Address on Bus)
     pull block                     ; Get 20 address bits and if WR 8 data bits from FIFO
-    out pins, ADDRESS_BUS_SIZE     ; set bus control pins to T0 state
+    out pins, ADDR_CONTROL_SIZE     ; set bus control pins to T0 state
     set pins, 0b00111              ; NOW set initial control pin state with HOLD=0 via side-set
     set pindirs, 0b10000 ;side 0b11 ; set HOLD pin direction to output FIRST
     wait 1 GPIO HLDA_PIN           ; wait for HLDA to go high
 T1:
-    mov pindirs, ~null side 0b01   ; Set all address pins' direction to output
+    mov pindirs, ~null side 0b01   ; Set all address pins' direction to output / IO/M low
     set pins, 0b01111              ; Set control pins to T1 state / DEN high
     wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
     wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go low
 T2:
-    jmp !x T2_WRITE                 ; If write, jump to T2_WRITE 
-    set pins, 0b00110 side 0b00      ; else set pins for RD control state / DEN low
-    mov pindirs, y                  ; set BD0-BD7 to input for RD cycle
+    jmp !x T2_WRITE                ; If write, jump to T2_WRITE 
+    set pins, 0b00010 side 0b00    ; else set pins for RD control state / DEN low / IO/M low
+    mov pindirs, y                 ; set BD0-BD7 to input for RD cycle
 T2_CONTINUE:
+    wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high, 
+    wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go low
     wait 1 GPIO READY_PIN          ; Wait for READY to go high
 T3:
-    wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high, 
-    wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high, 
+    wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
+    wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go low
     jmp !x T4                      ; skip in pins if write
     in pins, DATA_SIZE             ; RD case, read data from bus
 T4:
     wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
     set pins, 0b10111              ; Set control pins to T4 state, release HOLD and RD/WR
-    wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go low
-    wait 1 GPIO CLOCK_15B_PIN      ; Wait for CLK15 to go high
-    wait 0 GPIO HLDA_PIN           ; wait for HLDA to go low
-    
-    wait 0 GPIO CLOCK_5_PIN side 0b11 ; Wait for CLK5 to go low / release DEN before wait
-    mov pindirs, NULL                ; Tri-state all address outputs (Release Bus)
+    wait 1 GPIO CLOCK_15B_PIN      ; Wait for CLK15B to go low
+    wait 0 GPIO HLDA_PIN           ; wait for HLDA to go low 
+    mov pindirs, NULL side 0b11    ; Tri-state all address outputs (Release Bus) / release DEN and IO/M
 .wrap
 
 T2_WRITE:
     pull block
-    out pins, ADDRESS_BUS_SIZE     ; ouput A0-A7 with data value, A8-A19 with MSB of address which needs to remain stable 
-    set pins, 0b00101 side 0b00    ; put data on bus for WR control state / DEN low
+    out pins, ADDR_CONTROL_SIZE side 0b00    ; ouput A0-A7 with data value, A8-A19 with MSB of address which needs to remain stable 
     jmp T2_CONTINUE                
 
 % c-sdk {
