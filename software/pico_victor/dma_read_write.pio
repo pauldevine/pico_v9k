@@ -30,14 +30,11 @@
 ; --- Pre-amble ---
 ;setup registers to differentiate between read and write
 ; This code runs once at the start for each state machine initialization
-pull block          ; Pull operation direction from FIFO DMA 1=Read 0=Write
-mov x, osr          ; Store DMA direction in X
-pull block          ; Pull pindirs for RD cycle from FIFO
-mov y, osr          ; Store pindirs for RD cycle in Y
+out x, 32          ; Store DMA direction in X 0= Read, 1=Write
+out y, 32          ; Store pindirs for RD cycle in Y, BD0-BD7 input, A8-A19 output (0xFFF00)
 
 .wrap_target
 T0:                                ; Address Setup Phase (Put Address on Bus)
-    pull block                     ; Get 20 address bits and if WR 8 data bits from FIFO
     out pins, ADDR_CONTROL_SIZE     ; set bus control pins to T0 state
     set pins, 0b00111              ; NOW set initial control pin state with HOLD=0 via side-set
     set pindirs, 0b10000 ;side 0b11 ; set HOLD pin direction to output FIRST
@@ -69,7 +66,6 @@ T4:
 .wrap
 
 T2_WRITE:
-    pull block
     out pins, ADDR_CONTROL_SIZE side 0b00    ; ouput A0-A7 with data value, A8-A19 with MSB of address which needs to remain stable 
     jmp T2_CONTINUE                
 

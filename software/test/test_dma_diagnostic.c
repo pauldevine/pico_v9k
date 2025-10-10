@@ -262,7 +262,11 @@ int main() {
     pio_sm_set_enabled(dma_pio, write_sm, true);
 
     // Small delay to let init complete
-    sleep_us(10);
+    sleep_us(50);
+
+    printf("After enabling write SM - TX FIFO: %d/4, PC=0x%x\n",
+           pio_sm_get_tx_fifo_level(dma_pio, write_sm),
+           pio_sm_get_pc(dma_pio, write_sm));
 
     // Now load the actual DMA cycle data
     printf("\nLoading DMA cycle data...\n");
@@ -277,9 +281,8 @@ int main() {
 
     printf("  Data Slot 1: Address plus T1 control state (0x%07x)\n", t1_address_control);
     pio_sm_put_blocking(dma_pio, write_sm, t1_address_control);
-
-    printf("  Data Slot 2: T2 data byte 0xAA plus address A8-A19 (0x%08x)\n", t2_byte_addr);
     pio_sm_put_blocking(dma_pio, write_sm, t2_byte_addr);
+    printf("  Data Slot 2: T2 data byte 0xAA plus address A8-A19 (0x%08x)\n", t2_byte_addr);
 
     printf("DMA cycle data loaded.\n");
 
