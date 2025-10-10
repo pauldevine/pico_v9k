@@ -43,14 +43,7 @@ void print_gpio_states() {
     // NOTE: We do NOT initialize pins here anymore as it interferes with PIO
     // We just read the current state of pins
 
-    // Data pins
-    printf("Data pins (BD0-BD7): ");
-    for (int i = BD0_PIN; i < BD0_PIN + 8; i++) {
-        printf("%d:%d ", i, gpio_get(i));
-    }
-    printf("\n");
-
-    // Address pins
+    // Address & Data pins
     printf("Address pins (A0-A19): ");
     for (int i = 0; i < 20; i++) {
         printf("%d:%d ", i, gpio_get(i));
@@ -64,7 +57,7 @@ void print_gpio_states() {
     printf("  HOLD (pin %d) = %d\n", HOLD_PIN, gpio_get(HOLD_PIN));
     printf("  ALE (pin %d) = %d\n", ALE_PIN, gpio_get(ALE_PIN));
     printf("  HLDA (pin %d) = %d\n", HLDA_PIN, gpio_get(HLDA_PIN));
-    printf("  READY (pin %d) = %d\n", Ready_PIN, gpio_get(Ready_PIN));
+    printf("  READY (pin %d) = %d\n", READY_PIN, gpio_get(READY_PIN));
     printf("  CLOCK_5 (pin %d) = %d\n", CLOCK_5_PIN, gpio_get(CLOCK_5_PIN));
     printf("  CLOCK_15B (pin %d) = %d\n", CLOCK_15B_PIN, gpio_get(CLOCK_15B_PIN));
 }
@@ -111,7 +104,7 @@ void check_bus_signals() {
     printf("\nWARNING: Skipping HOLD/HLDA test to avoid interfering with PIO\n");
     printf("The PIO will test HOLD/HLDA when it runs\n");
 
-    printf("READY signal = %d (should be 1 for normal operation)\n", gpio_get(Ready_PIN));
+    printf("READY signal = %d (should be 1 for normal operation)\n", gpio_get(READY_PIN));
 }
 
 void test_pio_single_write(PIO pio, uint sm, uint32_t address, uint8_t data) {
@@ -126,12 +119,11 @@ void test_pio_single_write(PIO pio, uint sm, uint32_t address, uint8_t data) {
 
     // Prepare the data for PIO
     uint32_t addr_only = address & 0xFFFFF;  // 20-bit address
-    uint32_t addr_with_data = (addr_only & 0xFFF00) | (data & 0xFF);  // Address with data in low byte
+    uint32_t addr_with_data =  addr_only | (data << 20); ;  // Address with data in low byte
 
     printf("Sending to PIO: addr=0x%05X, addr_with_data=0x%05X\n", addr_only, addr_with_data);
 
     // Send to PIO
-    pio_sm_put_blocking(pio, sm, addr_only);
     pio_sm_put_blocking(pio, sm, addr_with_data);
 
     // Wait for operation
@@ -156,8 +148,10 @@ void test_pio_single_read(PIO pio, uint sm, uint32_t address) {
 
     // Send address to PIO
     uint32_t addr_only = address & 0xFFFFF;
-    printf("Sending to PIO: addr=0x%05X\n", addr_only);
-    pio_sm_put_blocking(pio, sm, addr_only);
+    uint32_t pindirs = 0;
+    uint32_t addr_with_pindirs = addr_only | (pindirs << 20); // Address with pin directions in high bits
+    printf("Sending to PIO: addr=0x%07X\n", addr_with_pindirs);
+    pio_sm_put_blocking(pio, sm, addr_with_pindirs);
 
     // Wait and try to read
     sleep_ms(10);
@@ -186,6 +180,32 @@ int main() {
     stdio_init_all();
     set_sys_clock_khz(200000, true);
     initialize_uart();
+
+    printf("Init RD (pin %d) \n", RD_PIN);
+    gpio_init(RD_PIN);
+    gpio_set_dir(RD_PIN, GPIO_IN);
+    printf("Init WR (pin %d) \n", WR_PIN);
+    gpio_init(WR_PIN);
+    gpio_set_dir(WR_PIN, GPIO_IN);
+    printf("Init HOLD (pin %d) \n", HOLD_PIN);
+    gpio_init(HOLD_PIN);
+    gpio_set_dir(HOLD_PIN, GPIO_IN);
+    printf("Init ALE (pin %d) \n", ALE_PIN);
+    gpio_init(ALE_PIN);
+    gpio_set_dir(ALE_PIN, GPIO_IN);
+    printf("Init HLDA (pin %d) \n", HLDA_PIN);
+    gpio_init(HLDA_PIN);
+    gpio_set_dir(HLDA_PIN, GPIO_IN);
+    gpio_set_dir(HLDA_PIN, GPIO_IN);
+    printf("Init READY (pin %d) \n", READY_PIN);
+    gpio_init(READY_PIN);
+    gpio_set_dir(READY_PIN, GPIO_IN);
+    printf("Init CLOCK_5 (pin %d) \n", CLOCK_5_PIN);
+    gpio_init(CLOCK_5_PIN);
+    gpio_set_dir(CLOCK_5_PIN, GPIO_IN);
+    printf("Init CLOCK_15B (pin %d) \n", CLOCK_15B_PIN);
+    gpio_init(CLOCK_15B_PIN);
+    gpio_set_dir(CLOCK_15B_PIN, GPIO_IN);
 
     printf("\n=== DMA Hardware Diagnostic Test ===\n");
     printf("Running comprehensive diagnostics...\n\n");
@@ -242,27 +262,24 @@ int main() {
     // Test 1: Single write operation (TX FIFO only has 4 slots!)
     printf("\n=== Test 1: Single Write Operation ===\n");
 
-    // Load initialization values first (2 slots)
-    printf("Loading initialization values...\n");
+    // Load initialization values first (1 slots)
+    printf("Loading initialization value...\n");
 
-    //one time initialization of X and Y(2 slots)
+    //one time initialization of X direction
     //x = DMA direction (read or write)
-    //y = pin directions for T2 cycle
     printf("  Init Slot 1: DMA_WRITE (0x%08x)\n", DMA_WRITE);
     pio_sm_put_blocking(dma_pio, write_sm, DMA_WRITE);
 
-    printf("  Init Slot 2: DMA_WRITE_T2_PINDIRS (0x%08x)\n", DMA_WRITE_T2_PINDIRS);
-    pio_sm_put_blocking(dma_pio, write_sm, DMA_WRITE_T2_PINDIRS);
 
     // Check FIFO before enabling
     printf("Before enabling - TX FIFO level: %d/4\n",
            pio_sm_get_tx_fifo_level(dma_pio, write_sm));
 
-    printf("Enabling write SM (will consume init values)...\n");
+    printf("Enabling write SM (will consume init value)...\n");
     pio_sm_set_enabled(dma_pio, write_sm, true);
 
     // Small delay to let init complete
-    sleep_us(50);
+    sleep_us(100);
 
     printf("After enabling write SM - TX FIFO: %d/4, PC=0x%x\n",
            pio_sm_get_tx_fifo_level(dma_pio, write_sm),
@@ -273,16 +290,11 @@ int main() {
 
     // First write operation
     uint32_t addr = TEST_ADDRESS & 0xFFFFF;
-    uint8_t data = (0xAA & 0xFF);
-    uint8_t t1_control_bits = 0b0100111; //T1 control state IO/M=0, DEN=1, HOLD=0, ALE=0, DT/R= 1, WR=1, RD=1
-    uint32_t t1_address_control = addr | (t1_control_bits << 20); //full address A0-A19 + control bits in GPIO20-26
-    uint8_t t2_control_bits = 0b0000101; // T2 control state IO/M=0, DEN=0, HOLD=0, ALE=0, DT/R= 1, WR=0, RD=1
-    uint32_t t2_byte_addr = data | (addr & 0xFFF00) | (t2_control_bits << 20);  // Address with data. A0-A7 = data, A8-A19 = MSB address bits
+    uint32_t data = (0xAA & 0xFF);
+    uint32_t addr_data = addr | (data << 20);  // Address in low 20 bits, data in high 8 bits
 
-    printf("  Data Slot 1: Address plus T1 control state (0x%07x)\n", t1_address_control);
-    pio_sm_put_blocking(dma_pio, write_sm, t1_address_control);
-    pio_sm_put_blocking(dma_pio, write_sm, t2_byte_addr);
-    printf("  Data Slot 2: T2 data byte 0xAA plus address A8-A19 (0x%08x)\n", t2_byte_addr);
+    printf("  Data Slot 1: Address plus data (0x%07x)\n", addr_data);
+    pio_sm_put_blocking(dma_pio, write_sm, addr_data);
 
     printf("DMA cycle data loaded.\n");
 
@@ -293,6 +305,7 @@ int main() {
 
     // Check HOLD and HLDA states immediately
     printf("HOLD pin: %d, HLDA pin: %d\n", gpio_get(HOLD_PIN), gpio_get(HLDA_PIN));
+    print_gpio_states();
 
     sleep_ms(1);
 
@@ -300,23 +313,8 @@ int main() {
            pio_sm_get_tx_fifo_level(dma_pio, write_sm),
            pio_sm_get_pc(dma_pio, write_sm));
     printf("HOLD: %d, HLDA: %d, READY: %d, CLK5: %d, CLK15B: %d\n",
-           gpio_get(HOLD_PIN), gpio_get(HLDA_PIN), gpio_get(Ready_PIN),
+           gpio_get(HOLD_PIN), gpio_get(HLDA_PIN), gpio_get(READY_PIN),
            gpio_get(CLOCK_5_PIN), gpio_get(CLOCK_15B_PIN));
-
-    // Poll for a bit to see if signals change
-    printf("Polling signals for 100ms...\n");
-    int hlda_changes = 0;
-    int last_hlda = gpio_get(HLDA_PIN);
-    for (int i = 0; i < 100; i++) {
-        int current_hlda = gpio_get(HLDA_PIN);
-        if (current_hlda != last_hlda) {
-            hlda_changes++;
-            printf("  HLDA changed to %d at %dms\n", current_hlda, i);
-            last_hlda = current_hlda;
-        }
-        sleep_ms(1);
-    }
-    printf("HLDA changes detected: %d\n", hlda_changes);
 
     // Check FIFO after 10ms total
     printf("After 10ms - TX FIFO level: %d/4, PC=0x%x\n",
@@ -330,9 +328,7 @@ int main() {
            pio_sm_is_exec_stalled(dma_pio, write_sm),
            pio_sm_get_tx_fifo_level(dma_pio, write_sm));
 
-    // Check HOLD pin state
-    printf("HOLD pin state: %d (should be 0 if PIO is requesting bus)\n", gpio_get(HOLD_PIN));
-
+    printf("DMA write test complete. Disabling write SM.\n");
     pio_sm_set_enabled(dma_pio, write_sm, false);
 
     // Test 2: Single read operation
@@ -341,7 +337,6 @@ int main() {
     // Initialize the read state machine with required values
     printf("Loading read SM FIFO with init values...\n");
     pio_sm_put_blocking(dma_pio, read_sm, DMA_READ);  // Direction
-    pio_sm_put_blocking(dma_pio, read_sm, DMA_READ_T2_PINDIRS);  // Pin directions for read
 
     printf("Before enabling read SM - TX FIFO level: %d/4\n",
            pio_sm_get_tx_fifo_level(dma_pio, read_sm));

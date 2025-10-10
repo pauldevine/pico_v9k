@@ -33,12 +33,12 @@ int main() {
     gpio_init(CLOCK_5_PIN);
     gpio_init(CLOCK_15B_PIN);
     gpio_init(HLDA_PIN);
-    gpio_init(Ready_PIN);
+    gpio_init(READY_PIN);
 
     gpio_set_dir(CLOCK_5_PIN, GPIO_IN);
     gpio_set_dir(CLOCK_15B_PIN, GPIO_IN);
     gpio_set_dir(HLDA_PIN, GPIO_IN);
-    gpio_set_dir(Ready_PIN, GPIO_IN);
+    gpio_set_dir(READY_PIN, GPIO_IN);
 
     // Sample for transitions
     int clk5_transitions = 0;
@@ -61,7 +61,7 @@ int main() {
 
     printf("GPIO mode - CLK5 transitions: %d, CLK15B transitions: %d\n",
            clk5_transitions, clk15_transitions);
-    printf("READY pin: %d, HLDA pin: %d\n", gpio_get(Ready_PIN), gpio_get(HLDA_PIN));
+    printf("READY pin: %d, HLDA pin: %d\n", gpio_get(READY_PIN), gpio_get(HLDA_PIN));
 
     printf("\nTest 2: Reading clocks after PIO init\n");
 
@@ -93,7 +93,7 @@ int main() {
 
     printf("After PIO init - CLK5 transitions: %d, CLK15B transitions: %d\n",
            clk5_transitions, clk15_transitions);
-    printf("READY pin: %d, HLDA pin: %d\n", gpio_get(Ready_PIN), gpio_get(HLDA_PIN));
+    printf("READY pin: %d, HLDA pin: %d\n", gpio_get(READY_PIN), gpio_get(HLDA_PIN));
 
     // Continuous monitoring
     printf("\nContinuous monitoring (shows every 100ms):\n");
@@ -111,7 +111,7 @@ int main() {
 
         printf("CLK5: %d/%d high, CLK15B: %d/%d high, READY: %d, HLDA: %d\r",
                clk5_high, samples, clk15_high, samples,
-               gpio_get(Ready_PIN), gpio_get(HLDA_PIN));
+               gpio_get(READY_PIN), gpio_get(HLDA_PIN));
         fflush(stdout);
     }
 

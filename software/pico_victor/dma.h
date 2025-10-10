@@ -26,10 +26,10 @@
 #define WR_PIN 21
 #define DTR_PIN 22       
 #define ALE_PIN 23    // LOW ADDRESS direction pin   
-#define HOLD_PIN 24
-#define DEN_PIN 25   // BUS CONTROL signals direction pins
+#define DEN_PIN 24 
+#define HOLD_PIN 25   // BUS CONTROL signals direction pins
 #define IO_M_PIN 26
-#define Ready_PIN 27
+#define READY_PIN 27
 #define HLDA_PIN 28
 #define CLOCK_5_PIN 29
 #define CLOCK_15B_PIN 30

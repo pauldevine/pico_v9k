@@ -70,9 +70,9 @@ void signal_simulator_init() {
     printf("\n=== Initializing Signal Simulator ===\n");
 
     // 1. Set READY signal high (normal operation)
-    gpio_init(Ready_PIN);
-    gpio_set_dir(Ready_PIN, GPIO_OUT);
-    gpio_put(Ready_PIN, 1);
+    gpio_init(READY_PIN);
+    gpio_set_dir(READY_PIN, GPIO_OUT);
+    gpio_put(READY_PIN, 1);
     printf("READY signal set HIGH (normal operation)\n");
 
     // 2. Initialize HLDA as output, initially low
@@ -118,7 +118,7 @@ void signal_simulator_stop() {
     }
 
     // Reset pins to inputs
-    gpio_set_dir(Ready_PIN, GPIO_IN);
+    gpio_set_dir(READY_PIN, GPIO_IN);
     gpio_set_dir(HLDA_PIN, GPIO_IN);
     gpio_set_dir(CLOCK_5_PIN, GPIO_IN);
     gpio_set_dir(CLOCK_15B_PIN, GPIO_IN);
@@ -137,7 +137,7 @@ void signal_simulator_test() {
     printf("\n=== Testing Signal Simulator ===\n");
 
     // Check READY
-    printf("READY = %d (should be 1)\n", gpio_get(Ready_PIN));
+    printf("READY = %d (should be 1)\n", gpio_get(READY_PIN));
 
     // Check clocks are toggling
     int clk5_samples = 0;
