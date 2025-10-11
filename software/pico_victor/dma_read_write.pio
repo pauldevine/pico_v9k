@@ -160,32 +160,24 @@ static inline void dma_read_write_program_init(PIO pio, uint sm, uint offset, ui
         printf("GPIO%d_CTRL = 0x%08x\n", i, io_bank0_hw->io[i].ctrl);
     }
 
-    // Initialize input-only pins - MUST use pio_gpio_init to properly route to PIO!
-    // These pins include READY_PIN (27), HLDA_PIN (28), CLOCK_5_PIN (29), CLOCK_15B_PIN (30), and IR pins
-    // Despite SDK docs, pio_gpio_init IS required for PIO to read input pins on RP2350
+    // Initialize input pins using ONLY PIO commands - no ARM GPIO interference
+    // This avoids routing conflicts between ARM and PIO
     for (int i = OUTPUT_PIN_LAST+1; i <= IR_4_PIN; i++) {
-        // MUST use pio_gpio_init() - it's required for PIO to see the pin!
+        // Give PIO complete control of the pin
         pio_gpio_init(pio, i);
-        // Immediately set direction back to input (pio_gpio_init sets it to output)
-        gpio_set_dir(i, GPIO_IN);
 
-#ifdef PADS_BANK0_GPIO0_ISO_BITS
-        // RP2350: Clear the ISO bit to remove pad isolation
-        // This is CRITICAL - without this, the PIO cannot see the pin!
-        hw_clear_bits(&pads_bank0_hw->io[i], PADS_BANK0_GPIO0_ISO_BITS);
-#endif
+        // Use PIO commands to set as input (value=0, direction=0)
+        pio_sm_set_pins_with_mask(pio, sm, 0, 1u << i);  // Set pin value to 0
+        pio_sm_set_pindirs_with_mask(pio, sm, 0, 1u << i);  // Set direction to input (0)
 
-        printf("dma %s pio_gpio_init pin %d (then set to input)\n", mode, i);
+        printf("dma %s pio_gpio_init pin %d (PIO-controlled input)\n", mode, i);
         printf("GPIO%d_CTRL = 0x%08x, OE=%d, PADS=0x%08x\n", i, io_bank0_hw->io[i].ctrl,
                (sio_hw->gpio_oe >> i) & 1, pads_bank0_hw->io[i]);
     }
     
-    //setup HOLD and IO/M to have initial value of 0
-    gpio_init(IO_M_PIN);
-    gpio_put(IO_M_PIN, 0);
-
-    gpio_init(HOLD_PIN);
-    gpio_put(HOLD_PIN, 0);
+    // Setup HOLD and IO/M using PIO commands (they're already initialized above)
+    // Just ensure they start at 0
+    pio_sm_set_pins_with_mask(pio, sm, 0, (1u << IO_M_PIN) | (1u << HOLD_PIN));
 
     // Set all output pins (0-26) as inputs initially
     pio_sm_set_consecutive_pindirs(pio, sm, pin, OUTPUT_PIN_LAST - pin + 1, false);

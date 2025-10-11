@@ -227,6 +227,55 @@ int main() {
     // Check bus signals (should now show activity)
     check_bus_signals();
 
+    // First, test HOLD/HLDA with ARM only (no PIO)
+    printf("\n=== ARM-only HOLD/HLDA Test ===\n");
+
+    // Configure pins for ARM control
+    gpio_init(HOLD_PIN);
+    gpio_set_dir(HOLD_PIN, GPIO_OUT);
+    gpio_put(HOLD_PIN, 0);  // Start with HOLD low
+
+    gpio_init(HLDA_PIN);
+    gpio_set_dir(HLDA_PIN, GPIO_IN);
+    gpio_pull_down(HLDA_PIN);  // Weak pull-down
+
+    printf("HOLD pin %d configured as output (ARM)\n", HOLD_PIN);
+    printf("HLDA pin %d configured as input (ARM)\n", HLDA_PIN);
+
+    // Test sequence
+    printf("\nInitial state:\n");
+    printf("  HOLD=%d, HLDA=%d\n", gpio_get(HOLD_PIN), gpio_get(HLDA_PIN));
+
+    printf("\nAsserting HOLD=1...\n");
+    gpio_put(HOLD_PIN, 1);
+
+    // Poll HLDA for response
+    printf("Polling HLDA for 100ms:\n");
+    int hlda_went_high = 0;
+    for (int i = 0; i < 100; i++) {
+        int hlda = gpio_get(HLDA_PIN);
+        if (hlda && !hlda_went_high) {
+            hlda_went_high = 1;
+            printf("  HLDA went HIGH at %dms!\n", i);
+        }
+        if (i % 10 == 0) {
+            printf("  %dms: HOLD=%d, HLDA=%d\n", i, gpio_get(HOLD_PIN), gpio_get(HLDA_PIN));
+        }
+        sleep_ms(1);
+    }
+
+    if (!hlda_went_high) {
+        printf("  ERROR: HLDA never went high!\n");
+    }
+
+    printf("\nDe-asserting HOLD=0...\n");
+    gpio_put(HOLD_PIN, 0);
+    sleep_ms(10);
+    printf("  Final: HOLD=%d, HLDA=%d\n", gpio_get(HOLD_PIN), gpio_get(HLDA_PIN));
+
+    printf("\n=== End ARM-only test ===\n\n");
+    sleep_ms(100);
+
     // Launch stub core1
     multicore_launch_core1(core1_test_stub);
 
@@ -343,6 +392,52 @@ int main() {
     printf("After 1ms - TX FIFO: %d/4, PC=0x%x\n",
            pio_sm_get_tx_fifo_level(dma_pio, write_sm),
            pio_sm_get_pc(dma_pio, write_sm));
+
+    // Poll ALL pins to find which one has HLDA signal
+    printf("Polling all pins for changes after HOLD asserted:\n");
+    uint32_t initial_pins = 0;
+    uint32_t changed_pins_mask = 0;
+
+    // Get initial state
+    pio_sm_exec(dma_pio, write_sm, pio_encode_in(0, 32));
+    pio_sm_exec(dma_pio, write_sm, pio_encode_push(false, false));
+    sleep_us(10);
+    if (!pio_sm_is_rx_fifo_empty(dma_pio, write_sm)) {
+        initial_pins = pio_sm_get(dma_pio, write_sm);
+        printf("  Initial pins state: 0x%08x\n", initial_pins);
+    }
+
+    // Poll for changes
+    int found_changes = 0;
+    for (int i = 0; i < 100; i++) {
+        pio_sm_exec(dma_pio, write_sm, pio_encode_in(0, 32));
+        pio_sm_exec(dma_pio, write_sm, pio_encode_push(false, false));
+        sleep_us(100);
+
+        if (!pio_sm_is_rx_fifo_empty(dma_pio, write_sm)) {
+            uint32_t pins = pio_sm_get(dma_pio, write_sm);
+            uint32_t changes = pins ^ initial_pins;
+            if (changes && !found_changes) {
+                found_changes = 1;
+                changed_pins_mask |= changes;
+                // Print which pins changed
+                printf("  Changes detected at iteration %d:\n", i);
+                for (int p = 0; p < 32; p++) {
+                    if ((changes >> p) & 1) {
+                        printf("    Pin %d: %d -> %d %s\n",
+                               p, (initial_pins >> p) & 1, (pins >> p) & 1,
+                               (p == HLDA_PIN) ? "(Expected HLDA)" : "");
+                    }
+                }
+            }
+        }
+    }
+
+    if (!found_changes) {
+        printf("  NO PIN CHANGES DETECTED!\n");
+    }
+    printf("  Expected HLDA on pin %d: %s\n", HLDA_PIN,
+           (changed_pins_mask & (1 << HLDA_PIN)) ? "CHANGED" : "NO CHANGE");
 
     // Check PIO view again - try multiple ways
     pio_pins = pio0_hw->input_sync_bypass;
