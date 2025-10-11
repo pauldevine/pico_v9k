@@ -216,14 +216,20 @@ Hardware redesign to remove 74LVC245 level shifters and connect RP2350 directly 
   - Simplified pin direction management using only PIO `pindirs` instructions
 - **Code review completed**: Both PIO programs verified to correctly handle 8088 bus protocol without buffers
 
-### Known Issues
+### Known Issues - RESOLVED
+- **RP2350 PIO side-set pindirs initialization bug**: On RP2350, the PIO side-set pindirs functionality doesn't work until the state machine has executed at least one explicit pindirs instruction.
+  - **Workaround**: Execute `pio_sm_exec(pio, sm, pio_encode_set(pio_pindirs, 0))` after `pio_sm_init()` to "unlock" side-set pindirs
+  - **Symptoms**: DBG_PADOE remains at 0x00000000 despite side-set pindirs operations in the PIO program
+  - Without this workaround, no pins will be driven as outputs even though the side-set configuration is correct
+  - This appears to be an undocumented RP2350 silicon behavior
+- **PIO `wait` instruction works correctly** once the pindirs issue is resolved
+  - The apparent wait instruction bug was actually caused by HOLD never being asserted due to the pindirs issue
+  - Once pindirs are working, the `wait gpio` instructions function properly
 - **DMA Write Failure**: Writes to Victor RAM are not completing successfully
   - Data written doesn't appear in Victor memory when checked via debugger
   - Read operations return sequential data (00,01,02,03...) instead of test pattern
-  - PIO state machines appear stuck at PC=0x4 (`.wrap_target` location)
-   - Bus arbitration is working now (HOLD/HLDA signaling)
+  - Bus arbitration is working now (HOLD/HLDA signaling with jmp pin workaround)
 - **Possible root causes under investigation**:
   - sideset pins aren't being driven correctly during the T cycles
   - Clock timing issues
   - Direct GPIO drive strength or signal integrity issues
-  - PIO state machine initialization issues

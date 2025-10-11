@@ -41,7 +41,7 @@ out x, 32          ; Store DMA direction in X 0= Read, 1=Write
 .wrap_target
 T0:                                ; Address Setup Phase (Put Address on Bus)
     out pins, ADDRESS_BUS_SIZE     ; prepare bus address to T1 state, A0-A19 on bus, pindirs still input
-    set pins, 0b11111 side 0b01    ; prepare control pins to T1 state, pindir OUT for HOLD output requesting bus, others input
+    set pins, 0b11111 side 1    ; prepare control pins to T1 state, HOLD pindir=1 (output), IO_M pindir=0 (input)
     out y, 8                       ; get data byte from FIFO, either data to write or 0x00 for read
     wait 1 gpio HLDA_PIN           ; wait for HLDA to go high
 T1:
@@ -69,7 +69,7 @@ T4:
     set pins, 0b00111              ; Set control pins to T4 start, DEN=0, ALE=0, DT/R=1, WR=1, RD=1
     wait 1 GPIO CLOCK_15B_PIN      ; Wait for CLK15B to go low
     set pins, 0b10111              ; Set control pins to T4 close, DEN=1, ALE=0, DT/R=1, WR=1, RD=1
-    wait 0 GPIO HLDA_PIN           ; wait for HLDA to go low 
+    wait 0 gpio HLDA_PIN           ; wait for HLDA to go low 
     set pindirs, 0b00000 side 0b00 ; Set all control pins' direction to input / tri-state control pins
     mov pindirs, NULL              ; Tri-state all address outputs (Release Bus)
 
@@ -135,7 +135,7 @@ static inline void dma_read_write_program_init(PIO pio, uint sm, uint offset, ui
     printf("setting sideset pin mapping to %d, count 2\n", HOLD_PIN);
     sm_config_set_sideset_pins(&c, HOLD_PIN);
     sm_config_set_sideset(&c, 2, true, true);
-    pio_sm_set_consecutive_pindirs(pio, sm, HOLD_PIN, 2, true);
+    // Don't set pindirs here - it will be overridden by line 157
 
     //Shift Register configuration settings
     if (read) {
@@ -152,43 +152,43 @@ static inline void dma_read_write_program_init(PIO pio, uint sm, uint offset, ui
     pio_sm_clear_fifos(pio, sm);
     pio_sm_set_clkdiv(pio, sm, 1.0f);
 
-    // Init ALL pins for PIO (required for wait instructions to work)
-    for (int i = pin; i <= OUTPUT_PIN_LAST; i++) {
+    // Init ALL pins for PIO first (required for wait instructions to work on RP2350)
+    for (int i = pin; i <= IR_4_PIN; i++) {
         pio_gpio_init(pio, i);
-        gpio_set_drive_strength(i, GPIO_DRIVE_STRENGTH_12MA);
+        if (i <= OUTPUT_PIN_LAST) {
+            gpio_set_drive_strength(i, GPIO_DRIVE_STRENGTH_12MA);
+        }
         printf("dma %s pio_gpio_init %d\n", mode, i);
         printf("GPIO%d_CTRL = 0x%08x\n", i, io_bank0_hw->io[i].ctrl);
     }
 
-    // Initialize input pins using ONLY PIO commands - no ARM GPIO interference
-    // This avoids routing conflicts between ARM and PIO
-    for (int i = OUTPUT_PIN_LAST+1; i <= IR_4_PIN; i++) {
-        // Give PIO complete control of the pin
-        pio_gpio_init(pio, i);
-
-        // Use PIO commands to set as input (value=0, direction=0)
-        pio_sm_set_pins_with_mask(pio, sm, 0, 1u << i);  // Set pin value to 0
-        pio_sm_set_pindirs_with_mask(pio, sm, 0, 1u << i);  // Set direction to input (0)
-
-        printf("dma %s pio_gpio_init pin %d (PIO-controlled input)\n", mode, i);
-        printf("GPIO%d_CTRL = 0x%08x, OE=%d, PADS=0x%08x\n", i, io_bank0_hw->io[i].ctrl,
-               (sio_hw->gpio_oe >> i) & 1, pads_bank0_hw->io[i]);
-    }
-    
-    // Setup HOLD and IO/M using PIO commands (they're already initialized above)
-    // Just ensure they start at 0
-    pio_sm_set_pins_with_mask(pio, sm, 0, (1u << IO_M_PIN) | (1u << HOLD_PIN));
-
-    // Set all output pins (0-26) as inputs initially
-    pio_sm_set_consecutive_pindirs(pio, sm, pin, OUTPUT_PIN_LAST - pin + 1, false);
-
-    // Ensure input-only pins (27-31) stay as inputs
-    // Note: We use pio_gpio_init on these but immediately set them back to input
-    // This is required for PIO to see the pins on RP2350
-    pio_sm_set_consecutive_pindirs(pio, sm, OUTPUT_PIN_LAST+1, IR_4_PIN - OUTPUT_PIN_LAST, false);
-
     // Load our configuration, and jump to the start of the program
     pio_sm_init(pio, sm, offset, &c);
+
+    // CRITICAL RP2350 WORKAROUND: The PIO side-set pindirs doesn't work until
+    // the state machine has executed at least one explicit pindirs instruction!
+    // Execute a dummy pindirs instruction to "unlock" side-set pindirs functionality
+    pio_sm_exec(pio, sm, pio_encode_set(pio_pindirs, 0));  // Set all pins as inputs
+
+    // Just ensure HOLD and IO/M pin VALUES start at 0
+    // (HOLD will be controlled via pindirs - output=assert, input=release)
+    pio_sm_set_pins_with_mask(pio, sm, 0, (1u << IO_M_PIN) | (1u << HOLD_PIN));
+
+    // Debug: Check the actual SM configuration
+    uint32_t pinctrl = pio->sm[sm].pinctrl;
+    uint32_t execctrl = pio->sm[sm].execctrl;
+    printf("SM%d PINCTRL = 0x%08x\n", sm, pinctrl);
+    printf("  SIDESET_COUNT = %d\n", (pinctrl >> 29) & 0x7);
+    printf("  SET_COUNT = %d\n", (pinctrl >> 26) & 0x7);
+    printf("  OUT_COUNT = %d\n", (pinctrl >> 20) & 0x3F);
+    printf("  IN_BASE = %d\n", (pinctrl >> 15) & 0x1F);
+    printf("  SIDESET_BASE = %d\n", (pinctrl >> 10) & 0x1F);
+    printf("  SET_BASE = %d\n", (pinctrl >> 5) & 0x1F);
+    printf("  OUT_BASE = %d\n", pinctrl & 0x1F);
+    printf("SM%d EXECCTRL = 0x%08x\n", sm, execctrl);
+    printf("  SIDE_EN = %d\n", (execctrl >> 30) & 0x1);
+    printf("  SIDE_PINDIR = %d\n", (execctrl >> 29) & 0x1);
+
     // Don't enable the state machine here - it will be     enabled when needed
     // pio_sm_set_enabled(pio, sm, true);
     printf("finished configuring dma_controller_program_init %s\n", mode);

@@ -227,8 +227,14 @@ int main() {
     // Check bus signals (should now show activity)
     check_bus_signals();
 
-    // First, test HOLD/HLDA with ARM only (no PIO)
-    printf("\n=== ARM-only HOLD/HLDA Test ===\n");
+    // Skip ARM test to avoid interfering with PIO initialization
+    bool skip_arm_test = true;
+    if (skip_arm_test) {
+        printf("\n=== ARM Test Skipped (to avoid PIO interference) ===\n");
+        printf("Previous runs confirmed HOLD/HLDA hardware works correctly\n");
+    } else {
+        // First, test HOLD/HLDA with ARM only (no PIO)
+        printf("\n=== ARM-only HOLD/HLDA Test ===\n");
 
     // Configure pins for ARM control
     gpio_init(HOLD_PIN);
@@ -246,8 +252,8 @@ int main() {
     printf("\nInitial state:\n");
     printf("  HOLD=%d, HLDA=%d\n", gpio_get(HOLD_PIN), gpio_get(HLDA_PIN));
 
-    printf("\nAsserting HOLD=1...\n");
-    gpio_put(HOLD_PIN, 1);
+    printf("\nAsserting HOLD=0...\n");
+    gpio_put(HOLD_PIN, 0);
 
     // Poll HLDA for response
     printf("Polling HLDA for 100ms:\n");
@@ -269,12 +275,13 @@ int main() {
     }
 
     printf("\nDe-asserting HOLD=0...\n");
-    gpio_put(HOLD_PIN, 0);
+    gpio_put(HOLD_PIN, 1);
     sleep_ms(10);
     printf("  Final: HOLD=%d, HLDA=%d\n", gpio_get(HOLD_PIN), gpio_get(HLDA_PIN));
 
     printf("\n=== End ARM-only test ===\n\n");
     sleep_ms(100);
+    }  // end if (!skip_arm_test)
 
     // Launch stub core1
     multicore_launch_core1(core1_test_stub);
@@ -345,6 +352,28 @@ int main() {
     printf("After enabling write SM - TX FIFO: %d/4, PC=0x%x\n",
            pio_sm_get_tx_fifo_level(dma_pio, write_sm),
            pio_sm_get_pc(dma_pio, write_sm));
+
+    // Check DBG registers after SM starts
+    printf("After SM enable - DBG_PADOE: 0x%08x, DBG_PADOUT: 0x%08x\n",
+           pio0_hw->dbg_padoe, pio0_hw->dbg_padout);
+
+    // Test: Can we manually set pindirs via PIO exec?
+    printf("\nTesting manual pindir control via PIO exec...\n");
+    // Try to set pin 25 (HOLD) as output via exec
+    pio_sm_exec(dma_pio, write_sm, pio_encode_set(pio_pindirs, 1));  // Set pindirs to 1
+    sleep_us(10);
+    printf("After manual SET PINDIRS 1 - DBG_PADOE: 0x%08x\n", pio0_hw->dbg_padoe);
+
+    // Try mov pindirs, ~null (all outputs)
+    // Using 0xbc63 which is the encoding for MOV PINDIRS, ~NULL
+    pio_sm_exec(dma_pio, write_sm, 0xbc63);  // mov pindirs, ~null
+    sleep_us(10);
+    printf("After MOV PINDIRS ~NULL - DBG_PADOE: 0x%08x\n", pio0_hw->dbg_padoe);
+
+    // Reset back to inputs
+    pio_sm_exec(dma_pio, write_sm, pio_encode_set(pio_pindirs, 0));
+    sleep_us(10);
+    printf("After SET PINDIRS 0 - DBG_PADOE: 0x%08x\n", pio0_hw->dbg_padoe);
 
     // Now load the actual DMA cycle data
     printf("\nLoading DMA cycle data...\n");
