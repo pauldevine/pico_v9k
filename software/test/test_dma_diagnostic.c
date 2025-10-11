@@ -16,6 +16,166 @@
 #include "hardware/structs/pio.h"
 #include "hardware/structs/ioqspi.h"
 
+typedef enum {
+    DMA_STAGE_UNKNOWN = -1,
+    DMA_STAGE_T0_ADDR = 1,
+    DMA_STAGE_WAIT_HLDA_ASSERT = 4,
+    DMA_STAGE_T1_CLK5_HIGH = 7,
+    DMA_STAGE_T1_CLK5_LOW = 8,
+    DMA_STAGE_BRANCH_WRITE = 9,
+    DMA_STAGE_T2_CLK5_HIGH = 13,
+    DMA_STAGE_T2_CLK5_LOW = 14,
+    DMA_STAGE_T2_WAIT_READY = 15,
+    DMA_STAGE_T3_CLK5_HIGH = 16,
+    DMA_STAGE_T3_CLK5_LOW_RELEASE = 17,
+    DMA_STAGE_T4_CLK5_HIGH = 20,
+    DMA_STAGE_T4_CLK15B_EDGE = 22,
+    DMA_STAGE_WAIT_HLDA_DEASSERT = 24,
+    DMA_STAGE_WRITE_LOAD_DATA = 27,
+    DMA_STAGE_WRITE_DATA_OUT = 28,
+    DMA_STAGE_WRITE_STROBES = 29
+} dma_stage_index_t;
+
+typedef struct {
+    uint32_t pc;
+    uint8_t instr_index;
+    bool stalled;
+} dma_sm_snapshot_t;
+
+static inline pio_hw_t *pio_hw_from_inst(PIO pio) {
+    switch (pio_get_index(pio)) {
+        case 0: return pio0_hw;
+#if NUM_PIOS > 1
+        case 1: return pio1_hw;
+#endif
+#if NUM_PIOS > 2
+        case 2: return pio2_hw;
+#endif
+        default: return NULL;
+    }
+}
+
+static dma_sm_snapshot_t dma_capture_sm_snapshot(PIO pio, uint sm, uint offset) {
+    dma_sm_snapshot_t snap = {
+        .pc = pio_sm_get_pc(pio, sm),
+        .stalled = pio_sm_is_exec_stalled(pio, sm)
+    };
+
+    if (snap.pc >= offset) {
+        snap.instr_index = (uint8_t)(snap.pc - offset);
+    } else {
+        snap.instr_index = (uint8_t)snap.pc;
+    }
+
+    return snap;
+}
+
+static const char *dma_stage_label(bool is_write, uint8_t instr_index) {
+    switch (instr_index) {
+        case 0: return "Init: OUT X (mode)";
+        case DMA_STAGE_T0_ADDR: return "T0: address on bus";
+        case 2: return "T0: preset control lines";
+        case 3: return "T0: preload data byte";
+        case DMA_STAGE_WAIT_HLDA_ASSERT: return "Wait HLDA↑ (bus grant)";
+        case 5: return "Assert HOLD, drive address/data";
+        case 6: return "Drive control pindirs";
+        case DMA_STAGE_T1_CLK5_HIGH: return "T1: wait CLK5↑";
+        case DMA_STAGE_T1_CLK5_LOW: return "T1: wait CLK5↓";
+        case DMA_STAGE_BRANCH_WRITE: return is_write ? "Branch to write path" : "Stay on read path";
+        case 10: return "T2(read): drive RD/";
+        case 11: return "T2(read): move byte to OSR";
+        case 12: return "T2(read): set BD as inputs";
+        case DMA_STAGE_T2_CLK5_HIGH: return "T2: wait CLK5↑";
+        case DMA_STAGE_T2_CLK5_LOW: return "T2: wait CLK5↓";
+        case DMA_STAGE_T2_WAIT_READY: return "T2: wait READY↑";
+        case DMA_STAGE_T3_CLK5_HIGH: return "T3: wait CLK5↑";
+        case DMA_STAGE_T3_CLK5_LOW_RELEASE: return "T3: wait CLK5↓ (release HOLD)";
+        case 18: return is_write ? "Skip read sampling" : "Read path continues";
+        case 19: return "T3(read): sample data bus";
+        case DMA_STAGE_T4_CLK5_HIGH: return "T4: wait CLK5↑";
+        case 21: return "T4: restore control lines";
+        case DMA_STAGE_T4_CLK15B_EDGE: return "T4: wait CLK15B edge";
+        case 23: return "T4: end of cycle (DEN high)";
+        case DMA_STAGE_WAIT_HLDA_DEASSERT: return "Wait HLDA↓ (bus release)";
+        case 25: return "Release control pindirs";
+        case 26: return "Release address bus";
+        case DMA_STAGE_WRITE_LOAD_DATA: return "T2(write): load data byte";
+        case DMA_STAGE_WRITE_DATA_OUT: return "T2(write): present data";
+        case DMA_STAGE_WRITE_STROBES: return "T2(write): assert WR/";
+        case 30: return "Loop to T2";
+        default: return "Unknown/idle";
+    }
+}
+
+static void dma_log_wait_context(const dma_sm_snapshot_t *snap, bool is_write, pio_hw_t *hw) {
+    switch (snap->instr_index) {
+        case DMA_STAGE_WAIT_HLDA_ASSERT:
+            printf("    HOLD(dir)=%d HOLD(val)=%d HLDA=%d\n",
+                   (hw->dbg_padoe >> HOLD_PIN) & 1,
+                   (hw->dbg_padout >> HOLD_PIN) & 1,
+                   gpio_get(HLDA_PIN));
+            break;
+        case DMA_STAGE_T1_CLK5_HIGH:
+        case DMA_STAGE_T1_CLK5_LOW:
+        case DMA_STAGE_T2_CLK5_HIGH:
+        case DMA_STAGE_T2_CLK5_LOW:
+        case DMA_STAGE_T3_CLK5_HIGH:
+        case DMA_STAGE_T3_CLK5_LOW_RELEASE:
+        case DMA_STAGE_T4_CLK5_HIGH:
+            printf("    CLK5=%d\n", gpio_get(CLOCK_5_PIN));
+            if (snap->instr_index == DMA_STAGE_T3_CLK5_LOW_RELEASE) {
+                printf("    HOLD(dir)=%d HLDA=%d\n",
+                       (hw->dbg_padoe >> HOLD_PIN) & 1,
+                       gpio_get(HLDA_PIN));
+            }
+            break;
+        case DMA_STAGE_T2_WAIT_READY:
+            printf("    READY=%d (expect 1)\n", gpio_get(READY_PIN));
+            break;
+        case DMA_STAGE_T4_CLK15B_EDGE:
+            printf("    CLK15B=%d\n", gpio_get(CLOCK_15B_PIN));
+            break;
+        case DMA_STAGE_WAIT_HLDA_DEASSERT:
+            printf("    HLDA=%d HOLD(dir)=%d HOLD(val)=%d\n",
+                   gpio_get(HLDA_PIN),
+                   (hw->dbg_padoe >> HOLD_PIN) & 1,
+                   (hw->dbg_padout >> HOLD_PIN) & 1);
+            break;
+        default:
+            (void)is_write;
+            break;
+    }
+}
+
+static void dma_log_sm_state(const char *tag, PIO pio, uint sm, uint offset, bool is_write) {
+    dma_sm_snapshot_t snap = dma_capture_sm_snapshot(pio, sm, offset);
+    pio_hw_t *hw = pio_hw_from_inst(pio);
+    uint fifo_level = pio_sm_get_tx_fifo_level(pio, sm);
+
+    printf("%s: SM%d PC=0x%02x (idx %u: %s) stalled=%d TX=%u RX_empty=%d\n",
+           tag, sm, snap.pc, snap.instr_index,
+           dma_stage_label(is_write, snap.instr_index),
+           snap.stalled, fifo_level,
+           pio_sm_is_rx_fifo_empty(pio, sm));
+
+    if (hw && snap.stalled) {
+        dma_log_wait_context(&snap, is_write, hw);
+    }
+}
+
+static void dma_monitor_progress(const char *prefix,
+                                 PIO pio, uint sm, uint offset,
+                                 bool is_write) {
+    static const uint32_t checkpoints_us[] = {2, 10, 50, 200, 1000};
+
+    for (size_t i = 0; i < sizeof(checkpoints_us) / sizeof(checkpoints_us[0]); i++) {
+        busy_wait_us(checkpoints_us[i]);
+        char tag[64];
+        snprintf(tag, sizeof(tag), "%s +%u us", prefix, checkpoints_us[i]);
+        dma_log_sm_state(tag, pio, sm, offset, is_write);
+    }
+}
+
 #define TEST_SIZE 2  // Start with just 2 bytes for debugging
 #define TEST_ADDRESS 0x10000  // Test address in Victor RAM (segment 0x1000:0x0000)
 #define UART_ID uart0
@@ -152,15 +312,11 @@ void test_pio_single_write(PIO pio, uint sm, uint32_t address, uint8_t data) {
            pio_sm_is_tx_fifo_empty(pio, sm));
 }
 
-void test_pio_single_read(PIO pio, uint sm, uint32_t address) {
+void test_pio_single_read(PIO pio, uint sm, uint offset, uint32_t address) {
     printf("\n=== Single Read Test ===\n");
     printf("Reading from address 0x%05X\n", address);
 
-    // Check PIO state before
-    printf("Before: SM%d PC=0x%x, stalled=%d, RX FIFO empty=%d\n",
-           sm, pio_sm_get_pc(pio, sm),
-           pio_sm_is_exec_stalled(pio, sm),
-           pio_sm_is_rx_fifo_empty(pio, sm));
+    dma_log_sm_state("Read SM before request", pio, sm, offset, false);
 
     // Send address to PIO
     uint32_t addr_only = address & 0xFFFFF;
@@ -169,8 +325,10 @@ void test_pio_single_read(PIO pio, uint sm, uint32_t address) {
     printf("Sending to PIO: addr=0x%07X\n", addr_with_pindirs);
     pio_sm_put_blocking(pio, sm, addr_with_pindirs);
 
-    // Wait and try to read
+    dma_monitor_progress("Read SM after address", pio, sm, offset, false);
+
     sleep_ms(10);
+    dma_log_sm_state("Read SM after 10ms", pio, sm, offset, false);
 
     uint32_t data = 0xFF;  // Default value
     if (!pio_sm_is_rx_fifo_empty(pio, sm)) {
@@ -180,11 +338,7 @@ void test_pio_single_read(PIO pio, uint sm, uint32_t address) {
         printf("No data in RX FIFO!\n");
     }
 
-    // Check PIO state after
-    printf("After: SM%d PC=0x%x, stalled=%d, RX FIFO empty=%d\n",
-           sm, pio_sm_get_pc(pio, sm),
-           pio_sm_is_exec_stalled(pio, sm),
-           pio_sm_is_rx_fifo_empty(pio, sm));
+    dma_log_sm_state("Read SM final state", pio, sm, offset, false);
 }
 
 // Forward declarations for signal simulator
@@ -216,7 +370,9 @@ int main() {
 
     dump_pio_versions();
     
-
+    gpio_init(DEBUG_PIN);
+    gpio_set_dir(DEBUG_PIN, GPIO_OUT);
+    gpio_put(DEBUG_PIN, 0);
 
     // Sleep briefly to ensure serial output is visible
     sleep_ms(5);
@@ -227,61 +383,8 @@ int main() {
     // Check bus signals (should now show activity)
     check_bus_signals();
 
-    // Skip ARM test to avoid interfering with PIO initialization
-    bool skip_arm_test = true;
-    if (skip_arm_test) {
-        printf("\n=== ARM Test Skipped (to avoid PIO interference) ===\n");
-        printf("Previous runs confirmed HOLD/HLDA hardware works correctly\n");
-    } else {
-        // First, test HOLD/HLDA with ARM only (no PIO)
-        printf("\n=== ARM-only HOLD/HLDA Test ===\n");
-
-    // Configure pins for ARM control
-    gpio_init(HOLD_PIN);
-    gpio_set_dir(HOLD_PIN, GPIO_OUT);
-    gpio_put(HOLD_PIN, 0);  // Start with HOLD low
-
-    gpio_init(HLDA_PIN);
-    gpio_set_dir(HLDA_PIN, GPIO_IN);
-    gpio_pull_down(HLDA_PIN);  // Weak pull-down
-
-    printf("HOLD pin %d configured as output (ARM)\n", HOLD_PIN);
-    printf("HLDA pin %d configured as input (ARM)\n", HLDA_PIN);
-
-    // Test sequence
-    printf("\nInitial state:\n");
-    printf("  HOLD=%d, HLDA=%d\n", gpio_get(HOLD_PIN), gpio_get(HLDA_PIN));
-
-    printf("\nAsserting HOLD=0...\n");
-    gpio_put(HOLD_PIN, 0);
-
-    // Poll HLDA for response
-    printf("Polling HLDA for 100ms:\n");
-    int hlda_went_high = 0;
-    for (int i = 0; i < 100; i++) {
-        int hlda = gpio_get(HLDA_PIN);
-        if (hlda && !hlda_went_high) {
-            hlda_went_high = 1;
-            printf("  HLDA went HIGH at %dms!\n", i);
-        }
-        if (i % 10 == 0) {
-            printf("  %dms: HOLD=%d, HLDA=%d\n", i, gpio_get(HOLD_PIN), gpio_get(HLDA_PIN));
-        }
-        sleep_ms(1);
-    }
-
-    if (!hlda_went_high) {
-        printf("  ERROR: HLDA never went high!\n");
-    }
-
-    printf("\nDe-asserting HOLD=0...\n");
-    gpio_put(HOLD_PIN, 1);
-    sleep_ms(10);
-    printf("  Final: HOLD=%d, HLDA=%d\n", gpio_get(HOLD_PIN), gpio_get(HLDA_PIN));
-
-    printf("\n=== End ARM-only test ===\n\n");
-    sleep_ms(100);
-    }  // end if (!skip_arm_test)
+    printf("\n=== ARM Test Skipped (to avoid PIO interference) ===\n");
+    printf("Previous runs confirmed HOLD/HLDA hardware works correctly\n");
 
     // Launch stub core1
     multicore_launch_core1(core1_test_stub);
@@ -333,8 +436,10 @@ int main() {
 
     //one time initialization of X direction
     //x = DMA direction (read or write)
+    gpio_put(DEBUG_PIN, 1);
     printf("  Init Slot 1: DMA_WRITE (0x%08x)\n", DMA_WRITE);
     pio_sm_put_blocking(dma_pio, write_sm, DMA_WRITE);
+    gpio_put(DEBUG_PIN, 0);
 
      dump_pio_dbg();
 
@@ -342,38 +447,35 @@ int main() {
     printf("Before enabling - TX FIFO level: %d/4\n",
            pio_sm_get_tx_fifo_level(dma_pio, write_sm));
         
-    
+    gpio_put(DEBUG_PIN, 1);
     printf("Enabling write SM (will consume init value)...\n");
     pio_sm_set_enabled(dma_pio, write_sm, true);
+    gpio_put(DEBUG_PIN, 0);
 
-    // Small delay to let init complete
-    sleep_us(100);
-
-    printf("After enabling write SM - TX FIFO: %d/4, PC=0x%x\n",
-           pio_sm_get_tx_fifo_level(dma_pio, write_sm),
-           pio_sm_get_pc(dma_pio, write_sm));
+    dma_monitor_progress("Write SM post-enable", dma_pio, write_sm,
+                         dma_read_write_program_offset, true);
 
     // Check DBG registers after SM starts
     printf("After SM enable - DBG_PADOE: 0x%08x, DBG_PADOUT: 0x%08x\n",
            pio0_hw->dbg_padoe, pio0_hw->dbg_padout);
 
-    // Test: Can we manually set pindirs via PIO exec?
-    printf("\nTesting manual pindir control via PIO exec...\n");
-    // Try to set pin 25 (HOLD) as output via exec
-    pio_sm_exec(dma_pio, write_sm, pio_encode_set(pio_pindirs, 1));  // Set pindirs to 1
-    sleep_us(10);
-    printf("After manual SET PINDIRS 1 - DBG_PADOE: 0x%08x\n", pio0_hw->dbg_padoe);
+    // // Test: Can we manually set pindirs via PIO exec?
+    // printf("\nTesting manual pindir control via PIO exec...\n");
+    // // Try to set pin 25 (HOLD) as output via exec
+    // pio_sm_exec(dma_pio, write_sm, pio_encode_set(pio_pindirs, 1));  // Set pindirs to 1
+    // sleep_us(10);
+    // printf("After manual SET PINDIRS 1 - DBG_PADOE: 0x%08x\n", pio0_hw->dbg_padoe);
 
-    // Try mov pindirs, ~null (all outputs)
-    // Using 0xbc63 which is the encoding for MOV PINDIRS, ~NULL
-    pio_sm_exec(dma_pio, write_sm, 0xbc63);  // mov pindirs, ~null
-    sleep_us(10);
-    printf("After MOV PINDIRS ~NULL - DBG_PADOE: 0x%08x\n", pio0_hw->dbg_padoe);
+    // // Try mov pindirs, ~null (all outputs)
+    // // Using 0xbc63 which is the encoding for MOV PINDIRS, ~NULL
+    // pio_sm_exec(dma_pio, write_sm, 0xbc63);  // mov pindirs, ~null
+    // sleep_us(10);
+    // printf("After MOV PINDIRS ~NULL - DBG_PADOE: 0x%08x\n", pio0_hw->dbg_padoe);
 
     // Reset back to inputs
-    pio_sm_exec(dma_pio, write_sm, pio_encode_set(pio_pindirs, 0));
-    sleep_us(10);
-    printf("After SET PINDIRS 0 - DBG_PADOE: 0x%08x\n", pio0_hw->dbg_padoe);
+    // pio_sm_exec(dma_pio, write_sm, pio_encode_set(pio_pindirs, 0));
+    // sleep_us(10);
+    // printf("After SET PINDIRS 0 - DBG_PADOE: 0x%08x\n", pio0_hw->dbg_padoe);
 
     // Now load the actual DMA cycle data
     printf("\nLoading DMA cycle data...\n");
@@ -384,9 +486,13 @@ int main() {
     uint32_t addr_data = addr | (data << 20);  // Address in low 20 bits, data in high 8 bits
 
     printf("  Data Slot 1: Address plus data (0x%07x)\n", addr_data);
+    gpio_put(DEBUG_PIN, 1);
     pio_sm_put_blocking(dma_pio, write_sm, addr_data);
     dump_pio_dbg();
+    gpio_put(DEBUG_PIN, 0);
     printf("DMA cycle data loaded.\n");
+    dma_monitor_progress("Write SM after slot 1", dma_pio, write_sm,
+                         dma_read_write_program_offset, true);
 
     addr++;
     data = (0x55 & 0xFF);
@@ -395,6 +501,8 @@ int main() {
     pio_sm_put_blocking(dma_pio, write_sm, addr_data);
     dump_pio_dbg();
     printf("DMA cycle data loaded.\n");
+    dma_monitor_progress("Write SM after slot 2", dma_pio, write_sm,
+                         dma_read_write_program_offset, true);
 
     addr++;
     data = (0x55 & 0xFF);
@@ -403,6 +511,8 @@ int main() {
     pio_sm_put_blocking(dma_pio, write_sm, addr_data);
     dump_pio_dbg();
     printf("DMA cycle data loaded.\n");
+    dma_monitor_progress("Write SM after slot 3", dma_pio, write_sm,
+                         dma_read_write_program_offset, true);
 
     // Check immediately after loading data
     printf("After loading data - TX FIFO: %d/4, PC=0x%x\n",
@@ -432,11 +542,8 @@ int main() {
 
     print_gpio_states();
 
-    sleep_ms(1);
-
-    printf("After 1ms - TX FIFO: %d/4, PC=0x%x\n",
-           pio_sm_get_tx_fifo_level(dma_pio, write_sm),
-           pio_sm_get_pc(dma_pio, write_sm));
+    dma_log_sm_state("Write SM after 1ms", dma_pio, write_sm,
+                     dma_read_write_program_offset, true);
 
     // Poll ALL pins to find which one has HLDA signal
     printf("Polling all pins for changes after HOLD asserted:\n");
@@ -530,17 +637,15 @@ int main() {
         printf("  PIO IN instruction didn't produce data\n");
     }
 
-    // Check FIFO after 10ms total
-    printf("After 10ms - TX FIFO level: %d/4, PC=0x%x\n",
-           pio_sm_get_tx_fifo_level(dma_pio, write_sm),
-           pio_sm_get_pc(dma_pio, write_sm));
+    sleep_ms(10);
+    dma_log_sm_state("Write SM after 10ms", dma_pio, write_sm,
+                     dma_read_write_program_offset, true);
 
     // Check if state machine is waiting at expected point
     sleep_ms(100);
-    printf("After write attempt - SM state: PC=0x%x, stalled=%d, TX FIFO: %d/4\n",
-           pio_sm_get_pc(dma_pio, write_sm),
-           pio_sm_is_exec_stalled(dma_pio, write_sm),
-           pio_sm_get_tx_fifo_level(dma_pio, write_sm));
+    dma_log_sm_state("Write SM after 100ms", dma_pio, write_sm,
+                     dma_read_write_program_offset, true);
+    printf("    TX FIFO level: %d/4\n", pio_sm_get_tx_fifo_level(dma_pio, write_sm));
 
     printf("DMA write test complete. Disabling write SM.\n");
     pio_sm_set_enabled(dma_pio, write_sm, false);
@@ -556,14 +661,14 @@ int main() {
            pio_sm_get_tx_fifo_level(dma_pio, read_sm));
 
     pio_sm_set_enabled(dma_pio, read_sm, true);
-    sleep_ms(10);
+    dma_monitor_progress("Read SM post-enable", dma_pio, read_sm,
+                         dma_read_write_program_offset, false);
 
-    test_pio_single_read(dma_pio, read_sm, TEST_ADDRESS);
+    test_pio_single_read(dma_pio, read_sm, dma_read_write_program_offset, TEST_ADDRESS);
 
     sleep_ms(100);
-    printf("After read attempt - SM state: PC=0x%x, stalled=%d\n",
-           pio_sm_get_pc(dma_pio, read_sm),
-           pio_sm_is_exec_stalled(dma_pio, read_sm));
+    dma_log_sm_state("Read SM after 100ms", dma_pio, read_sm,
+                     dma_read_write_program_offset, false);
 
     pio_sm_set_enabled(dma_pio, read_sm, false);
 
