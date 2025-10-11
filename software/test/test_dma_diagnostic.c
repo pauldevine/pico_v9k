@@ -197,31 +197,19 @@ int main() {
     set_sys_clock_khz(200000, true);
     initialize_uart();
 
-    printf("Init RD (pin %d) \n", RD_PIN);
-    gpio_init(RD_PIN);
-    gpio_set_dir(RD_PIN, GPIO_IN);
-    printf("Init WR (pin %d) \n", WR_PIN);
-    gpio_init(WR_PIN);
-    gpio_set_dir(WR_PIN, GPIO_IN);
-    printf("Init HOLD (pin %d) \n", HOLD_PIN);
-    gpio_init(HOLD_PIN);
-    gpio_set_dir(HOLD_PIN, GPIO_IN);
-    printf("Init ALE (pin %d) \n", ALE_PIN);
-    gpio_init(ALE_PIN);
-    gpio_set_dir(ALE_PIN, GPIO_IN);
-    printf("Init HLDA (pin %d) \n", HLDA_PIN);
-    gpio_init(HLDA_PIN);
-    gpio_set_dir(HLDA_PIN, GPIO_IN);
-    gpio_set_dir(HLDA_PIN, GPIO_IN);
-    printf("Init READY (pin %d) \n", READY_PIN);
-    gpio_init(READY_PIN);
-    gpio_set_dir(READY_PIN, GPIO_IN);
-    printf("Init CLOCK_5 (pin %d) \n", CLOCK_5_PIN);
-    gpio_init(CLOCK_5_PIN);
-    gpio_set_dir(CLOCK_5_PIN, GPIO_IN);
-    printf("Init CLOCK_15B (pin %d) \n", CLOCK_15B_PIN);
-    gpio_init(CLOCK_15B_PIN);
-    gpio_set_dir(CLOCK_15B_PIN, GPIO_IN);
+    // WARNING: These pins will be controlled by PIO as outputs during DMA cycles
+    // Do NOT initialize them here as it will conflict with PIO
+    printf("Skipping ARM GPIO init for RD (pin %d) - PIO will control\n", RD_PIN);
+    printf("Skipping ARM GPIO init for WR (pin %d) - PIO will control\n", WR_PIN);
+    printf("Skipping ARM GPIO init for HOLD (pin %d) - PIO will control\n", HOLD_PIN);
+    printf("Skipping ARM GPIO init for ALE (pin %d) - PIO will control\n", ALE_PIN);
+    // WARNING: Do NOT use gpio_init() on pins that PIO will read with wait instructions!
+    // gpio_init() sets the pin to GPIO_FUNC_SIO which disconnects it from PIO
+    // Just leave these pins alone - the PIO init will route them properly
+    printf("Skipping ARM GPIO init for HLDA (pin %d) - PIO will handle\n", HLDA_PIN);
+    printf("Skipping ARM GPIO init for READY (pin %d) - PIO will handle\n", READY_PIN);
+    printf("Skipping ARM GPIO init for CLOCK_5 (pin %d) - PIO will handle\n", CLOCK_5_PIN);
+    printf("Skipping ARM GPIO init for CLOCK_15B (pin %d) - PIO will handle\n", CLOCK_15B_PIN);
 
     printf("\n=== DMA Hardware Diagnostic Test ===\n");
     printf("Running comprehensive diagnostics...\n\n");
@@ -327,8 +315,27 @@ int main() {
            pio_sm_get_tx_fifo_level(dma_pio, write_sm),
            pio_sm_get_pc(dma_pio, write_sm));
 
-    // Check HOLD and HLDA states immediately
-    printf("HOLD pin: %d, HLDA pin: %d\n", gpio_get(HOLD_PIN), gpio_get(HLDA_PIN));
+    // Check HOLD and HLDA states - both ARM view and PIO view
+    printf("HOLD pin (ARM view): %d, HLDA pin (ARM view): %d\n", gpio_get(HOLD_PIN), gpio_get(HLDA_PIN));
+
+    // Check what PIO actually sees on the pins - try different registers
+    uint32_t pio_pins = pio0_hw->input_sync_bypass;
+    uint32_t gpio_in = sio_hw->gpio_in;
+    printf("PIO0 input_sync_bypass: 0x%08x\n", pio_pins);
+    printf("SIO gpio_in register: 0x%08x\n", gpio_in);
+    // Check if we're on the right GPIO base (RP2350 specific)
+    printf("PIO0 DBG_CFGINFO: 0x%08x\n", pio0_hw->dbg_cfginfo);
+
+    // Check both PIO and SIO views
+    printf("  HLDA (pin %d) - PIO: %d, SIO: %d\n", HLDA_PIN,
+           (pio_pins >> HLDA_PIN) & 1, (gpio_in >> HLDA_PIN) & 1);
+    printf("  READY (pin %d) - PIO: %d, SIO: %d\n", READY_PIN,
+           (pio_pins >> READY_PIN) & 1, (gpio_in >> READY_PIN) & 1);
+    printf("  CLK5 (pin %d) - PIO: %d, SIO: %d\n", CLOCK_5_PIN,
+           (pio_pins >> CLOCK_5_PIN) & 1, (gpio_in >> CLOCK_5_PIN) & 1);
+    printf("  CLK15B (pin %d) - PIO: %d, SIO: %d\n", CLOCK_15B_PIN,
+           (pio_pins >> CLOCK_15B_PIN) & 1, (gpio_in >> CLOCK_15B_PIN) & 1);
+
     print_gpio_states();
 
     sleep_ms(1);
@@ -336,9 +343,52 @@ int main() {
     printf("After 1ms - TX FIFO: %d/4, PC=0x%x\n",
            pio_sm_get_tx_fifo_level(dma_pio, write_sm),
            pio_sm_get_pc(dma_pio, write_sm));
-    printf("HOLD: %d, HLDA: %d, READY: %d, CLK5: %d, CLK15B: %d\n",
+
+    // Check PIO view again - try multiple ways
+    pio_pins = pio0_hw->input_sync_bypass;
+    gpio_in = sio_hw->gpio_in;
+
+    // Check the PIO's DBG registers which show what the PIO sees
+    uint32_t pio_dbg_padout = pio0_hw->dbg_padout;
+    uint32_t pio_dbg_padoe = pio0_hw->dbg_padoe;
+
+    printf("After 1ms wait:\n");
+    printf("  PIO0 input_sync_bypass: 0x%08x\n", pio_pins);
+    printf("  PIO0 dbg_padout: 0x%08x\n", pio_dbg_padout);
+    printf("  PIO0 dbg_padoe: 0x%08x\n", pio_dbg_padoe);
+    printf("  SIO gpio_in: 0x%08x\n", gpio_in);
+
+    printf("PIO sees HLDA=%d, READY=%d, CLK5=%d, CLK15B=%d\n",
+           (pio_pins >> HLDA_PIN) & 1, (pio_pins >> READY_PIN) & 1,
+           (pio_pins >> CLOCK_5_PIN) & 1, (pio_pins >> CLOCK_15B_PIN) & 1);
+    printf("ARM sees HOLD=%d, HLDA=%d, READY=%d, CLK5=%d, CLK15B=%d\n",
            gpio_get(HOLD_PIN), gpio_get(HLDA_PIN), gpio_get(READY_PIN),
            gpio_get(CLOCK_5_PIN), gpio_get(CLOCK_15B_PIN));
+
+    // Try forcing a simple PIO instruction to read GPIO
+    printf("\nTesting PIO pin reading with 'IN PINS, 32' instruction:\n");
+    // First, we need to configure the IN pin base for this state machine
+    // The write SM might not have IN pins configured, so let's set it
+    pio_sm_set_in_pins(dma_pio, write_sm, 0);  // Set IN base to pin 0
+
+    // Execute IN PINS, 32 to read all 32 pins
+    // PIO_SRC_PINS is defined as 0 in the SDK
+    pio_sm_exec(dma_pio, write_sm, pio_encode_in(0, 32));  // 0 = pins source
+    sleep_us(10);
+
+    // Also try pushing ISR to RX FIFO
+    pio_sm_exec(dma_pio, write_sm, pio_encode_push(false, false));
+    sleep_us(10);
+
+    if (!pio_sm_is_rx_fifo_empty(dma_pio, write_sm)) {
+        uint32_t pins_read = pio_sm_get(dma_pio, write_sm);
+        printf("  PIO read pins via IN: 0x%08x\n", pins_read);
+        printf("  Pin 27=%d, 28=%d, 29=%d, 30=%d\n",
+               (pins_read >> 27) & 1, (pins_read >> 28) & 1,
+               (pins_read >> 29) & 1, (pins_read >> 30) & 1);
+    } else {
+        printf("  PIO IN instruction didn't produce data\n");
+    }
 
     // Check FIFO after 10ms total
     printf("After 10ms - TX FIFO level: %d/4, PC=0x%x\n",

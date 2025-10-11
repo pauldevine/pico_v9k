@@ -43,7 +43,7 @@ T0:                                ; Address Setup Phase (Put Address on Bus)
     out pins, ADDRESS_BUS_SIZE     ; prepare bus address to T1 state, A0-A19 on bus, pindirs still input
     set pins, 0b11111 side 0b01    ; prepare control pins to T1 state, pindir OUT for HOLD output requesting bus, others input
     out y, 8                       ; get data byte from FIFO, either data to write or 0x00 for read
-    wait 1 GPIO HLDA_PIN           ; wait for HLDA to go high
+    wait 1 gpio HLDA_PIN           ; wait for HLDA to go high
 T1:
     
     mov pindirs, ~null side 0b11   ; Set all address pins' direction to output / IO/M output / HOLD output
@@ -92,6 +92,29 @@ T2_WRITE:
 #define OUTPUT_PIN_LAST  IO_M_PIN
 
 
+/*
+ * CRITICAL PIN INITIALIZATION RULES:
+ *
+ * Output pins (controlled by PIO via pindirs):
+ *   - A0-A19 (address bus) - pins 0-19
+ *   - RD/, WR/, DT/R/, ALE, DEN/ (control outputs) - pins 20-24
+ *   - HOLD/, IO/M/ (side-set outputs) - pins 25-26
+ *   USE: pio_gpio_init() to give PIO full control including pin direction
+ *
+ * Input-only pins (read by PIO wait instructions):
+ *   - READY - pin 27
+ *   - HLDA - pin 28
+ *   - CLOCK_5 - pin 29
+ *   - CLOCK_15B - pin 30
+ *   - IR pins - pins 31+
+ *   USE: ONLY gpio_set_function(pin, GPIO_FUNC_PIO0/1/2) to route to PIO
+ *   DO NOT use gpio_init() (sets wrong function) or pio_gpio_init() (gives unwanted pindirs control)
+ *
+ * Why this matters:
+ *   - PIO wait instructions require the pin to be routed to PIO via function mux
+ *   - If a pin isn't routed to PIO, wait will hang forever
+ *   - Using pio_gpio_init() on input-only pins causes them to glitch when pindirs changes
+ */
 static inline void dma_read_write_program_init(PIO pio, uint sm, uint offset, uint pin, bool read) {
     char* mode;
     if (read) {
@@ -137,13 +160,24 @@ static inline void dma_read_write_program_init(PIO pio, uint sm, uint offset, ui
         printf("GPIO%d_CTRL = 0x%08x\n", i, io_bank0_hw->io[i].ctrl);
     }
 
+    // Initialize input-only pins - MUST use pio_gpio_init to properly route to PIO!
+    // These pins include READY_PIN (27), HLDA_PIN (28), CLOCK_5_PIN (29), CLOCK_15B_PIN (30), and IR pins
+    // Despite SDK docs, pio_gpio_init IS required for PIO to read input pins on RP2350
     for (int i = OUTPUT_PIN_LAST+1; i <= IR_4_PIN; i++) {
-        gpio_init(i);
-        gpio_set_dir(i, GPIO_IN);
-        gpio_set_drive_strength(i, GPIO_DRIVE_STRENGTH_12MA);
-        gpio_set_function(i, PIO_FUNCSEL_NUM(pio, i)); 
+        // MUST use pio_gpio_init() - it's required for PIO to see the pin!
         pio_gpio_init(pio, i);
-        printf("dma %s gpio_init %d\n", mode, i);
+        // Immediately set direction back to input (pio_gpio_init sets it to output)
+        gpio_set_dir(i, GPIO_IN);
+
+#ifdef PADS_BANK0_GPIO0_ISO_BITS
+        // RP2350: Clear the ISO bit to remove pad isolation
+        // This is CRITICAL - without this, the PIO cannot see the pin!
+        hw_clear_bits(&pads_bank0_hw->io[i], PADS_BANK0_GPIO0_ISO_BITS);
+#endif
+
+        printf("dma %s pio_gpio_init pin %d (then set to input)\n", mode, i);
+        printf("GPIO%d_CTRL = 0x%08x, OE=%d, PADS=0x%08x\n", i, io_bank0_hw->io[i].ctrl,
+               (sio_hw->gpio_oe >> i) & 1, pads_bank0_hw->io[i]);
     }
     
     //setup HOLD and IO/M to have initial value of 0
@@ -153,8 +187,13 @@ static inline void dma_read_write_program_init(PIO pio, uint sm, uint offset, ui
     gpio_init(HOLD_PIN);
     gpio_put(HOLD_PIN, 0);
 
-    // Set all pins as inputs initially
-    pio_sm_set_consecutive_pindirs(pio, sm, pin, OUTPUT_PIN_LAST+1, false);
+    // Set all output pins (0-26) as inputs initially
+    pio_sm_set_consecutive_pindirs(pio, sm, pin, OUTPUT_PIN_LAST - pin + 1, false);
+
+    // Ensure input-only pins (27-31) stay as inputs
+    // Note: We use pio_gpio_init on these but immediately set them back to input
+    // This is required for PIO to see the pins on RP2350
+    pio_sm_set_consecutive_pindirs(pio, sm, OUTPUT_PIN_LAST+1, IR_4_PIN - OUTPUT_PIN_LAST, false);
 
     // Load our configuration, and jump to the start of the program
     pio_sm_init(pio, sm, offset, &c);
