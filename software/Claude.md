@@ -195,13 +195,13 @@ Hardware redesign to remove 74LVC245 level shifters and connect RP2350 directly 
 - CLOCK_5 - pin 29
 - CLOCK_15B - pin 30
 - IR pins - pins 31+
-- **Initialization**: Use ONLY `gpio_set_function(pin, GPIO_FUNC_PIO0 + pio_get_index(pio))` to route to PIO
-- **DO NOT** use `gpio_init()` (sets wrong function to GPIO_FUNC_SIO)
-- **DO NOT** use `pio_gpio_init()` (gives unwanted pindirs control)
+- **Initialization**: MUST use `pio_gpio_init()` followed by `gpio_set_dir(pin, GPIO_IN)`
+- **Critical RP2350 Issue**: Despite SDK documentation stating pio_gpio_init is only needed for outputs, on RP2350 it is REQUIRED for all pins that PIO needs to read with wait or IN instructions
+- **Symptom if not done correctly**: PIO wait instructions will hang forever even though ARM can read the pin correctly
 
 **Common initialization mistakes:**
 1. Calling `gpio_init()` on pins that PIO needs to read - this sets the function to GPIO_FUNC_SIO, disconnecting from PIO
-2. Using `pio_gpio_init()` on input-only pins - causes glitches when PIO changes pindirs
+2. NOT calling `pio_gpio_init()` on input pins - on RP2350 this is required despite SDK docs
 3. Test/debug code interfering by re-initializing pins after PIO setup
 4. Missing the function routing entirely - PIO wait instructions will hang forever
 
