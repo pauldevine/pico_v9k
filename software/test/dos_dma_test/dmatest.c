@@ -22,11 +22,11 @@
 #define DMA_ADDR_HIGH   0xC0    /* DMA address high byte */
 
 /* Control register bits */
-#define DMA_RESET_BIT   0x80
-#define DMA_ON_LATCH_BIT 0x40
-#define DMA_ON_VALUE_BIT 0x20
-#define DMA_WR_MODE_BIT 0x10
-#define DMA_SELECT_BIT  0x08
+#define DMA_RESET_BIT    0x20
+#define DMA_ON_LATCH_BIT 0x04
+#define DMA_ON_VALUE_BIT 0x01
+#define DMA_WR_MODE_BIT  0x08
+#define DMA_SELECT_BIT   0x10
 
 /* Status register bits */
 #define SASI_REQ_BIT    0x01

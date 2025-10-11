@@ -129,9 +129,9 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
         dma->block_count.full = blocks;
     }
 
-    // Indicate busy during data transfer (matches log polling values)
-    dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_INP_BIT | SASI_MSG_BIT);
-    dma->bus_ctrl |= (SASI_BSY_BIT | SASI_CTL_BIT);
+    // Indicate data-in phase: BSY asserted, C/D low, I/O high
+    dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_CTL_BIT);
+    dma->bus_ctrl |= (SASI_BSY_BIT | SASI_INP_BIT);
 
     // Simulate reading from disk and DMA to system RAM
     for (uint16_t i = 0; i < blocks; i++) {
@@ -168,9 +168,10 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
         dma->block_count.full = blocks;
     }
 
-    // Indicate busy during data transfer (matching observed status polling)
-    dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_INP_BIT | SASI_MSG_BIT);
-    dma->bus_ctrl |= (SASI_BSY_BIT | SASI_CTL_BIT);
+    // Indicate data-out phase: BSY asserted, C/D low, I/O low
+    dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_CTL_BIT);
+    dma->bus_ctrl |= SASI_BSY_BIT;
+    dma->bus_ctrl &= ~SASI_INP_BIT;
 
     for (uint16_t i = 0; i < blocks; i++) {
         uint8_t sector_data[512];
@@ -205,9 +206,9 @@ void handle_request_sense(dma_registers_t *dma, uint8_t *cmd) {
 
     // Data-in transfer to Victor RAM
     if (sense_len) {
-        // Mirror read-phase busy style during DMA
-        dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT);
-        dma->bus_ctrl |= (SASI_BSY_BIT | SASI_CTL_BIT | SASI_INP_BIT);
+        // Data-in phase for sense data: BSY asserted, I/O high, C/D low
+        dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_CTL_BIT);
+        dma->bus_ctrl |= (SASI_BSY_BIT | SASI_INP_BIT);
 
         dma_write_to_victor_ram(PIO_DMA, WRITE_SM, sense, sense_len, dma->dma_address.full);
         dma->dma_address.full += sense_len;
@@ -222,9 +223,10 @@ void handle_mode_select(dma_registers_t *dma, uint8_t *cmd) {
         uint8_t params[256];
         if (param_len > sizeof(params)) param_len = sizeof(params);
 
-        // Busy during host->device data transfer
-        dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_INP_BIT | SASI_MSG_BIT);
-        dma->bus_ctrl |= (SASI_BSY_BIT | SASI_CTL_BIT);
+        // Data-out phase: BSY asserted, I/O low, C/D low
+        dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_CTL_BIT);
+        dma->bus_ctrl |= SASI_BSY_BIT;
+        dma->bus_ctrl &= ~SASI_INP_BIT;
 
         // Read parameter list from Victor RAM (ignore content for now)
         dma_read_from_victor_ram(PIO_DMA, READ_SM, params, param_len, dma->dma_address.full);
