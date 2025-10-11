@@ -13,6 +13,8 @@
 #include "hardware/gpio.h"
 #include "dma_read_write.pio.h"
 #include "pico_victor/dma.h"
+#include "hardware/structs/pio.h"
+#include "hardware/structs/ioqspi.h"
 
 #define TEST_SIZE 2  // Start with just 2 bytes for debugging
 #define TEST_ADDRESS 0x10000  // Test address in Victor RAM (segment 0x1000:0x0000)
@@ -26,6 +28,20 @@ void core1_test_stub() {
     while (1) {
         sleep_ms(100);
     }
+}
+
+
+void dump_pio_versions(void) {
+    printf("PIO0 VERSION = 0x%x\n", (pio0_hw->dbg_cfginfo >> 28) & 0xF);
+    printf("PIO1 VERSION = 0x%x\n", (pio1_hw->dbg_cfginfo >> 28) & 0xF);
+#if NUM_PIOS > 2
+    printf("PIO2 VERSION = 0x%x\n", (pio2_hw->dbg_cfginfo >> 28) & 0xF);
+#endif
+}
+
+static void dump_pio_dbg(void) {
+    printf("PIO0_DBG_PADOE = 0x%08x\n", pio0_hw->dbg_padoe);
+    printf("PIO0_DBG_PADOUT = 0x%08x\n", pio0_hw->dbg_padout);
 }
 
 void initialize_uart() {
@@ -210,6 +226,10 @@ int main() {
     printf("\n=== DMA Hardware Diagnostic Test ===\n");
     printf("Running comprehensive diagnostics...\n\n");
 
+    dump_pio_versions();
+    
+
+
     // Sleep briefly to ensure serial output is visible
     sleep_ms(5);
 
@@ -265,16 +285,20 @@ int main() {
     // Load initialization values first (1 slots)
     printf("Loading initialization value...\n");
 
+    dump_pio_dbg();
+
     //one time initialization of X direction
     //x = DMA direction (read or write)
     printf("  Init Slot 1: DMA_WRITE (0x%08x)\n", DMA_WRITE);
     pio_sm_put_blocking(dma_pio, write_sm, DMA_WRITE);
 
+     dump_pio_dbg();
 
     // Check FIFO before enabling
     printf("Before enabling - TX FIFO level: %d/4\n",
            pio_sm_get_tx_fifo_level(dma_pio, write_sm));
-
+        
+    
     printf("Enabling write SM (will consume init value)...\n");
     pio_sm_set_enabled(dma_pio, write_sm, true);
 
@@ -295,7 +319,7 @@ int main() {
 
     printf("  Data Slot 1: Address plus data (0x%07x)\n", addr_data);
     pio_sm_put_blocking(dma_pio, write_sm, addr_data);
-
+    dump_pio_dbg();
     printf("DMA cycle data loaded.\n");
 
     // Check immediately after loading data
