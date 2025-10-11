@@ -152,13 +152,22 @@ static inline void dma_read_write_program_init(PIO pio, uint sm, uint offset, ui
     pio_sm_clear_fifos(pio, sm);
     pio_sm_set_clkdiv(pio, sm, 1.0f);
 
-    // Init ALL pins for PIO first (required for wait instructions to work on RP2350)
-    for (int i = pin; i <= IR_4_PIN; i++) {
+    // Init output pins for PIO first
+    for (int i = pin; i <= IO_M_PIN; i++) {
+        gpio_set_drive_strength(i, GPIO_DRIVE_STRENGTH_12MA);
         pio_gpio_init(pio, i);
-        if (i <= OUTPUT_PIN_LAST) {
-            gpio_set_drive_strength(i, GPIO_DRIVE_STRENGTH_12MA);
-        }
-        printf("dma %s pio_gpio_init %d\n", mode, i);
+        printf("dma %s gpio_init %d  ", mode, i);
+        printf("GPIO%d_CTRL = 0x%08x\n", i, io_bank0_hw->io[i].ctrl);
+    }
+
+    // Now init input-only pins for PIO
+    for (int i = IO_M_PIN + 1; i <= IR_4_PIN; i++) {
+        gpio_init(i);
+        gpio_set_dir(i, GPIO_IN);
+        gpio_set_input_enabled(i, true);
+        gpio_pull_up(i);
+
+        printf("dma %s gpio_init %d  ", mode, i);
         printf("GPIO%d_CTRL = 0x%08x\n", i, io_bank0_hw->io[i].ctrl);
     }
 
@@ -189,7 +198,7 @@ static inline void dma_read_write_program_init(PIO pio, uint sm, uint offset, ui
     printf("  SIDE_EN = %d\n", (execctrl >> 30) & 0x1);
     printf("  SIDE_PINDIR = %d\n", (execctrl >> 29) & 0x1);
 
-    // Don't enable the state machine here - it will be     enabled when needed
+    // Don't enable the state machine here - it will be enabled when needed
     // pio_sm_set_enabled(pio, sm, true);
     printf("finished configuring dma_controller_program_init %s\n", mode);
 }

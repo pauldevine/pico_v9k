@@ -388,6 +388,22 @@ int main() {
     dump_pio_dbg();
     printf("DMA cycle data loaded.\n");
 
+    addr++;
+    data = (0x55 & 0xFF);
+    addr_data = addr | (data << 20);
+    printf("  Data Slot 2: Address plus data (0x%07x)\n", addr_data);
+    pio_sm_put_blocking(dma_pio, write_sm, addr_data);
+    dump_pio_dbg();
+    printf("DMA cycle data loaded.\n");
+
+    addr++;
+    data = (0x55 & 0xFF);
+    addr_data = addr | (data << 20);
+    printf("  Data Slot 3: Address plus data (0x%07x)\n", addr_data);
+    pio_sm_put_blocking(dma_pio, write_sm, addr_data);
+    dump_pio_dbg();
+    printf("DMA cycle data loaded.\n");
+
     // Check immediately after loading data
     printf("After loading data - TX FIFO: %d/4, PC=0x%x\n",
            pio_sm_get_tx_fifo_level(dma_pio, write_sm),
