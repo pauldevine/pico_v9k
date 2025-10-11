@@ -181,6 +181,30 @@ Hardware redesign to remove 74LVC245 level shifters and connect RP2350 directly 
   - Using `pio_gpio_init()` on input-only pins can cause them to briefly glitch to output mode during `pindirs` operations
 - **Side-set note**: With `.side_set N opt` the assembler automatically sets the optional-enable bit for any instruction that uses a `side` value, so missing activity on DEN/ or IO/M/ almost always traces back to pin direction or pin mapping mistakes rather than the literal side value.
 
+#### Critical Pin Initialization Rules (as of 2025-10-11):
+
+**Output pins (controlled by PIO via pindirs):**
+- A0-A19 (address bus) - pins 0-19
+- RD/, WR/, DT/R/, ALE, DEN/ (control outputs) - pins 20-24
+- HOLD/, IO/M/ (side-set outputs) - pins 25-26
+- **Initialization**: Use `pio_gpio_init()` to give PIO full control including pin direction
+
+**Input-only pins (read by PIO wait instructions):**
+- READY - pin 27
+- HLDA - pin 28
+- CLOCK_5 - pin 29
+- CLOCK_15B - pin 30
+- IR pins - pins 31+
+- **Initialization**: Use ONLY `gpio_set_function(pin, GPIO_FUNC_PIO0 + pio_get_index(pio))` to route to PIO
+- **DO NOT** use `gpio_init()` (sets wrong function to GPIO_FUNC_SIO)
+- **DO NOT** use `pio_gpio_init()` (gives unwanted pindirs control)
+
+**Common initialization mistakes:**
+1. Calling `gpio_init()` on pins that PIO needs to read - this sets the function to GPIO_FUNC_SIO, disconnecting from PIO
+2. Using `pio_gpio_init()` on input-only pins - causes glitches when PIO changes pindirs
+3. Test/debug code interfering by re-initializing pins after PIO setup
+4. Missing the function routing entirely - PIO wait instructions will hang forever
+
 ### Latest Hardware Changes (as of 2025-10-25)
 
 #### 74LVC245 Buffer Removal
