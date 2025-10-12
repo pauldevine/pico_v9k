@@ -8,6 +8,7 @@
 #define PIO_BUS pio0
 #define PIO_ADDRESS pio1
 
+// Back to PIO0 - PIO1 has output control issues
 #define PIO_DMA pio0
 #define PIO_REGISTERS pio1
 
@@ -25,9 +26,9 @@
 #define RD_PIN 20
 #define WR_PIN 21
 #define DTR_PIN 22       
-#define ALE_PIN 23    // LOW ADDRESS direction pin   
+#define ALE_PIN 23      
 #define DEN_PIN 24 
-#define HOLD_PIN 25   // BUS CONTROL signals direction pins
+#define HOLD_PIN 25  
 #define IO_M_PIN 26
 #define READY_PIN 27
 #define HLDA_PIN 28
@@ -47,6 +48,12 @@
 #define ADDRESS_DIR_PINCNT 2
 #define DMA_READ 1
 #define DMA_WRITE 0
+
+// Helper macros to format data for the new single-SM FIFO format
+// For writes: R/W=1, address shifted left by 1, data in bits 21-28
+#define DMA_FORMAT_WRITE(addr, data) (((uint32_t)(data) << 21) | ((addr) << 1) | 1)
+// For reads: R/W=0, address shifted left by 1, data byte is 0x00
+#define DMA_FORMAT_READ(addr) ((addr) << 1)
 
 #define DMA_REGISTER_BASE 0xEF300
 #define DMA_REGISTER_BITMASK 0x00000EF3  //the top 12 bits for the PIO instance to match address against
