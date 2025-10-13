@@ -44,6 +44,7 @@
 
 .wrap_target
 T0:                                ; Address Setup Phase (Put Address on Bus)
+    pull ifempty block             ; Only pull if OSR empty, block if FIFO empty (HOLD stays released!)
     out x, 1                       ; Get R/W bit from LSB (0=Read, 1=Write)
     set pins, 0b11111 side SIDE_HOLD_ASSERT_IO_INPUT ; Assert HOLD/, keep IO/M/ input during request
     out pins, ADDRESS_BUS_SIZE     ; Output A0-A19 on bus, pindirs still input
@@ -72,7 +73,6 @@ T3:
 T4:
     wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
     set pins, 0b00111              ; Set control pins to T4 start, DEN=0, ALE=0, DT/R=1, WR=1, RD=1
-    wait 1 GPIO CLOCK_15B_PIN      ; Wait for CLK15B to go low
     set pins, 0b10111              ; Set control pins to T4 close, DEN=1, ALE=0, DT/R=1, WR=1, RD=1
     wait 0 gpio HLDA_PIN           ; wait for HLDA to go low
     set pindirs, 0b00000 side SIDE_HOLD_RELEASE_IO_INPUT ; Set control pins' direction to input / release IO/M and HOLD
@@ -140,7 +140,7 @@ static inline void dma_read_write_program_init(PIO pio, uint sm, uint offset, ui
     sm_config_set_set_pins(&c, RD_PIN, 5);
     printf("setting sideset pin mapping to %d, count 2\n", HOLD_PIN);
     sm_config_set_sideset_pins(&c, HOLD_PIN);
-    sm_config_set_sideset(&c, 3, true, true);
+    sm_config_set_sideset(&c, 3, true, true);  // 3 bits total: 1 optional bit + 2 pin bits for ".side_set 2 opt"
     // Don't set pindirs here - it will be overridden by line 157
 
     // Shift Register configuration settings
@@ -149,7 +149,7 @@ static inline void dma_read_write_program_init(PIO pio, uint sm, uint offset, ui
     sm_config_set_in_pins(&c, BD0_PIN);
     sm_config_set_in_pin_count(&c, DATA_SIZE);
     // Note: With R/W bit in LSB, we need 29 bits total (1 + 20 + 8)
-    sm_config_set_out_shift(&c, true, true, 29);  // R/W + ADDRESS + DATA
+    sm_config_set_out_shift(&c, true, true, 29);  // Right shift, autopull enabled, 29 bit threshold
     sm_config_set_in_shift(&c, false, true, DATA_SIZE);
     
     pio_sm_clear_fifos(pio, sm);

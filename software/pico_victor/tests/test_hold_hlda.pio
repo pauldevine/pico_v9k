@@ -1,33 +1,41 @@
 ; test_hold_hlda.pio - Minimal test for HOLD/HLDA handshaking
 ;
-; This PIO program tests the basic bus arbitration:
-; 1. Assert HOLD (set pin 25 low) - active low signal
+; This PIO program tests the basic bus arbitration using open-drain signaling:
+; 1. Assert HOLD by enabling output (pulls low since output value is 0)
 ; 2. Wait for HLDA acknowledgment (pin 28 goes HIGH) - active high signal
-; 3. Release HOLD (set pin 25 high)
-; 4. Do 3x nop[31] for timing delay
+; 3. Release HOLD by disabling output (lets it float high via pull-up)
+; 4. Do timing delay
 ; 5. Wrap and repeat
 
 .program test_hold_hlda
+.side_set 1 opt pindirs  ; One side-set pin for HOLD direction control, optional
 
 .define public HOLD_PIN  25
 .define public HLDA_PIN  28
 
-; No side-set needed since we're directly controlling pins
-; We'll use SET for HOLD control
-
-    ; Assert HOLD by setting it low (active low - request bus)
-    set pins, 0
+    ; Assert HOLD by enabling output direction (will drive low since pin value is 0)
+    nop         side 1      ; Side-set pindir=1 (output enabled), pulls HOLD low
 
     ; Wait for HLDA to go HIGH (active high - bus granted)
-    wait 1 gpio HLDA_PIN
+    wait 1 gpio HLDA_PIN    ; No side-set needed, HOLD stays driven low
 
-    ; Release HOLD by setting it high (release bus)
-    set pins, 1
+    ; Release HOLD by disabling output (tri-state, lets it float high)
+    nop         side 0      ; Side-set pindir=0 (input/tri-state), HOLD floats high
 
-    ; Timing delay - 3x nop[31] as requested
-    nop [31]
-    nop [31]    
-    nop [31]
+    ; Timing delay - with optional side-set, max delay is still 7
+    ; Using multiple nop[7] to achieve the desired delay
+    nop [7]                 ; No side-set needed, HOLD stays high
+    nop [7]
+    nop [7]
+    nop [7]
+    nop [7]
+    nop [7]
+    nop [7]
+    nop [7]
+    nop [7]
+    nop [7]
+    nop [7]
+    nop [7]                 ; Total: 12 x 8 = 96 cycles
 
 .wrap  ; Loop back to beginning
 
@@ -35,23 +43,28 @@
 #include "hardware/gpio.h"
 
 // SAFE helper function to initialize the test_hold_hlda program
-// ONLY touches pins 25 (HOLD) and 28 (HLDA)
+// Uses open-drain signaling: output value is always 0, control via pin direction
 static inline void test_hold_hlda_program_init(PIO pio, uint sm, uint offset) {
-    // Just use the pin numbers directly - no need for verbose defines
-    const uint hold_pin = 25;
-    const uint hlda_pin = 28;
+    // Just use the pin numbers directly
+    const uint hold_pin = 25;  // Side-set pindirs pin
+    const uint hlda_pin = 28;  // Input pin
 
     // Get the default config
     pio_sm_config c = test_hold_hlda_program_get_default_config(offset);
 
-    // Configure SET pins - ONLY pin 25 (HOLD), count=1
-    sm_config_set_set_pins(&c, hold_pin, 1);
+    // Configure side-set pins - HOLD_PIN (25) for direction control
+    sm_config_set_sideset_pins(&c, hold_pin);
 
-    // Initialize ONLY the HOLD pin for PIO control (output)
+    // Initialize HOLD pin for PIO control
     pio_gpio_init(pio, hold_pin);
 
-    // Set ONLY HOLD as output (PIO controlled) - count=1 means only 1 pin
-    pio_sm_set_consecutive_pindirs(pio, sm, hold_pin, 1, true);
+    // CRITICAL for open-drain: Set HOLD output value to 0
+    // When we enable output (pindir=1), it will drive low
+    // When we disable output (pindir=0), it will tri-state/float
+    pio_sm_set_pins(pio, sm, 0);  // HOLD output value = 0
+
+    // Start with HOLD as input (tri-stated, will float high)
+    pio_sm_set_consecutive_pindirs(pio, sm, hold_pin, 1, false);  // false = input
 
     // Initialize HLDA for PIO to read (input only)
     // Critical: On RP2350, must call pio_gpio_init even for inputs
@@ -60,18 +73,12 @@ static inline void test_hold_hlda_program_init(PIO pio, uint sm, uint offset) {
     // Explicitly ensure HLDA stays as input (never driven)
     gpio_set_dir(hlda_pin, GPIO_IN);
 
-    // Set HOLD high initially (idle state, bus released)
-    pio_sm_set_pins(pio, sm, 1);
-
     // Initialize the state machine with our config
     pio_sm_init(pio, sm, offset, &c);
 
-    // RP2350 workaround: Execute a dummy pindirs to activate pindirs functionality
-    // Set pindirs to 0 first (all inputs), then the SM will control only HOLD
-    pio_sm_exec(pio, sm, pio_encode_set(pio_pindirs, 0));
-
-    // Now set just HOLD pin as output via PIO
-    pio_sm_exec(pio, sm, pio_encode_set(pio_pindirs, 1));
+    // RP2350 workaround: Execute a dummy pindirs instruction
+    // This unlocks the side-set pindirs functionality on RP2350
+    pio_sm_exec(pio, sm, pio_encode_set(pio_pindirs, 0));  // Start with HOLD tri-stated
 
     // Enable the state machine
     pio_sm_set_enabled(pio, sm, true);

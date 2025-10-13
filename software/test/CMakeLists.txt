@@ -186,3 +186,38 @@ pico_enable_stdio_usb(test_hold_hlda 0)
 pico_enable_stdio_uart(test_hold_hlda 1)
 pico_add_extra_outputs(test_hold_hlda)
 pico_set_binary_type(test_hold_hlda no_flash)
+
+# Clean DMA test (simplified version of test_dma_diagnostic)
+add_executable(test_dma_cleaned
+    test_dma_cleaned.c
+    ${CMAKE_SOURCE_DIR}/pico_victor/dma.c
+)
+
+# Include directories
+target_include_directories(test_dma_cleaned PRIVATE
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/pico_victor
+    ${CMAKE_SOURCE_DIR}/pico_fujinet
+)
+
+# Generate PIO headers
+pico_generate_pio_header(test_dma_cleaned ${CMAKE_SOURCE_DIR}/pico_victor/dma_read_write.pio)
+
+# Link libraries
+target_link_libraries(test_dma_cleaned
+    pico_stdlib
+    hardware_pio
+    hardware_dma
+    hardware_gpio
+    hardware_clocks
+)
+
+# Enable USB or UART output
+pico_enable_stdio_usb(test_dma_cleaned 0)
+pico_enable_stdio_uart(test_dma_cleaned 1)
+
+# Create map/bin/hex/uf2 file etc.
+pico_add_extra_outputs(test_dma_cleaned)
+
+# Run from RAM (no flash)
+pico_set_binary_type(test_dma_cleaned no_flash)
