@@ -23,7 +23,7 @@
 #include "pico_victor/dma.h"
 
 // Test parameters - start simple
-#define TEST_ADDRESS    0x10000  // Test address in Victor RAM (segment 0x1000:0x0000)
+#define TEST_ADDRESS    0x40000  // Test address in Victor RAM (segment 0x1000:0x0000)
 #define TEST_DATA       0xAA     // Test data pattern
 
 // Custom UART configuration matching your hardware
@@ -213,17 +213,26 @@ int main() {
     printf("\n=== DMA Write Operation ===\n");
     printf("Target: Address 0x%05X, Data 0x%02X\n", TEST_ADDRESS, TEST_DATA);
 
-    // Format the write command using the macro from dma_read_write.pio
-    uint32_t write_cmd = DMA_FORMAT_WRITE(TEST_ADDRESS, TEST_DATA);
-    printf("Formatted command: 0x%08X\n", write_cmd);
-    printf("  R/W bit (LSB): %d (1=write)\n", write_cmd & 1);
-    printf("  Address bits: 0x%05X\n", (write_cmd >> 1) & 0xFFFFF);
-    printf("  Data byte: 0x%02X\n", (write_cmd >> 21) & 0xFF);
 
+    // First FIFO WRITE command format:
+    // Bits 0: R/W (1=Write)
+    // Bits 1-20: Address A0-A19
+    // Second FIFO WRITE command format:
+    // Bits 0-7: Data byte D0-D7
+    // Bits 8-19: Address A8-A19 (need to remain stable during write)
+    uint32_t cmd_address = (((TEST_ADDRESS) << 1) | 1);
+    uint32_t data_address = ((TEST_ADDRESS & 0xFFF00) | (TEST_DATA & 0xFF));
+    printf("Formatted command: 0x%06X\n", cmd_address);
+    printf("  R/W bit (LSB): %d (1=write)\n", cmd_address & 1);
+    printf("  Address bits: 0x%05X\n", (cmd_address >> 1) & 0xFFFFF);
+    printf("  Data with address: 0x%06X\n", data_address);
+    printf("  Data byte: 0x%02X\n", (data_address & 0xFF));
+    printf("  Address bits (MSB): 0x%03X\n", (data_address >> 8) & 0xFFF);
     // Send the write command
     printf("\nSending write command to PIO...\n");
     gpio_put(DEBUG_PIN, 1);  // Mark start on scope
-    pio_sm_put_blocking(pio, sm, write_cmd);
+    pio_sm_put_blocking(pio, sm, cmd_address);
+    pio_sm_put_blocking(pio, sm, data_address);
     gpio_put(DEBUG_PIN, 0);
 
     // Monitor progress at various intervals
@@ -249,6 +258,42 @@ int main() {
             break;
         }
     }
+
+    // === Perform DMA Read ===
+    printf("\n=== DMA Read Operation ===\n");
+    uint32_t test_read_address = 0x6000;
+    printf("Target: Read Address 0x%05X\n", test_read_address);
+
+
+    // First FIFO READ command format:
+    // Bits 0: R/W (0=Read)
+    // Bits 1-20: Address A0-A19
+    // Second FIFO READ command format:
+    // Bits 0-7: Data byte D0-D7
+    // Bits 8-19: Address A8-A19 (need to remain stable during read)
+    uint32_t read_address = ((test_read_address) << 1);  // R/W=0 for read
+    uint32_t read_pindirs =  0xFFF00;  // Data=pindirs can be set to input, we don't need new data as address remains stable
+    printf("Formatted command: 0x%06X\n", read_address);
+    printf("  R/W bit (LSB): %d (0=read)\n", read_address & 1);
+    printf("  Address bits: 0x%05X\n", (read_address >> 1) & 0xFFFFF);
+    printf("  Read Pindirs: 0x%05X\n", read_pindirs);
+    printf("  Data Pindirs: 0x%02X\n", (read_pindirs & 0xFF));
+    printf("  Address pindirs (MSB): 0x%03X\n", (read_pindirs >> 8) & 0xFFF);
+    // Send the read command
+    printf("\nSending read command to PIO...\n");
+    gpio_put(DEBUG_PIN, 1);  // Mark start on scope
+    pio_sm_put_blocking(pio, sm, read_address);
+    pio_sm_put_blocking(pio, sm, read_pindirs);
+    uint32_t read_data = pio_sm_get_blocking(pio, sm); 
+    printf("Read data: 0x%02X\n", read_data & 0xFF);
+    gpio_put(DEBUG_PIN, 0);
+
+    //second read to validate
+    read_address = ((test_read_address+1) << 1);
+    pio_sm_put_blocking(pio, sm, read_address);
+    pio_sm_put_blocking(pio, sm, read_pindirs);
+    read_data = pio_sm_get_blocking(pio, sm); 
+    printf("Read data: 0x%02X\n", read_data & 0xFF);
 
     // Final state check
     printf("\n=== Final State ===\n");

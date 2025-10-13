@@ -33,34 +33,42 @@
 ; Bit 4 -> DEN/ (GPIO 24)
 
 ; TX FIFO data format:
-; Bit 0:     R/W flag (0=Read, 1=Write)
+; First FIFO entry: Address + R/W bit
+; Second FIFO entry: Data byte + MSB of address (for writes) or pindirs value 0xFFF00 (for reads)
+; Bit 0:     W/R flag (1=Write, 0=Read)
 ; Bits 1-20: A0-A19 Address (shifted left by 1)
-; Bits 21-28: Data byte for writes (0x00 for reads)
+; Bits 21-28: Data byte for writes (pindirs value 0xFFF00 for reads)
 ; Bits 29-31: Unused
 ;
 ; Example FIFO word format:
-; Write: 0x[DATA][ADDR<<1 | 1]  where LSB=1 for write
-; Read:  0x[0x00][ADDR<<1 | 0]  where LSB=0 for read
+; Write: 
+; First FIFO: 0x[DATA][ADDR<<1 | 1]  where LSB=1 for write
+; Second FIFO: 0x[ADDR>>8][DATA] where upper byte is A8-A19, lower byte is data byte
+; Read:  
+; First FIFO: 0x[0x00][ADDR<<1 | 0]  where LSB=0 for read
+; Second FIFO: 0x[0xFFF][0x00] where upper byte is 0xFFF for pindirs out for address, lower byte is 0x00 for pindirs in for data
 
 .wrap_target
 T0:                                ; Address Setup Phase (Put Address on Bus)
     pull block                     ; Block if FIFO empty (HOLD stays released!)
-    out x, 1                       ; Get R/W bit from LSB (0=Read, 1=Write)
-    set pins, 0b11111 side SIDE_HOLD_ASSERT_IO_INPUT ; Assert HOLD/, keep IO/M/ input during request
+    out x, 1                       ; Get W/R bit from LSB (1=Write, 0=Read)
     out pins, ADDRESS_BUS_SIZE     ; Output A0-A19 on bus, pindirs still input
-    out y, 8                       ; get data byte from FIFO, either data to write or 0x00 for read
+    pull block                     ; Pull next word from FIFO (data byte + MSB address or 0x00 for read)
+    mov y, osr                     ; Save full word (address+data) in y for later use
+    set pins, 0b11111 side SIDE_HOLD_ASSERT_IO_INPUT ; Assert HOLD/, keep IO/M/ input during request
     wait 1 gpio HLDA_PIN           ; wait for HLDA to go high
 T1:
-    mov OSR, ~null                 ; Set OSRs to all 1 to prepare for pindirs next line
-    out pindirs, 20 side SIDE_HOLD_ASSERT_IO_OUTPUT  ; Drive address pins, keep HOLD/ asserted, IO/M/ output
+    mov pindirs, ~null side SIDE_HOLD_ASSERT_IO_OUTPUT  ; Drive address pins, keep HOLD/ asserted, IO/M/ output
     set pindirs, 0b11111           ; Set control pins to output DEN=1, ALE=1, DT/R=1, WR/=1, RD=1 //ALE high to latch address
     wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
     wait 1 GPIO CLOCK_15B_PIN      ; Wait for CLK15B to go high
 T2:
-    jmp !x T2_WRITE                ; If write, jump to T2_WRITE
-    set pins, 0b00010              ; else reading here, set control pins for RD control DEN=0, ALE=0, DT/R=0, WR=1, RD=0
-    mov OSR, y                     ; Move data byte stored above to OSR for pindirs setup
-    out pindirs, 8                 ; set BD0-BD7 pins to input for RD cycle / earlier payload had 0x00 for this purpose
+    jmp !x T2_READ                 ; If x=0 (read), jump to T2_READ
+    ; Fall through for write (x=1)
+T2_WRITE_INLINE:
+    mov OSR, y                     ; Move data byte to OSR for output
+    out pins, ADDRESS_BUS_SIZE     ; Output data on BD0-BD7, A8-A19 continues to hold MSB of address
+    set pins, 0b10101              ; Write: set control pins DEN=1, ALE=0, DT/R=1, WR=0, RD=1
 T2_CONTINUE:
     wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high, 
     wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go low
@@ -68,11 +76,12 @@ T2_CONTINUE:
 T3:
     wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
     wait 0 GPIO CLOCK_5_PIN side SIDE_HOLD_RELEASE_IO_OUTPUT ; Wait for CLK5 to go low, release HOLD/, keep IO/M/ output
-    jmp !x T4                      ; skip in pins if write
-    in pins, DATA_SIZE             ; RD case, read data from bus
+    jmp !x T3_READ_DATA            ; If x=0 (read), jump to read data
+    jmp T4                         ; x=1 (write), skip to T4
+T3_READ_DATA:
+    in pins, DATA_SIZE             ; Read data from bus
 T4:
     wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
-    set pins, 0b00111              ; Set control pins to T4 start, DEN=0, ALE=0, DT/R=1, WR=1, RD=1
     set pins, 0b10111              ; Set control pins to T4 close, DEN=1, ALE=0, DT/R=1, WR=1, RD=1
     wait 0 gpio HLDA_PIN side SIDE_HOLD_RELEASE_IO_OUTPUT ; wait for HLDA to go low, keep HOLD released
     set pindirs, 0b00000 side SIDE_HOLD_RELEASE_IO_INPUT ; Set control pins' direction to input / release IO/M and HOLD
@@ -80,10 +89,10 @@ T4:
 
 .wrap
 
-T2_WRITE:
-    mov OSR, y             ; Move data byte stored above to OSR for output
-    out pins, DATA_SIZE    ; DMA write, output A0-A7 with data value, A8-A19 continues to hold MSB of address which needs to remain stable 
-    set pins, 0b00101      ; set control pins for WR control DEN=0, ALE=0, DT/R=1, WR=0, RD=1
+T2_READ:
+    set pins, 0b00010              ; Read: set control pins for RD control DEN=0, ALE=0, DT/R=0, WR=1, RD=0
+    mov OSR, y                     ; Move data byte (0x00) to OSR for pindirs setup
+    out pindirs, ADDRESS_BUS_SIZE  ; set BD0-BD7 pins to input for RD cycle
     jmp T2_CONTINUE                
 
 % c-sdk {
@@ -95,13 +104,6 @@ T2_WRITE:
 #include "pico_victor/dma.h"
 #define OUTPUT_PIN_FIRST BD0_PIN
 #define OUTPUT_PIN_LAST  IO_M_PIN
-
-// Helper macros to format data for the new FIFO format
-// For writes: R/W=1, address shifted left by 1, data in upper byte
-#define DMA_FORMAT_WRITE(addr, data) (((uint32_t)(data) << 21) | ((addr) << 1) | 1)
-// For reads: R/W=0, address shifted left by 1, data byte is 0x00
-#define DMA_FORMAT_READ(addr) ((addr) << 1)
-
 
 /*
  * CRITICAL PIN INITIALIZATION RULES:
