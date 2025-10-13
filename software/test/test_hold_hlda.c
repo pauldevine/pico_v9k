@@ -65,8 +65,8 @@ int main() {
 
     // Display pin configuration
     printf("Pin Configuration:\n");
-    printf("  HOLD output: GPIO %d (PIO controlled)\n", HOLD_PIN);
-    printf("  HLDA input:  GPIO %d (PIO reads only)\n", HLDA_PIN);
+    printf("  HOLD output: GPIO %d (PIO controlled, active LOW)\n", HOLD_PIN);
+    printf("  HLDA input:  GPIO %d (PIO reads only, active HIGH)\n", HLDA_PIN);
     printf("  NO OTHER PINS WILL BE TOUCHED\n");
     printf("\n");
 
@@ -95,66 +95,104 @@ int main() {
     printf("  PIO now controls HOLD pin\n");
     printf("\n");
 
-    // Monitor the bus arbitration
+    // Monitor the bus arbitration with better sampling
     printf("Monitoring bus arbitration (press any key to stop)...\n");
-    printf("Time(ms)  HOLD  HLDA  SM_ADDR  STATUS\n");
-    printf("--------  ----  ----  -------  -------\n");
+    printf("NOTE: PIO cycles VERY fast - sampling and reporting periodically\n\n");
 
     uint32_t start_time = to_ms_since_boot(get_absolute_time());
-    uint32_t last_hold_state = 1;  // HOLD starts high (idle)
-    uint32_t last_hlda_state = gpio_get(HLDA_PIN);
-    uint32_t cycle_count = 0;
-    bool hold_was_low = false;
+    uint32_t last_report_time = 0;
+    uint32_t sample_count = 0;
+    uint32_t hold_low_count = 0;
+    uint32_t hlda_high_count = 0;
+    uint32_t last_pc = 0;
+    uint32_t pc_changes = 0;
+    uint32_t report_number = 0;
 
-    // Main monitoring loop
+    // Main monitoring loop - sample rapidly and report periodically
     while (getchar_timeout_us(0) == PICO_ERROR_TIMEOUT) {
+        // Sample the pins rapidly for 10ms without printing
+        uint32_t sample_start = to_us_since_boot(get_absolute_time());
+        while (to_us_since_boot(get_absolute_time()) - sample_start < 10000) {  // 10ms of sampling
+            uint32_t hold_state = gpio_get(HOLD_PIN);
+            uint32_t hlda_state = gpio_get(HLDA_PIN);
+            uint32_t current_pc = pio_sm_get_pc(pio, sm) - offset;
+
+            sample_count++;
+            if (hold_state == 0) hold_low_count++;
+            if (hlda_state == 1) hlda_high_count++;
+            if (current_pc != last_pc) {
+                pc_changes++;
+                last_pc = current_pc;
+            }
+
+            // Tight loop - no delays during sampling
+        }
+
         uint32_t current_time = to_ms_since_boot(get_absolute_time()) - start_time;
 
-        // Read current pin states (read-only, no modification)
-        uint32_t hold_state = gpio_get(HOLD_PIN);
-        uint32_t hlda_state = gpio_get(HLDA_PIN);
+        // Report every 100ms
+        if (current_time - last_report_time >= 100) {
+            report_number++;
 
-        // Get PIO state machine status
-        uint32_t sm_addr = pio_sm_get_pc(pio, sm) - offset;
-        uint32_t sm_stalled = !!(pio->fdebug & (1u << (PIO_FDEBUG_TXSTALL_LSB + sm)));
+            // Get current snapshot
+            uint32_t hold_now = gpio_get(HOLD_PIN);
+            uint32_t hlda_now = gpio_get(HLDA_PIN);
+            uint32_t sm_addr = pio_sm_get_pc(pio, sm) - offset;
+            uint32_t sm_stalled = !!(pio->fdebug & (1u << (PIO_FDEBUG_TXSTALL_LSB + sm)));
 
-        // Detect state changes and report them
-        if (hold_state != last_hold_state) {
-            if (hold_state == 0) {
-                printf("%8lu  LOW   %s     0x%02x     %s  <- HOLD asserted\n",
-                       current_time, hlda_state ? "HIGH" : "LOW ", sm_addr,
-                       sm_stalled ? "STALLED" : "RUNNING");
-                hold_was_low = true;
-            } else {
-                printf("%8lu  HIGH  %s     0x%02x     %s  <- HOLD released\n",
-                       current_time, hlda_state ? "HIGH" : "LOW ", sm_addr,
-                       sm_stalled ? "STALLED" : "RUNNING");
-                if (hold_was_low) {
-                    cycle_count++;
-                    printf("         [Cycle %d completed]\n", cycle_count);
-                    hold_was_low = false;
+            printf("=== Report #%u at %lu ms ===\n", report_number, current_time);
+            printf("Current state: HOLD=%s, HLDA=%s, PC=0x%02x, Status=%s\n",
+                   hold_now ? "HIGH" : "LOW",
+                   hlda_now ? "HIGH" : "LOW",
+                   sm_addr,
+                   sm_stalled ? "STALLED" : "RUNNING");
+
+            if (sample_count > 0) {
+                // Calculate percentages
+                uint32_t hold_low_pct = (hold_low_count * 100) / sample_count;
+                uint32_t hlda_high_pct = (hlda_high_count * 100) / sample_count;
+
+                printf("Statistics over %u samples:\n", sample_count);
+                printf("  - HOLD was LOW %u%% of the time (bus requested)\n", hold_low_pct);
+                printf("  - HLDA was HIGH %u%% of the time (bus granted)\n", hlda_high_pct);
+                printf("  - Program counter changed %u times\n", pc_changes);
+
+                // Estimate cycles based on PC changes
+                // The PIO program has 6 instructions (set, wait, set, nop, nop, nop)
+                // So roughly 6 PC changes per complete cycle
+                uint32_t estimated_cycles = pc_changes / 6;
+                uint32_t cycles_per_second = estimated_cycles * 10;  // Since we report every 100ms
+
+                printf("  - Estimated ~%u complete HOLD/HLDA cycles\n", estimated_cycles);
+                printf("  - Rate: ~%u cycles/second\n", cycles_per_second);
+
+                // Check for success
+                if (pc_changes > 0 && hold_low_count > 0 && hlda_high_count > 0) {
+                    printf("  ✓ SUCCESS: Bus arbitration is working!\n");
+                } else if (pc_changes == 0) {
+                    printf("  ⚠ WARNING: PIO might be stalled\n");
+                } else if (hold_low_count == 0) {
+                    printf("  ⚠ WARNING: HOLD never went low\n");
+                } else if (hlda_high_count == 0) {
+                    printf("  ⚠ WARNING: HLDA never went high (no acknowledgment)\n");
                 }
             }
-            last_hold_state = hold_state;
+
+            printf("\n");
+
+            // Reset counters for next period
+            sample_count = 0;
+            hold_low_count = 0;
+            hlda_high_count = 0;
+            pc_changes = 0;
+            last_report_time = current_time;
         }
 
-        if (hlda_state != last_hlda_state) {
-            if (hlda_state == 0) {
-                printf("%8lu  %s   LOW      0x%02x     %s  <- HLDA acknowledged\n",
-                       current_time, hold_state ? "HIGH" : "LOW ", sm_addr,
-                       sm_stalled ? "STALLED" : "RUNNING");
-            } else {
-                printf("%8lu  %s   HIGH     0x%02x     %s  <- HLDA deasserted\n",
-                       current_time, hold_state ? "HIGH" : "LOW ", sm_addr,
-                       sm_stalled ? "STALLED" : "RUNNING");
-            }
-            last_hlda_state = hlda_state;
-        }
-
-        sleep_ms(1);  // Small delay to not flood output
+        // Small delay before next sampling burst
+        sleep_us(100);
     }
 
-    printf("\n\nTest stopped. Total cycles: %d\n", cycle_count);
+    printf("\n\nTest stopped after %u reports.\n", report_number);
 
     // CRITICAL: Safely shut down and release the bus
     printf("Safely shutting down...\n");
