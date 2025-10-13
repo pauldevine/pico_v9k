@@ -54,7 +54,6 @@ T0:                                ; Address Setup Phase (Put Address on Bus)
     out x, 1                       ; Get W/R bit from LSB (1=Write, 0=Read)
     out pins, ADDRESS_BUS_SIZE     ; Output A0-A19 on bus, pindirs still input
     pull block                     ; Pull next word from FIFO (data byte + MSB address or 0x00 for read)
-    mov y, osr                     ; Save full word (address+data) in y for later use
     set pins, 0b11111 side SIDE_HOLD_ASSERT_IO_INPUT ; Assert HOLD/, keep IO/M/ input during request
     wait 1 gpio HLDA_PIN           ; wait for HLDA to go high
 T1:
@@ -66,7 +65,6 @@ T2:
     jmp !x T2_READ                 ; If x=0 (read), jump to T2_READ
     ; Fall through for write (x=1)
 T2_WRITE_INLINE:
-    mov OSR, y                     ; Move data byte to OSR for output
     out pins, ADDRESS_BUS_SIZE     ; Output data on BD0-BD7, A8-A19 continues to hold MSB of address
     set pins, 0b10101              ; Write: set control pins DEN=1, ALE=0, DT/R=1, WR=0, RD=1
 T2_CONTINUE:
@@ -82,6 +80,9 @@ T3_READ_DATA:
     in pins, DATA_SIZE             ; Read data from bus
 T4:
     wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
+    wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go low
+    wait 1 GPIO CLOCK_15B_PIN      ; Wait for CLK15B to go high
+    wait 0 GPIO CLOCK_15B_PIN      ; Wait for CLK15B to go low
     set pins, 0b10111              ; Set control pins to T4 close, DEN=1, ALE=0, DT/R=1, WR=1, RD=1
     wait 0 gpio HLDA_PIN side SIDE_HOLD_RELEASE_IO_OUTPUT ; wait for HLDA to go low, keep HOLD released
     set pindirs, 0b00000 side SIDE_HOLD_RELEASE_IO_INPUT ; Set control pins' direction to input / release IO/M and HOLD
@@ -91,7 +92,6 @@ T4:
 
 T2_READ:
     set pins, 0b00010              ; Read: set control pins for RD control DEN=0, ALE=0, DT/R=0, WR=1, RD=0
-    mov OSR, y                     ; Move data byte (0x00) to OSR for pindirs setup
     out pindirs, ADDRESS_BUS_SIZE  ; set BD0-BD7 pins to input for RD cycle
     jmp T2_CONTINUE                
 
