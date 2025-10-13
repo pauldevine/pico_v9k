@@ -62,14 +62,16 @@ T1:
     wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
     wait 1 GPIO CLOCK_15B_PIN      ; Wait for CLK15B to go high
 T2:
+    set pins, 0b00111              ; Write: set control pins DEN=0, ALE=0, DT/R=1, WR=1, RD=1 // Pull ALE/DEN low to prepare for read or write
     jmp !x T2_READ                 ; If x=0 (read), jump to T2_READ
     ; Fall through for write (x=1)
 T2_WRITE_INLINE:
     out pins, ADDRESS_BUS_SIZE     ; Output data on BD0-BD7, A8-A19 continues to hold MSB of address
-    set pins, 0b10101              ; Write: set control pins DEN=1, ALE=0, DT/R=1, WR=0, RD=1
+    set pins, 0b00101              ; Write: set control pins DEN=0, ALE=0, DT/R=1, WR=0, RD=1 // WR/ low to write data
+    
+
 T2_CONTINUE:
-    wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high, 
-    wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go low
+    wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
     wait 1 GPIO READY_PIN          ; Wait for READY to go high
 T3:
     wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
@@ -79,11 +81,11 @@ T3:
 T3_READ_DATA:
     in pins, DATA_SIZE             ; Read data from bus
 T4:
+    wait 1 GPIO CLOCK_15B_PIN      ; Wait for CLK15B to go high
+    set pins, 0b00111              ; Set control pins to T4 close, DEN=0, ALE=0, DT/R=1, WR=1, RD=1  // WR/ and RD/ high to end cycle
     wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
     wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go low
-    wait 1 GPIO CLOCK_15B_PIN      ; Wait for CLK15B to go high
-    wait 0 GPIO CLOCK_15B_PIN      ; Wait for CLK15B to go low
-    set pins, 0b10111              ; Set control pins to T4 close, DEN=1, ALE=0, DT/R=1, WR=1, RD=1
+    set pins, 0b10111              ; Set control pins to T4 close, DEN=1, ALE=0, DT/R=1, WR=1, RD=1  // DEN high to end cycle
     wait 0 gpio HLDA_PIN side SIDE_HOLD_RELEASE_IO_OUTPUT ; wait for HLDA to go low, keep HOLD released
     set pindirs, 0b00000 side SIDE_HOLD_RELEASE_IO_INPUT ; Set control pins' direction to input / release IO/M and HOLD
     mov pindirs, NULL              ; Tri-state all address outputs (Release Bus)
@@ -91,7 +93,7 @@ T4:
 .wrap
 
 T2_READ:
-    set pins, 0b00010              ; Read: set control pins for RD control DEN=0, ALE=0, DT/R=0, WR=1, RD=0
+    set pins, 0b00010              ; Read: set control pins for RD control DEN=0, ALE=0, DT/R=0, WR=1, RD=0 // RD/ low to read data
     out pindirs, ADDRESS_BUS_SIZE  ; set BD0-BD7 pins to input for RD cycle
     jmp T2_CONTINUE                
 

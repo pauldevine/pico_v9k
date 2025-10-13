@@ -295,6 +295,18 @@ int main() {
     read_data = pio_sm_get_blocking(pio, sm); 
     printf("Read data: 0x%02X\n", read_data & 0xFF);
 
+    //third read to validate what we wrote earlier
+    read_address = ((TEST_ADDRESS) << 1);
+    pio_sm_put_blocking(pio, sm, read_address);
+    pio_sm_put_blocking(pio, sm, read_pindirs);
+    read_data = pio_sm_get_blocking(pio, sm); 
+    printf("Read data from 0x%05X: 0x%02X (expect 0x%02X)\n", TEST_ADDRESS, read_data & 0xFF, TEST_DATA);
+    if ((read_data & 0xFF) == TEST_DATA) {
+        printf("✓ Data matches expected value\n");
+    } else {
+        printf("⚠ Data mismatch!\n");
+    }
+
     // Final state check
     printf("\n=== Final State ===\n");
     monitor_pio_state(pio, sm, offset, "Final");
@@ -328,6 +340,12 @@ int main() {
     printf("Check oscilloscope/logic analyzer for timing details\n");
     printf("Verify Victor 9000 memory at 0x%05X for value 0x%02X\n",
            TEST_ADDRESS, TEST_DATA);
+
+    if ((read_data & 0xFF) == TEST_DATA) {
+        printf("✓ Data matches expected value\n");
+    } else {
+        printf("⚠ Data mismatch!\n");
+    }
 
     return 0;
 }
