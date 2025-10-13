@@ -235,6 +235,22 @@ int main() {
     pio_sm_put_blocking(pio, sm, data_address);
     gpio_put(DEBUG_PIN, 0);
 
+    //write second byte to verify
+    cmd_address = (((TEST_ADDRESS+1) << 1) | 1);
+    data_address = (( (TEST_ADDRESS+1) & 0xFFF00) | (0x55 & 0xFF));
+    printf("Formatted command: 0x%06X\n", cmd_address);
+    printf("  R/W bit (LSB): %d (1=write)\n", cmd_address & 1);
+    printf("  Address bits: 0x%05X\n", (cmd_address >> 1) & 0xFFFFF);
+    printf("  Data with address: 0x%06X\n", data_address);
+    printf("  Data byte: 0x%02X\n", (data_address & 0xFF));
+    printf("  Address bits (MSB): 0x%03X\n", (data_address >> 8) & 0xFFF);
+    // Send the write command
+    printf("\nSending write command to PIO...\n");
+    gpio_put(DEBUG_PIN, 1);  // Mark start on scope
+    pio_sm_put_blocking(pio, sm, cmd_address);
+    pio_sm_put_blocking(pio, sm, data_address);
+    gpio_put(DEBUG_PIN, 0);
+
     // Monitor progress at various intervals
     const uint32_t check_points_us[] = {10, 50, 100, 500, 1000, 5000};
     const size_t num_checks = sizeof(check_points_us) / sizeof(check_points_us[0]);
