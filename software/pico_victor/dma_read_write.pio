@@ -32,21 +32,21 @@
 ; Bit 3 -> ALE  (GPIO 23)
 ; Bit 4 -> DEN/ (GPIO 24)
 
-; --- Pre-amble ---
-; Setup registers to differentiate between read and write
-; This code runs once at the start for each state machine initialization
-; Because the SM only loads the program once, we can run two instances that 
-; differ only in the initial setup of the X register to indicate read or write mode
-out x, 32          ; Store DMA direction in X 0= Read, 1=Write
+; TX FIFO data format:
+; Bit 0:     R/W flag (0=Read, 1=Write)
+; Bits 1-20: A0-A19 Address (shifted left by 1)
+; Bits 21-28: Data byte for writes (0x00 for reads)
+; Bits 29-31: Unused
+;
+; Example FIFO word format:
+; Write: 0x[DATA][ADDR<<1 | 1]  where LSB=1 for write
+; Read:  0x[0x00][ADDR<<1 | 0]  where LSB=0 for read
 
-; TX FIFO data format for WRITE mode
-; Word 0:  A0-A19 Address + 1 byte of data to be written
-; TX FIFO for READ mode
-; Word 0:  A0-A19 Address + 1 byte (0x00) for pin   direction setup for read
 .wrap_target
 T0:                                ; Address Setup Phase (Put Address on Bus)
-    out pins, ADDRESS_BUS_SIZE     ; prepare bus address to T1 state, A0-A19 on bus, pindirs still input
+    out x, 1                       ; Get R/W bit from LSB (0=Read, 1=Write)
     set pins, 0b11111 side SIDE_HOLD_ASSERT_IO_INPUT ; Assert HOLD/, keep IO/M/ input during request
+    out pins, ADDRESS_BUS_SIZE     ; Output A0-A19 on bus, pindirs still input
     out y, 8                       ; get data byte from FIFO, either data to write or 0x00 for read
     wait 1 gpio HLDA_PIN           ; wait for HLDA to go high
 T1:
@@ -56,7 +56,7 @@ T1:
     wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
     wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go low
 T2:
-    jmp !x T2_WRITE                ; If write, jump to T2_WRITE 
+    jmp !x T2_WRITE                ; If write, jump to T2_WRITE
     set pins, 0b00010              ; else reading here, set control pins for RD control DEN=0, ALE=0, DT/R=0, WR=1, RD=0
     mov OSR, y                     ; Move data byte stored above to OSR for pindirs setup
     out pindirs, 8                 ; set BD0-BD7 pins to input for RD cycle / earlier payload had 0x00 for this purpose
@@ -74,7 +74,7 @@ T4:
     set pins, 0b00111              ; Set control pins to T4 start, DEN=0, ALE=0, DT/R=1, WR=1, RD=1
     wait 1 GPIO CLOCK_15B_PIN      ; Wait for CLK15B to go low
     set pins, 0b10111              ; Set control pins to T4 close, DEN=1, ALE=0, DT/R=1, WR=1, RD=1
-    wait 0 gpio HLDA_PIN           ; wait for HLDA to go low 
+    wait 0 gpio HLDA_PIN           ; wait for HLDA to go low
     set pindirs, 0b00000 side SIDE_HOLD_RELEASE_IO_INPUT ; Set control pins' direction to input / release IO/M and HOLD
     mov pindirs, NULL              ; Tri-state all address outputs (Release Bus)
 
@@ -95,6 +95,12 @@ T2_WRITE:
 #include "pico_victor/dma.h"
 #define OUTPUT_PIN_FIRST BD0_PIN
 #define OUTPUT_PIN_LAST  IO_M_PIN
+
+// Helper macros to format data for the new FIFO format
+// For writes: R/W=1, address shifted left by 1, data in upper byte
+#define DMA_FORMAT_WRITE(addr, data) (((uint32_t)(data) << 21) | ((addr) << 1) | 1)
+// For reads: R/W=0, address shifted left by 1, data byte is 0x00
+#define DMA_FORMAT_READ(addr) ((addr) << 1)
 
 
 /*
@@ -123,16 +129,8 @@ T2_WRITE:
  *   - If a pin isn't routed to PIO, wait will hang forever
  *   - Using pio_gpio_init() on input-only pins causes them to glitch when pindirs changes
  */
-static inline void dma_read_write_program_init(PIO pio, uint sm, uint offset, uint pin, bool read) {
-    char* mode;
-    if (read) {
-        printf("Configuring PIO for DMA READ operation\n");
-        mode = "READ";
-    } else {
-        printf("Configuring PIO for DMA WRITE operation\n");
-        mode = "WRITE";
-    }
-
+static inline void dma_read_write_program_init(PIO pio, uint sm, uint offset, uint pin) {
+    printf("Configuring PIO for DMA READ/WRITE operations (single SM)\n");
     printf("starting to configure dma_read_write_program_init\n");
     pio_sm_config c = dma_read_write_program_get_default_config(offset);
 
@@ -145,17 +143,14 @@ static inline void dma_read_write_program_init(PIO pio, uint sm, uint offset, ui
     sm_config_set_sideset(&c, 3, true, true);
     // Don't set pindirs here - it will be overridden by line 157
 
-    //Shift Register configuration settings
-    if (read) {
-        printf("Configuring in/out pins for read mode\n");
-        sm_config_set_in_pins(&c, BD0_PIN);
-        sm_config_set_in_pin_count(&c, DATA_SIZE);
-        sm_config_set_out_shift(&c, true, true, ADDRESS_AND_DATA_SIZE);
-        sm_config_set_in_shift(&c, false, true, DATA_SIZE);
-    } else {
-        printf("Configuring in/out pins for write mode\n");
-        sm_config_set_out_shift(&c, true, true, ADDRESS_AND_DATA_SIZE);
-    }
+    // Shift Register configuration settings
+    // Configure for both read and write operations
+    printf("Configuring in/out pins for read/write mode\n");
+    sm_config_set_in_pins(&c, BD0_PIN);
+    sm_config_set_in_pin_count(&c, DATA_SIZE);
+    // Note: With R/W bit in LSB, we need 29 bits total (1 + 20 + 8)
+    sm_config_set_out_shift(&c, true, true, 29);  // R/W + ADDRESS + DATA
+    sm_config_set_in_shift(&c, false, true, DATA_SIZE);
     
     pio_sm_clear_fifos(pio, sm);
     pio_sm_set_clkdiv(pio, sm, 1.0f);
@@ -164,17 +159,18 @@ static inline void dma_read_write_program_init(PIO pio, uint sm, uint offset, ui
     for (int i = pin; i <= IO_M_PIN; i++) {
         gpio_set_drive_strength(i, GPIO_DRIVE_STRENGTH_12MA);
         pio_gpio_init(pio, i);
-        printf("dma %s gpio_init %d  ", mode, i);
+        printf("dma gpio_init %d  ", i);
         printf("GPIO%d_CTRL = 0x%08x\n", i, io_bank0_hw->io[i].ctrl);
     }
 
     // Now init input-only pins for PIO
     uint func = GPIO_FUNC_PIO0 + pio_get_index(pio);
     for (int pin = IO_M_PIN + 1; pin <= IR_4_PIN; ++pin) {
-        gpio_set_function(pin, func);
-        gpio_set_input_enabled(pin, true);
-
-        printf("dma %s gpio_set_function %d  ", mode, pin);
+        ; gpio_set_function(pin, func);
+        ; gpio_set_input_enabled(pin, true);
+        gpio_set_drive_strength(pin, GPIO_DRIVE_STRENGTH_12MA);
+        pio_gpio_init(pio, pin);
+        printf("dma gpio_init %d  ", pin);
         printf("GPIO%d_CTRL = 0x%08x\n", pin, io_bank0_hw->io[pin].ctrl);
     }
 
@@ -184,7 +180,10 @@ static inline void dma_read_write_program_init(PIO pio, uint sm, uint offset, ui
     // CRITICAL RP2350 WORKAROUND: The PIO side-set pindirs doesn't work until
     // the state machine has executed at least one explicit pindirs instruction!
     // Execute a dummy pindirs instruction to "unlock" side-set pindirs functionality
-    pio_sm_exec(pio, sm, pio_encode_set(pio_pindirs, 0));  // Set all pins as inputs
+    // We set HOLD as output initially to ensure it starts released (via pull-up)
+    pio_sm_exec(pio, sm, pio_encode_set(pio_pindirs, 0));  // First set all as inputs
+    pio_sm_exec(pio, sm, pio_encode_set(pio_pindirs, (1u << 25)));  // Then set HOLD as output
+    pio_sm_exec(pio, sm, pio_encode_set(pio_pindirs, 0));  // Finally back to all inputs (HOLD released)
 
     // Just ensure HOLD and IO/M pin VALUES start at 0
     // (HOLD will be controlled via pindirs - output=assert, input=release)
@@ -207,6 +206,6 @@ static inline void dma_read_write_program_init(PIO pio, uint sm, uint offset, ui
 
     // Don't enable the state machine here - it will be enabled when needed
     // pio_sm_set_enabled(pio, sm, true);
-    printf("finished configuring dma_controller_program_init %s\n", mode);
+    printf("finished configuring dma_controller_program_init\n");
 }
 %}
