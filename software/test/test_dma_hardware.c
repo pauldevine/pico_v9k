@@ -98,25 +98,18 @@ int main() {
     // Configure DMA PIO state machines
     PIO dma_pio = PIO_DMA;
     int dma_read_write_program_offset = pio_add_program(dma_pio, &dma_read_write_program);
-    int read_sm = pio_claim_unused_sm(dma_pio, true);
-    int write_sm = pio_claim_unused_sm(dma_pio, true);
+    int dma_sm = pio_claim_unused_sm(dma_pio, true);  // Only one SM needed for unified read/write
 
-    printf("Initializing PIO state machines:\n");
+    printf("Initializing PIO state machine:\n");
     printf("  PIO: %d\n", pio_get_index(dma_pio));
-    printf("  Read SM: %d\n", read_sm);
-    printf("  Write SM: %d\n", write_sm);
+    printf("  DMA SM: %d\n", dma_sm);
     printf("  Program offset: 0x%02x\n", dma_read_write_program_offset);
 
-    // Initialize state machines
-    dma_read_write_program_init(dma_pio, read_sm, dma_read_write_program_offset, BD0_PIN, DMA_READ);
-    dma_read_write_program_init(dma_pio, write_sm, dma_read_write_program_offset, BD0_PIN, DMA_WRITE);
+    // Initialize unified state machine for both read and write operations
+    dma_read_write_program_init(dma_pio, dma_sm, dma_read_write_program_offset, BD0_PIN);
 
-    // Prime the state machines with their operation mode
-    printf("\nPriming state machines with operation modes...\n");
-    pio_sm_put_blocking(dma_pio, read_sm, DMA_READ);
-    pio_sm_put_blocking(dma_pio, read_sm, DMA_READ_T2_PINDIRS);
-    pio_sm_put_blocking(dma_pio, write_sm, DMA_WRITE);
-    pio_sm_put_blocking(dma_pio, write_sm, DMA_WRITE_T2_PINDIRS);
+    // The unified state machine determines operation type from bit 0 of the FIFO payload
+    // No need to prime with operation modes anymore
 
     // Prepare test data
     uint8_t write_buffer[TEST_SIZE];
@@ -129,34 +122,27 @@ int main() {
     print_hex_dump("Data to write", write_buffer, TEST_SIZE > 32 ? 32 : TEST_SIZE);
     printf("  ... (showing first 32 bytes)\n\n");
 
-    // Enable write state machine and disable read
-    pio_sm_set_enabled(dma_pio, read_sm, false);
-    pio_sm_set_enabled(dma_pio, write_sm, true);
+    // Enable the unified DMA state machine
+    pio_sm_set_enabled(dma_pio, dma_sm, true);
 
     printf("Writing %d bytes to Victor RAM at address 0x%05X...\n", TEST_SIZE, TEST_ADDRESS);
-    dma_write_to_victor_ram(dma_pio, write_sm, write_buffer, TEST_SIZE, TEST_ADDRESS);
+    dma_write_to_victor_ram(dma_pio, dma_sm, write_buffer, TEST_SIZE, TEST_ADDRESS);
 
     // Wait for writes to complete
     sleep_ms(100);
-
-    // Disable write state machine
-    pio_sm_set_enabled(dma_pio, write_sm, false);
 
     printf("Write complete!\n\n");
 
     printf("=== Test 2: Read from Victor RAM ===\n");
     printf("Reading %d bytes from Victor RAM at address 0x%05X...\n", TEST_SIZE, TEST_ADDRESS);
 
-    // Enable read state machine
-    pio_sm_set_enabled(dma_pio, read_sm, true);
-
-    dma_read_from_victor_ram(dma_pio, read_sm, read_buffer, TEST_SIZE, TEST_ADDRESS);
+    dma_read_from_victor_ram(dma_pio, dma_sm, read_buffer, TEST_SIZE, TEST_ADDRESS);
 
     // Wait for reads to complete
     sleep_ms(100);
 
-    // Disable read state machine
-    pio_sm_set_enabled(dma_pio, read_sm, false);
+    // Disable state machine after all operations
+    pio_sm_set_enabled(dma_pio, dma_sm, false);
 
     printf("Read complete!\n\n");
 
@@ -184,16 +170,14 @@ int main() {
     memset(read_buffer, 0xFF, TEST_SIZE);
 
     // Write to different address
-    pio_sm_set_enabled(dma_pio, write_sm, true);
-    dma_write_to_victor_ram(dma_pio, write_sm, write_buffer, TEST_SIZE, 0x20000);
+    pio_sm_set_enabled(dma_pio, dma_sm, true);
+    dma_write_to_victor_ram(dma_pio, dma_sm, write_buffer, TEST_SIZE, 0x20000);
     sleep_ms(100);
-    pio_sm_set_enabled(dma_pio, write_sm, false);
 
     // Read back
-    pio_sm_set_enabled(dma_pio, read_sm, true);
-    dma_read_from_victor_ram(dma_pio, read_sm, read_buffer, TEST_SIZE, 0x20000);
+    dma_read_from_victor_ram(dma_pio, dma_sm, read_buffer, TEST_SIZE, 0x20000);
     sleep_ms(100);
-    pio_sm_set_enabled(dma_pio, read_sm, false);
+    pio_sm_set_enabled(dma_pio, dma_sm, false);
 
     errors = compare_buffers(write_buffer, read_buffer, TEST_SIZE);
     if (errors == 0) {
@@ -208,11 +192,9 @@ int main() {
     printf("\nContinuing to monitor PIO state (Ctrl+C to exit)...\n");
     while (1) {
         sleep_ms(5000);
-        printf("PIO status - Read SM: PC=0x%x, stalled=%d | Write SM: PC=0x%x, stalled=%d\n",
-               pio_sm_get_pc(dma_pio, read_sm),
-               pio_sm_is_exec_stalled(dma_pio, read_sm),
-               pio_sm_get_pc(dma_pio, write_sm),
-               pio_sm_is_exec_stalled(dma_pio, write_sm));
+        printf("PIO status - DMA SM: PC=0x%x, stalled=%d\n",
+               pio_sm_get_pc(dma_pio, dma_sm),
+               pio_sm_is_exec_stalled(dma_pio, dma_sm));
     }
 
     return 0;

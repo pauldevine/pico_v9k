@@ -49,11 +49,13 @@
 #define DMA_READ 1
 #define DMA_WRITE 0
 
-// Helper macros to format data for the new single-SM FIFO format
-// For writes: R/W=1, address shifted left by 1, data in bits 21-28
-#define DMA_FORMAT_WRITE(addr, data) (((uint32_t)(data) << 21) | ((addr) << 1) | 1)
-// For reads: R/W=0, address shifted left by 1, data byte is 0x00
-#define DMA_FORMAT_READ(addr) ((addr) << 1)
+// DMA operations use a TWO-WORD FIFO protocol (see dma_read_write.pio for details):
+//
+// WRITE: pio_sm_put(pio, sm, (addr << 1) | 1);        // Word 1: address + write flag
+//        pio_sm_put(pio, sm, (addr & 0xFFF00) | data); // Word 2: A8-A19 + data byte
+//
+// READ:  pio_sm_put(pio, sm, (addr << 1) | 0);        // Word 1: address + read flag
+//        pio_sm_put(pio, sm, 0xFFF00);                 // Word 2: pindirs control
 
 #define DMA_REGISTER_BASE 0xEF300
 #define DMA_REGISTER_BITMASK 0x00000EF3  //the top 12 bits for the PIO instance to match address against

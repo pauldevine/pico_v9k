@@ -515,39 +515,42 @@ uint8_t dma_read_register(dma_registers_t *dma, dma_reg_offsets_t offset) {
 
 
 #ifndef UNIT_TEST
-// Write function that composes each 32-bit word as follows:
-//  - bits 0-19: Victor RAM destination address (start_address + i)
-//  - bits 20-27: 8-bit payload (data[i])
-//  - bits 28-31: unused (0)
+// Write function using two-word FIFO protocol:
+//  Word 1: bits 0=W/R flag (1=write), bits 1-20=address A0-A19
+//  Word 2: bits 0-7=data byte, bits 8-19=address A8-A19 (MSB)
 void dma_write_to_victor_ram(PIO write_pio, int write_sm, uint8_t *data, size_t length, uint32_t start_address) {
 
     printf("Starting DMA write to Victor RAM\n");
     printf("Length: %zu\n", length);
     print_segment_offset(start_address);
-        
-    printf("write_pio: %p, write_sm: %p\n", write_pio, write_sm);
+
+    printf("write_pio: %p, write_sm: %d\n", write_pio, write_sm);
     debug_pio_state(write_pio, write_sm);
 
     for (size_t i = 0; i < length; i++) {
-        uint32_t addr = (start_address + i) & 0xFFFFF;                // lower 20 bits
-        uint32_t byte = data[i] & 0xFF;                       // upper 8 bits
-        uint32_t t2_byte_addr = (addr & 0xFFF00) | byte;
+        uint32_t addr = (start_address + i) & 0xFFFFF;  // 20-bit address
+        uint8_t byte = data[i];                         // Data byte to write
 
-        printf("Writing %02X to Victor RAM at address %08X ", data[i], addr);
+        printf("Writing %02X to Victor RAM at address %08X ", byte, addr);
         print_segment_offset(addr);
-    
-        pio_sm_put_blocking(write_pio, write_sm, addr);
-        pio_sm_put_blocking(write_pio, write_sm, t2_byte_addr);
+
+        // Send two FIFO words per the PIO protocol
+        // Word 1: address shifted left with write flag in LSB
+        pio_sm_put_blocking(write_pio, write_sm, (addr << 1) | 1);
+        // Word 2: address MSB (A8-A19) in upper bits, data byte in lower bits
+        pio_sm_put_blocking(write_pio, write_sm, (addr & 0xFFF00) | byte);
     }
     printf("Finished DMA write to Victor RAM\n");
 }
 
-// Read function (PIO-based)
+// Read function (PIO-based) using two-word FIFO protocol:
+//  Word 1: bits 0=W/R flag (0=read), bits 1-20=address A0-A19
+//  Word 2: pindirs control value 0xFFF00 (A8-A19 outputs, BD0-BD7 inputs)
 void dma_read_from_victor_ram(PIO read_pio, int read_sm, uint8_t *data, size_t length, uint32_t start_address) {
     printf("Starting DMA read from Victor RAM\n");
-    printf("Length: %zu, start_address: %d ", length);
+    printf("Length: %zu, start_address: %d ", length, start_address);
     print_segment_offset(start_address);
-    
+
     uint8_t *temp = malloc((length + 1) * sizeof(uint8_t));
     if (!temp) {
         printf("Failed to allocate memory for DMA transfer\n");
@@ -555,10 +558,17 @@ void dma_read_from_victor_ram(PIO read_pio, int read_sm, uint8_t *data, size_t l
     }
 
     debug_pio_state(read_pio, read_sm);
-    printf("Reading from Victor RAM at address %08X ", start_address);
+    printf("Reading from Victor RAM at address %08X\n", start_address);
     for (size_t i = 0; i < length; i++) {
-        uint32_t addr = (start_address + i) & 0xFFFFF;
-        pio_sm_put_blocking(read_pio, read_sm, addr);
+        uint32_t addr = (start_address + i) & 0xFFFFF;  // 20-bit address
+
+        // Send two FIFO words per the PIO protocol
+        // Word 1: address shifted left with read flag (0) in LSB
+        pio_sm_put_blocking(read_pio, read_sm, (addr << 1) | 0);
+        // Word 2: pindirs value to set BD0-BD7 as inputs, A8-A19 as outputs
+        pio_sm_put_blocking(read_pio, read_sm, 0xFFF00);
+
+        // Get the data byte that was read
         uint32_t char_data = pio_sm_get_blocking(read_pio, read_sm);
         temp[i] = char_data & 0xFF;
     }

@@ -322,11 +322,15 @@ void test_pio_single_read(PIO pio, uint sm, uint offset, uint32_t address) {
 
     dma_log_sm_state("DMA SM before request", pio, sm, offset, false);
 
-    // Send address to PIO using new format
-    uint32_t addr_data = DMA_FORMAT_READ(address & 0xFFFFF);
-    printf("Sending to PIO: Read from 0x%05X (formatted: 0x%08X)\n",
-           address & 0xFFFFF, addr_data);
-    pio_sm_put_blocking(pio, sm, addr_data);
+    // Send two-word command to PIO
+    uint32_t addr = address & 0xFFFFF;
+    uint32_t word1 = (addr << 1) | 0;  // Read flag
+    uint32_t word2 = 0xFFF00;           // Pindirs control
+    printf("Sending to PIO: Read from 0x%05X\n", addr);
+    printf("  Word 1: 0x%08X (address + read flag)\n", word1);
+    printf("  Word 2: 0x%08X (pindirs control)\n", word2);
+    pio_sm_put_blocking(pio, sm, word1);
+    pio_sm_put_blocking(pio, sm, word2);
 
     dma_monitor_progress("DMA SM after address", pio, sm, offset, false);
 
@@ -473,15 +477,18 @@ int main() {
     // Now load the actual DMA cycle data
     printf("\nLoading DMA cycle data...\n");
 
-    // First write operation using new format
+    // First write operation using two-word protocol
     uint32_t addr = TEST_ADDRESS & 0xFFFFF;
     uint8_t data = 0xAA;
-    uint32_t addr_data = DMA_FORMAT_WRITE(addr, data);  // Use new format macro
+    uint32_t word1 = (addr << 1) | 1;          // Write flag
+    uint32_t word2 = (addr & 0xFFF00) | data;  // A8-A19 + data
 
-    printf("  Data Slot 1: Write to 0x%05x with data 0x%02x (formatted: 0x%08x)\n",
-           addr, data, addr_data);
+    printf("  Data Slot 1: Write to 0x%05x with data 0x%02x\n", addr, data);
+    printf("    Word 1: 0x%08x (address + write flag)\n", word1);
+    printf("    Word 2: 0x%08x (A8-A19 + data byte)\n", word2);
     gpio_put(DEBUG_PIN, 1);
-    pio_sm_put_blocking(dma_pio, dma_sm, addr_data);
+    pio_sm_put_blocking(dma_pio, dma_sm, word1);
+    pio_sm_put_blocking(dma_pio, dma_sm, word2);
     dump_pio_dbg();
     gpio_put(DEBUG_PIN, 0);
     printf("DMA cycle data loaded.\n");
@@ -628,10 +635,12 @@ int main() {
 
     addr++;
     data = 0x55;
-    addr_data = DMA_FORMAT_WRITE(addr, data);  // Use new format
-    printf("  Data Slot 2: Write to 0x%05x with data 0x%02x (formatted: 0x%08x)\n",
-           addr, data, addr_data);
-    pio_sm_put_blocking(dma_pio, dma_sm, addr_data);
+    word1 = (addr << 1) | 1;
+    word2 = (addr & 0xFFF00) | data;
+    printf("  Data Slot 2: Write to 0x%05x with data 0x%02x\n", addr, data);
+    printf("    Word 1: 0x%08x, Word 2: 0x%08x\n", word1, word2);
+    pio_sm_put_blocking(dma_pio, dma_sm, word1);
+    pio_sm_put_blocking(dma_pio, dma_sm, word2);
     dump_pio_dbg();
     printf("DMA cycle data loaded.\n");
     dma_monitor_progress("DMA SM after slot 2", dma_pio, dma_sm,
@@ -639,10 +648,12 @@ int main() {
 
     addr++;
     data = 0x33;
-    addr_data = DMA_FORMAT_WRITE(addr, data);  // Use new format
-    printf("  Data Slot 3: Write to 0x%05x with data 0x%02x (formatted: 0x%08x)\n",
-           addr, data, addr_data);
-    pio_sm_put_blocking(dma_pio, dma_sm, addr_data);
+    word1 = (addr << 1) | 1;
+    word2 = (addr & 0xFFF00) | data;
+    printf("  Data Slot 3: Write to 0x%05x with data 0x%02x\n", addr, data);
+    printf("    Word 1: 0x%08x, Word 2: 0x%08x\n", word1, word2);
+    pio_sm_put_blocking(dma_pio, dma_sm, word1);
+    pio_sm_put_blocking(dma_pio, dma_sm, word2);
     dump_pio_dbg();
     printf("DMA cycle data loaded.\n");
     dma_monitor_progress("DMA SM after slot 3", dma_pio, dma_sm,
