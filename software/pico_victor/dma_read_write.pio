@@ -44,7 +44,7 @@
 
 .wrap_target
 T0:                                ; Address Setup Phase (Put Address on Bus)
-    pull ifempty block             ; Only pull if OSR empty, block if FIFO empty (HOLD stays released!)
+    pull block                     ; Block if FIFO empty (HOLD stays released!)
     out x, 1                       ; Get R/W bit from LSB (0=Read, 1=Write)
     set pins, 0b11111 side SIDE_HOLD_ASSERT_IO_INPUT ; Assert HOLD/, keep IO/M/ input during request
     out pins, ADDRESS_BUS_SIZE     ; Output A0-A19 on bus, pindirs still input
@@ -53,9 +53,9 @@ T0:                                ; Address Setup Phase (Put Address on Bus)
 T1:
     mov OSR, ~null                 ; Set OSRs to all 1 to prepare for pindirs next line
     out pindirs, 20 side SIDE_HOLD_ASSERT_IO_OUTPUT  ; Drive address pins, keep HOLD/ asserted, IO/M/ output
-    set pindirs, 0b11111           ; Set control pins to output
+    set pindirs, 0b11111           ; Set control pins to output DEN=1, ALE=1, DT/R=1, WR/=1, RD=1 //ALE high to latch address
     wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
-    wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go low
+    wait 1 GPIO CLOCK_15B_PIN      ; Wait for CLK15B to go high
 T2:
     jmp !x T2_WRITE                ; If write, jump to T2_WRITE
     set pins, 0b00010              ; else reading here, set control pins for RD control DEN=0, ALE=0, DT/R=0, WR=1, RD=0
@@ -74,7 +74,7 @@ T4:
     wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
     set pins, 0b00111              ; Set control pins to T4 start, DEN=0, ALE=0, DT/R=1, WR=1, RD=1
     set pins, 0b10111              ; Set control pins to T4 close, DEN=1, ALE=0, DT/R=1, WR=1, RD=1
-    wait 0 gpio HLDA_PIN           ; wait for HLDA to go low
+    wait 0 gpio HLDA_PIN side SIDE_HOLD_RELEASE_IO_OUTPUT ; wait for HLDA to go low, keep HOLD released
     set pindirs, 0b00000 side SIDE_HOLD_RELEASE_IO_INPUT ; Set control pins' direction to input / release IO/M and HOLD
     mov pindirs, NULL              ; Tri-state all address outputs (Release Bus)
 
@@ -149,7 +149,8 @@ static inline void dma_read_write_program_init(PIO pio, uint sm, uint offset, ui
     sm_config_set_in_pins(&c, BD0_PIN);
     sm_config_set_in_pin_count(&c, DATA_SIZE);
     // Note: With R/W bit in LSB, we need 29 bits total (1 + 20 + 8)
-    sm_config_set_out_shift(&c, true, true, 29);  // Right shift, autopull enabled, 29 bit threshold
+    // MUST disable autopull when using pull ifempty - otherwise OSR fills with zeros
+    sm_config_set_out_shift(&c, true, false, 32);  // Right shift, NO autopull
     sm_config_set_in_shift(&c, false, true, DATA_SIZE);
     
     pio_sm_clear_fifos(pio, sm);
