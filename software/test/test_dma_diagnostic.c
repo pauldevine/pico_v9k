@@ -15,6 +15,7 @@
 #include "pico_victor/dma.h"
 #include "hardware/structs/pio.h"
 #include "hardware/structs/ioqspi.h"
+#include "hardware/structs/iobank0.h"
 
 typedef enum {
     DMA_STAGE_UNKNOWN = -1,
@@ -200,8 +201,11 @@ void dump_pio_versions(void) {
 }
 
 static void dump_pio_dbg(void) {
-    printf("PIO0_DBG_PADOE = 0x%08x\n", pio0_hw->dbg_padoe);
-    printf("PIO0_DBG_PADOUT = 0x%08x\n", pio0_hw->dbg_padout);
+    // Use the correct PIO instance based on PIO_DMA
+    pio_hw_t *pio_hw = (PIO_DMA == pio0) ? pio0_hw : (PIO_DMA == pio1) ? pio1_hw : pio2_hw;
+    int pio_idx = pio_get_index(PIO_DMA);
+    printf("PIO%d_DBG_PADOE = 0x%08x\n", pio_idx, pio_hw->dbg_padoe);
+    printf("PIO%d_DBG_PADOUT = 0x%08x\n", pio_idx, pio_hw->dbg_padout);
 }
 
 void initialize_uart() {
@@ -316,19 +320,18 @@ void test_pio_single_read(PIO pio, uint sm, uint offset, uint32_t address) {
     printf("\n=== Single Read Test ===\n");
     printf("Reading from address 0x%05X\n", address);
 
-    dma_log_sm_state("Read SM before request", pio, sm, offset, false);
+    dma_log_sm_state("DMA SM before request", pio, sm, offset, false);
 
-    // Send address to PIO
-    uint32_t addr_only = address & 0xFFFFF;
-    uint32_t pindirs = 0;
-    uint32_t addr_with_pindirs = addr_only | (pindirs << 20); // Address with pin directions in high bits
-    printf("Sending to PIO: addr=0x%07X\n", addr_with_pindirs);
-    pio_sm_put_blocking(pio, sm, addr_with_pindirs);
+    // Send address to PIO using new format
+    uint32_t addr_data = DMA_FORMAT_READ(address & 0xFFFFF);
+    printf("Sending to PIO: Read from 0x%05X (formatted: 0x%08X)\n",
+           address & 0xFFFFF, addr_data);
+    pio_sm_put_blocking(pio, sm, addr_data);
 
-    dma_monitor_progress("Read SM after address", pio, sm, offset, false);
+    dma_monitor_progress("DMA SM after address", pio, sm, offset, false);
 
     sleep_ms(10);
-    dma_log_sm_state("Read SM after 10ms", pio, sm, offset, false);
+    dma_log_sm_state("DMA SM after 10ms", pio, sm, offset, false);
 
     uint32_t data = 0xFF;  // Default value
     if (!pio_sm_is_rx_fifo_empty(pio, sm)) {
@@ -338,13 +341,18 @@ void test_pio_single_read(PIO pio, uint sm, uint offset, uint32_t address) {
         printf("No data in RX FIFO!\n");
     }
 
-    dma_log_sm_state("Read SM final state", pio, sm, offset, false);
+    dma_log_sm_state("DMA SM final state", pio, sm, offset, false);
 }
 
 // Forward declarations for signal simulator
 void signal_simulator_init();
 void signal_simulator_stop();
 void signal_simulator_test();
+
+// Helper to get the correct PIO hardware instance
+static inline pio_hw_t* get_pio_hw(PIO pio) {
+    return (pio == pio0) ? pio0_hw : (pio == pio1) ? pio1_hw : pio2_hw;
+}
 
 int main() {
     stdio_init_all();
@@ -392,67 +400,52 @@ int main() {
     // Configure DMA PIO state machines
     PIO dma_pio = PIO_DMA;
 
-    int outcome = pio_set_gpio_base(dma_pio, BD0_PIN);
-    printf("pio_set_gpio_base outcome: %d\n", outcome);
+    //int outcome = pio_set_gpio_base(dma_pio, BD0_PIN);
+    //printf("pio_set_gpio_base outcome: %d\n", outcome);
+    printf("pio_set_gpio_base  commented out to avoid issues\n");
 
     int dma_read_write_program_offset = pio_add_program(dma_pio, &dma_read_write_program);
-    int read_sm = pio_claim_unused_sm(dma_pio, true);
-    int write_sm = pio_claim_unused_sm(dma_pio, true);
+    int dma_sm = pio_claim_unused_sm(dma_pio, true);  // Single SM for both read and write
 
     printf("\n=== PIO Configuration ===\n");
     printf("PIO: %d\n", pio_get_index(dma_pio));
-    printf("Read SM: %d\n", read_sm);
-    printf("Write SM: %d\n", write_sm);
+    printf("DMA SM: %d\n", dma_sm);
     printf("Program offset: 0x%02x\n", dma_read_write_program_offset);
     printf("Program length: %d instructions\n", dma_read_write_program.length);
 
-    // Initialize state machines
-    dma_read_write_program_init(dma_pio, read_sm, dma_read_write_program_offset, BD0_PIN, DMA_READ);
-    dma_read_write_program_init(dma_pio, write_sm, dma_read_write_program_offset, BD0_PIN, DMA_WRITE);
+    // Initialize single state machine for both read and write operations
+    dma_read_write_program_init(dma_pio, dma_sm, dma_read_write_program_offset, BD0_PIN);
 
-    // Don't prime here - we'll do it right before enabling each SM
+    // Don't prime here - we'll do it right before enabling
     printf("\n=== State Machine Configuration Complete ===\n");
 
-    // Check if FIFOs are ready
-    printf("Read SM TX FIFO empty: %d\n", pio_sm_is_tx_fifo_empty(dma_pio, read_sm));
-    printf("Write SM TX FIFO empty: %d\n", pio_sm_is_tx_fifo_empty(dma_pio, write_sm));
+    // Check if FIFO is ready
+    printf("DMA SM TX FIFO empty: %d\n", pio_sm_is_tx_fifo_empty(dma_pio, dma_sm));
 
-    // Check SM states after init
+    // Check SM state after init
     printf("\nState after init:\n");
-    printf("Read SM: PC=0x%x, stalled=%d\n",
-           pio_sm_get_pc(dma_pio, read_sm),
-           pio_sm_is_exec_stalled(dma_pio, read_sm));
-    printf("Write SM: PC=0x%x, stalled=%d\n",
-           pio_sm_get_pc(dma_pio, write_sm),
-           pio_sm_is_exec_stalled(dma_pio, write_sm));
+    printf("DMA SM: PC=0x%x, stalled=%d\n",
+           pio_sm_get_pc(dma_pio, dma_sm),
+           pio_sm_is_exec_stalled(dma_pio, dma_sm));
 
     // Test 1: Single write operation (TX FIFO only has 4 slots!)
     printf("\n=== Test 1: Single Write Operation ===\n");
 
-    // Load initialization values first (1 slots)
-    printf("Loading initialization value...\n");
+    // No initialization value needed with new format
+    printf("Preparing write operation...\n");
 
     dump_pio_dbg();
 
-    //one time initialization of X direction
-    //x = DMA direction (read or write)
-    gpio_put(DEBUG_PIN, 1);
-    printf("  Init Slot 1: DMA_WRITE (0x%08x)\n", DMA_WRITE);
-    pio_sm_put_blocking(dma_pio, write_sm, DMA_WRITE);
-    gpio_put(DEBUG_PIN, 0);
-
-     dump_pio_dbg();
-
     // Check FIFO before enabling
     printf("Before enabling - TX FIFO level: %d/4\n",
-           pio_sm_get_tx_fifo_level(dma_pio, write_sm));
-        
+           pio_sm_get_tx_fifo_level(dma_pio, dma_sm));
+
     gpio_put(DEBUG_PIN, 1);
-    printf("Enabling write SM (will consume init value)...\n");
-    pio_sm_set_enabled(dma_pio, write_sm, true);
+    printf("Enabling DMA SM...\n");
+    pio_sm_set_enabled(dma_pio, dma_sm, true);
     gpio_put(DEBUG_PIN, 0);
 
-    dma_monitor_progress("Write SM post-enable", dma_pio, write_sm,
+    dma_monitor_progress("DMA SM post-enable", dma_pio, dma_sm,
                          dma_read_write_program_offset, true);
 
     // Check DBG registers after SM starts
@@ -480,55 +473,198 @@ int main() {
     // Now load the actual DMA cycle data
     printf("\nLoading DMA cycle data...\n");
 
-    // First write operation
+    // First write operation using new format
     uint32_t addr = TEST_ADDRESS & 0xFFFFF;
-    uint32_t data = (0xAA & 0xFF);
-    uint32_t addr_data = addr | (data << 20);  // Address in low 20 bits, data in high 8 bits
+    uint8_t data = 0xAA;
+    uint32_t addr_data = DMA_FORMAT_WRITE(addr, data);  // Use new format macro
 
-    printf("  Data Slot 1: Address plus data (0x%07x)\n", addr_data);
+    printf("  Data Slot 1: Write to 0x%05x with data 0x%02x (formatted: 0x%08x)\n",
+           addr, data, addr_data);
     gpio_put(DEBUG_PIN, 1);
-    pio_sm_put_blocking(dma_pio, write_sm, addr_data);
+    pio_sm_put_blocking(dma_pio, dma_sm, addr_data);
     dump_pio_dbg();
     gpio_put(DEBUG_PIN, 0);
     printf("DMA cycle data loaded.\n");
-    dma_monitor_progress("Write SM after slot 1", dma_pio, write_sm,
+    dma_monitor_progress("DMA SM after slot 1", dma_pio, dma_sm,
+                         dma_read_write_program_offset, true);
+    gpio_init(HOLD_PIN);
+    gpio_set_dir(HOLD_PIN, GPIO_OUT);
+    gpio_put(HOLD_PIN, 1);
+    // After the state machine has processed some data
+    printf("\n=== Manual HOLD Pin Control Test ===\n");
+
+    // Stop the SM first to take control
+    pio_sm_set_enabled(dma_pio, dma_sm, false);
+
+    // Check current state
+    printf("Before manual control - DBG_PADOE: 0x%08x\n", pio0_hw->dbg_padoe);
+    printf("HOLD pin (ARM): %d\n", gpio_get(HOLD_PIN));
+
+    // Test 1: Explicitly set HOLD as output and drive low
+    printf("\n1. Setting HOLD as output (drive low)...\n");
+      
+    sleep_us(10);
+    printf("   DBG_PADOE: 0x%08x, HOLD=%d\n", pio0_hw->dbg_padoe, gpio_get(HOLD_PIN));
+
+    // Test 2: Set HOLD pin value high (while still output)
+    printf("\n2. Setting HOLD output value HIGH...\n");
+    pio_sm_exec(dma_pio, dma_sm, pio_encode_set(pio_pins, (1u << HOLD_PIN)));
+    sleep_us(10);
+    printf("   DBG_PADOE: 0x%08x, HOLD=%d\n", pio0_hw->dbg_padoe, gpio_get(HOLD_PIN));
+
+    // Test 3: Set HOLD as input (should float high with Victor pull-up)
+    printf("\n3. Setting HOLD as input (float)...\n");
+    pio_sm_exec(dma_pio, dma_sm, pio_encode_set(pio_pindirs, 0));
+    sleep_us(10);
+    printf("   DBG_PADOE: 0x%08x, HOLD=%d\n", pio0_hw->dbg_padoe, gpio_get(HOLD_PIN));
+
+    // Test 4: Try MOV instead of SET for pindirs
+    printf("\n4. Using MOV PINDIRS, NULL (all inputs)...\n");
+    pio_sm_exec(dma_pio, dma_sm, pio_encode_mov(pio_pindirs, pio_null));
+    sleep_us(10);
+    printf("   DBG_PADOE: 0x%08x, HOLD=%d\n", pio0_hw->dbg_padoe, gpio_get(HOLD_PIN));
+
+    // Test 5: Verify we can drive it low again
+    printf("\n5. Setting HOLD as output again (drive low)...\n");
+    pio_sm_exec(dma_pio, dma_sm, pio_encode_set(pio_pindirs, (1u << HOLD_PIN)));
+    pio_sm_exec(dma_pio, dma_sm, pio_encode_set(pio_pins, 0));
+    sleep_us(10);  
+    printf("   DBG_PADOE: 0x%08x, HOLD=%d\n", pio0_hw->dbg_padoe, gpio_get(HOLD_PIN));
+
+    // Verify the SM's pin configuration (use correct PIO instance)
+    pio_hw_t *pio_hw = (dma_pio == pio0) ? pio0_hw : (dma_pio == pio1) ? pio1_hw : pio2_hw;
+    uint32_t pinctrl = pio_hw->sm[dma_sm].pinctrl;
+    uint32_t execctrl = pio_hw->sm[dma_sm].execctrl;
+
+    printf("\n=== SM Pin Mapping Check ===\n");
+    printf("SET_BASE = %d (should be %d for RD_PIN)\n", (pinctrl >> 5) & 0x1F, RD_PIN);
+    printf("OUT_BASE = %d (should be %d for BD0_PIN)\n", pinctrl & 0x1F, BD0_PIN);
+    printf("SIDESET_BASE = %d (should be %d for HOLD_PIN)\n", (pinctrl >> 10) & 0x1F, HOLD_PIN);
+
+    // Also check if side_set is affecting the right pins
+    printf("SIDE_EN = %d (should be 1)\n", (execctrl >> 30) & 0x1);
+    printf("SIDE_PINDIR = %d (should be 1)\n", (execctrl >> 29) & 0x1);
+
+    // Check which SM owns pin 25
+    printf("\n=== Pin 25 Ownership Investigation ===\n");
+
+    // Check GPIO function
+    printf("GPIO25_CTRL = 0x%08x\n", iobank0_hw->io[25].ctrl);
+    uint32_t func = iobank0_hw->io[25].ctrl & 0x1f;
+    printf("  Function = %d (", func);
+    switch(func) {
+        case GPIO_FUNC_SIO: printf("SIO"); break;
+        case GPIO_FUNC_PIO0: printf("PIO0"); break;
+        case GPIO_FUNC_PIO1: printf("PIO1"); break;
+        case GPIO_FUNC_PIO2: printf("PIO2"); break;
+        default: printf("OTHER:%d", func);
+    }
+    printf(")\n");
+
+    // Check all SMs to see who's controlling pin 25
+    for (int sm = 0; sm < 4; sm++) {
+        uint32_t sm_pinctrl = pio0_hw->sm[sm].pinctrl;
+        uint32_t sm_execctrl = pio0_hw->sm[sm].execctrl;
+
+        // Check OUT pins
+        uint32_t out_base = sm_pinctrl & 0x1f;
+        uint32_t out_count = (sm_pinctrl >> 20) & 0x3f;
+        if (25 >= out_base && 25 < out_base + out_count) {
+            printf("  SM%d OUT pins include pin 25 (base=%d, count=%d)\n",
+                   sm, out_base, out_count);
+        }
+
+        // Check SET pins
+        uint32_t set_base = (sm_pinctrl >> 5) & 0x1f;
+        uint32_t set_count = (sm_pinctrl >> 26) & 0x7;
+        if (25 >= set_base && 25 < set_base + set_count) {
+            printf("  SM%d SET pins include pin 25 (base=%d, count=%d)\n",
+                   sm, set_base, set_count);
+        }
+
+        // Check SIDESET pins
+        uint32_t side_base = (sm_pinctrl >> 10) & 0x1f;
+        uint32_t side_count = (sm_pinctrl >> 29) & 0x7;
+        if (25 >= side_base && 25 < side_base + side_count) {
+            printf("  SM%d SIDESET pins include pin 25 (base=%d, count=%d)\n",
+                   sm, side_base, side_count);
+            if (sm_execctrl & (1 << 29)) {
+                printf("    SIDE_PINDIR is enabled for this SM\n");
+            }
+        }
+    }
+
+    // Try to force control back to SM1
+    printf("\nAttempting to force pin 25 control to SM1...\n");
+
+    // First, disable all SMs temporarily
+    bool sm_enabled[4];
+    for (int sm = 0; sm < 4; sm++) {
+        // Check if SM is enabled by looking at CTRL register
+        sm_enabled[sm] = (pio0_hw->ctrl & (1u << sm)) != 0;
+        pio_sm_set_enabled(pio0, sm, false);
+    }
+
+    // Explicitly set pin 25 to PIO0
+    gpio_set_function(25, GPIO_FUNC_PIO0);
+
+    // Try manual control again
+    pio_sm_exec(pio0, 1, pio_encode_set(pio_pindirs, 0));  // All inputs
+    sleep_us(10);
+    printf("After forcing input: DBG_PADOE=0x%08x, HOLD=%d\n",
+           pio0_hw->dbg_padoe, gpio_get(HOLD_PIN));
+
+    pio_sm_exec(pio0, 1, pio_encode_set(pio_pindirs, 1 << 25));  // HOLD output
+    sleep_us(10);
+    printf("After forcing output: DBG_PADOE=0x%08x, HOLD=%d\n",
+           pio0_hw->dbg_padoe, gpio_get(HOLD_PIN));
+
+    // Re-enable the SMs that were enabled
+    for (int sm = 0; sm < 4; sm++) {
+        if (sm_enabled[sm]) {
+            pio_sm_set_enabled(pio0, sm, true);
+        }
+    }
+
+    addr++;
+    data = 0x55;
+    addr_data = DMA_FORMAT_WRITE(addr, data);  // Use new format
+    printf("  Data Slot 2: Write to 0x%05x with data 0x%02x (formatted: 0x%08x)\n",
+           addr, data, addr_data);
+    pio_sm_put_blocking(dma_pio, dma_sm, addr_data);
+    dump_pio_dbg();
+    printf("DMA cycle data loaded.\n");
+    dma_monitor_progress("DMA SM after slot 2", dma_pio, dma_sm,
                          dma_read_write_program_offset, true);
 
     addr++;
-    data = (0x55 & 0xFF);
-    addr_data = addr | (data << 20);
-    printf("  Data Slot 2: Address plus data (0x%07x)\n", addr_data);
-    pio_sm_put_blocking(dma_pio, write_sm, addr_data);
+    data = 0x33;
+    addr_data = DMA_FORMAT_WRITE(addr, data);  // Use new format
+    printf("  Data Slot 3: Write to 0x%05x with data 0x%02x (formatted: 0x%08x)\n",
+           addr, data, addr_data);
+    pio_sm_put_blocking(dma_pio, dma_sm, addr_data);
     dump_pio_dbg();
     printf("DMA cycle data loaded.\n");
-    dma_monitor_progress("Write SM after slot 2", dma_pio, write_sm,
-                         dma_read_write_program_offset, true);
-
-    addr++;
-    data = (0x55 & 0xFF);
-    addr_data = addr | (data << 20);
-    printf("  Data Slot 3: Address plus data (0x%07x)\n", addr_data);
-    pio_sm_put_blocking(dma_pio, write_sm, addr_data);
-    dump_pio_dbg();
-    printf("DMA cycle data loaded.\n");
-    dma_monitor_progress("Write SM after slot 3", dma_pio, write_sm,
+    dma_monitor_progress("DMA SM after slot 3", dma_pio, dma_sm,
                          dma_read_write_program_offset, true);
 
     // Check immediately after loading data
     printf("After loading data - TX FIFO: %d/4, PC=0x%x\n",
-           pio_sm_get_tx_fifo_level(dma_pio, write_sm),
-           pio_sm_get_pc(dma_pio, write_sm));
+           pio_sm_get_tx_fifo_level(dma_pio, dma_sm),
+           pio_sm_get_pc(dma_pio, dma_sm));
 
     // Check HOLD and HLDA states - both ARM view and PIO view
     printf("HOLD pin (ARM view): %d, HLDA pin (ARM view): %d\n", gpio_get(HOLD_PIN), gpio_get(HLDA_PIN));
 
     // Check what PIO actually sees on the pins - try different registers
-    uint32_t pio_pins = pio0_hw->input_sync_bypass;
+    {
+        pio_hw_t *pio_hw = get_pio_hw(dma_pio);
+        uint32_t pio_pins = pio_hw->input_sync_bypass;
     uint32_t gpio_in = sio_hw->gpio_in;
-    printf("PIO0 input_sync_bypass: 0x%08x\n", pio_pins);
+    printf("PIO%d input_sync_bypass: 0x%08x\n", pio_get_index(dma_pio), pio_pins);
     printf("SIO gpio_in register: 0x%08x\n", gpio_in);
     // Check if we're on the right GPIO base (RP2350 specific)
-    printf("PIO0 DBG_CFGINFO: 0x%08x\n", pio0_hw->dbg_cfginfo);
+    printf("PIO%d DBG_CFGINFO: 0x%08x\n", pio_get_index(dma_pio), pio_hw->dbg_cfginfo);
 
     // Check both PIO and SIO views
     printf("  HLDA (pin %d) - PIO: %d, SIO: %d\n", HLDA_PIN,
@@ -539,10 +675,11 @@ int main() {
            (pio_pins >> CLOCK_5_PIN) & 1, (gpio_in >> CLOCK_5_PIN) & 1);
     printf("  CLK15B (pin %d) - PIO: %d, SIO: %d\n", CLOCK_15B_PIN,
            (pio_pins >> CLOCK_15B_PIN) & 1, (gpio_in >> CLOCK_15B_PIN) & 1);
+    }  // End scope for pio_hw
 
     print_gpio_states();
 
-    dma_log_sm_state("Write SM after 1ms", dma_pio, write_sm,
+    dma_log_sm_state("DMA SM after 1ms", dma_pio, dma_sm,
                      dma_read_write_program_offset, true);
 
     // Poll ALL pins to find which one has HLDA signal
@@ -551,23 +688,23 @@ int main() {
     uint32_t changed_pins_mask = 0;
 
     // Get initial state
-    pio_sm_exec(dma_pio, write_sm, pio_encode_in(0, 32));
-    pio_sm_exec(dma_pio, write_sm, pio_encode_push(false, false));
+    pio_sm_exec(dma_pio, dma_sm, pio_encode_in(0, 32));
+    pio_sm_exec(dma_pio, dma_sm, pio_encode_push(false, false));
     sleep_us(10);
-    if (!pio_sm_is_rx_fifo_empty(dma_pio, write_sm)) {
-        initial_pins = pio_sm_get(dma_pio, write_sm);
+    if (!pio_sm_is_rx_fifo_empty(dma_pio, dma_sm)) {
+        initial_pins = pio_sm_get(dma_pio, dma_sm);
         printf("  Initial pins state: 0x%08x\n", initial_pins);
     }
 
     // Poll for changes
     int found_changes = 0;
     for (int i = 0; i < 100; i++) {
-        pio_sm_exec(dma_pio, write_sm, pio_encode_in(0, 32));
-        pio_sm_exec(dma_pio, write_sm, pio_encode_push(false, false));
+        pio_sm_exec(dma_pio, dma_sm, pio_encode_in(0, 32));
+        pio_sm_exec(dma_pio, dma_sm, pio_encode_push(false, false));
         sleep_us(100);
 
-        if (!pio_sm_is_rx_fifo_empty(dma_pio, write_sm)) {
-            uint32_t pins = pio_sm_get(dma_pio, write_sm);
+        if (!pio_sm_is_rx_fifo_empty(dma_pio, dma_sm)) {
+            uint32_t pins = pio_sm_get(dma_pio, dma_sm);
             uint32_t changes = pins ^ initial_pins;
             if (changes && !found_changes) {
                 found_changes = 1;
@@ -592,43 +729,45 @@ int main() {
            (changed_pins_mask & (1 << HLDA_PIN)) ? "CHANGED" : "NO CHANGE");
 
     // Check PIO view again - try multiple ways
-    pio_pins = pio0_hw->input_sync_bypass;
-    gpio_in = sio_hw->gpio_in;
+    {
+        pio_hw_t *pio_hw = get_pio_hw(dma_pio);
+        uint32_t pio_pins = pio_hw->input_sync_bypass;
+        uint32_t gpio_in = sio_hw->gpio_in;
 
-    // Check the PIO's DBG registers which show what the PIO sees
-    uint32_t pio_dbg_padout = pio0_hw->dbg_padout;
-    uint32_t pio_dbg_padoe = pio0_hw->dbg_padoe;
+        // Check the PIO's DBG registers which show what the PIO sees
+        uint32_t pio_dbg_padout = pio_hw->dbg_padout;
+        uint32_t pio_dbg_padoe = pio_hw->dbg_padoe;
 
-    printf("After 1ms wait:\n");
-    printf("  PIO0 input_sync_bypass: 0x%08x\n", pio_pins);
-    printf("  PIO0 dbg_padout: 0x%08x\n", pio_dbg_padout);
-    printf("  PIO0 dbg_padoe: 0x%08x\n", pio_dbg_padoe);
-    printf("  SIO gpio_in: 0x%08x\n", gpio_in);
+        printf("After 1ms wait:\n");
+        printf("  PIO%d input_sync_bypass: 0x%08x\n", pio_get_index(dma_pio), pio_pins);
+        printf("  PIO%d dbg_padout: 0x%08x\n", pio_get_index(dma_pio), pio_dbg_padout);
+        printf("  PIO%d dbg_padoe: 0x%08x\n", pio_get_index(dma_pio), pio_dbg_padoe);
+        printf("  SIO gpio_in: 0x%08x\n", gpio_in);
 
-    printf("PIO sees HLDA=%d, READY=%d, CLK5=%d, CLK15B=%d\n",
-           (pio_pins >> HLDA_PIN) & 1, (pio_pins >> READY_PIN) & 1,
-           (pio_pins >> CLOCK_5_PIN) & 1, (pio_pins >> CLOCK_15B_PIN) & 1);
-    printf("ARM sees HOLD=%d, HLDA=%d, READY=%d, CLK5=%d, CLK15B=%d\n",
-           gpio_get(HOLD_PIN), gpio_get(HLDA_PIN), gpio_get(READY_PIN),
-           gpio_get(CLOCK_5_PIN), gpio_get(CLOCK_15B_PIN));
+        printf("PIO sees HLDA=%d, READY=%d, CLK5=%d, CLK15B=%d\n",
+               (pio_pins >> HLDA_PIN) & 1, (pio_pins >> READY_PIN) & 1,
+               (pio_pins >> CLOCK_5_PIN) & 1, (pio_pins >> CLOCK_15B_PIN) & 1);
+        printf("ARM sees HOLD=%d, HLDA=%d, READY=%d, CLK5=%d, CLK15B=%d\n",
+               gpio_get(HOLD_PIN), gpio_get(HLDA_PIN), gpio_get(READY_PIN),
+               gpio_get(CLOCK_5_PIN), gpio_get(CLOCK_15B_PIN));
+    }  // End scope - properly close the block
 
     // Try forcing a simple PIO instruction to read GPIO
     printf("\nTesting PIO pin reading with 'IN PINS, 32' instruction:\n");
     // First, we need to configure the IN pin base for this state machine
-    // The write SM might not have IN pins configured, so let's set it
-    pio_sm_set_in_pins(dma_pio, write_sm, 0);  // Set IN base to pin 0
+    pio_sm_set_in_pins(dma_pio, dma_sm, 0);  // Set IN base to pin 0
 
     // Execute IN PINS, 32 to read all 32 pins
     // PIO_SRC_PINS is defined as 0 in the SDK
-    pio_sm_exec(dma_pio, write_sm, pio_encode_in(0, 32));  // 0 = pins source
+    pio_sm_exec(dma_pio, dma_sm, pio_encode_in(0, 32));  // 0 = pins source
     sleep_us(10);
 
     // Also try pushing ISR to RX FIFO
-    pio_sm_exec(dma_pio, write_sm, pio_encode_push(false, false));
+    pio_sm_exec(dma_pio, dma_sm, pio_encode_push(false, false));
     sleep_us(10);
 
-    if (!pio_sm_is_rx_fifo_empty(dma_pio, write_sm)) {
-        uint32_t pins_read = pio_sm_get(dma_pio, write_sm);
+    if (!pio_sm_is_rx_fifo_empty(dma_pio, dma_sm)) {
+        uint32_t pins_read = pio_sm_get(dma_pio, dma_sm);
         printf("  PIO read pins via IN: 0x%08x\n", pins_read);
         printf("  Pin 27=%d, 28=%d, 29=%d, 30=%d\n",
                (pins_read >> 27) & 1, (pins_read >> 28) & 1,
@@ -638,39 +777,38 @@ int main() {
     }
 
     sleep_ms(10);
-    dma_log_sm_state("Write SM after 10ms", dma_pio, write_sm,
+    dma_log_sm_state("DMA SM after 10ms", dma_pio, dma_sm,
                      dma_read_write_program_offset, true);
 
     // Check if state machine is waiting at expected point
     sleep_ms(100);
-    dma_log_sm_state("Write SM after 100ms", dma_pio, write_sm,
+    dma_log_sm_state("DMA SM after 100ms", dma_pio, dma_sm,
                      dma_read_write_program_offset, true);
-    printf("    TX FIFO level: %d/4\n", pio_sm_get_tx_fifo_level(dma_pio, write_sm));
+    printf("    TX FIFO level: %d/4\n", pio_sm_get_tx_fifo_level(dma_pio, dma_sm));
 
-    printf("DMA write test complete. Disabling write SM.\n");
-    pio_sm_set_enabled(dma_pio, write_sm, false);
+    printf("DMA write test complete. Disabling DMA SM.\n");
+    pio_sm_set_enabled(dma_pio, dma_sm, false);
 
     // Test 2: Single read operation
     printf("\n=== Test 2: Single Read Operation ===\n");
 
-    // Initialize the read state machine with required values
-    printf("Loading read SM FIFO with init values...\n");
-    pio_sm_put_blocking(dma_pio, read_sm, DMA_READ);  // Direction
+    // Re-enable the DMA SM for read operation
+    printf("Re-enabling DMA SM for read operation...\n");
 
-    printf("Before enabling read SM - TX FIFO level: %d/4\n",
-           pio_sm_get_tx_fifo_level(dma_pio, read_sm));
+    printf("Before enabling DMA SM - TX FIFO level: %d/4\n",
+           pio_sm_get_tx_fifo_level(dma_pio, dma_sm));
 
-    pio_sm_set_enabled(dma_pio, read_sm, true);
-    dma_monitor_progress("Read SM post-enable", dma_pio, read_sm,
+    pio_sm_set_enabled(dma_pio, dma_sm, true);
+    dma_monitor_progress("DMA SM post-enable (read)", dma_pio, dma_sm,
                          dma_read_write_program_offset, false);
 
-    test_pio_single_read(dma_pio, read_sm, dma_read_write_program_offset, TEST_ADDRESS);
+    test_pio_single_read(dma_pio, dma_sm, dma_read_write_program_offset, TEST_ADDRESS);
 
     sleep_ms(100);
-    dma_log_sm_state("Read SM after 100ms", dma_pio, read_sm,
+    dma_log_sm_state("DMA SM after 100ms (read)", dma_pio, dma_sm,
                      dma_read_write_program_offset, false);
 
-    pio_sm_set_enabled(dma_pio, read_sm, false);
+    pio_sm_set_enabled(dma_pio, dma_sm, false);
 
     // Final GPIO state check
     printf("\n=== Final GPIO State ===\n");

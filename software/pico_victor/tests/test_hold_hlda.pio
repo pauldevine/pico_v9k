@@ -1,0 +1,79 @@
+; test_hold_hlda.pio - Minimal test for HOLD/HLDA handshaking
+;
+; This PIO program tests the basic bus arbitration:
+; 1. Assert HOLD (set pin 25 low) - active low signal
+; 2. Wait for HLDA acknowledgment (pin 28 goes HIGH) - active high signal
+; 3. Release HOLD (set pin 25 high)
+; 4. Do 3x nop[31] for timing delay
+; 5. Wrap and repeat
+
+.program test_hold_hlda
+
+.define public HOLD_PIN  25
+.define public HLDA_PIN  28
+
+; No side-set needed since we're directly controlling pins
+; We'll use SET for HOLD control
+
+    ; Assert HOLD by setting it low (active low - request bus)
+    set pins, 0
+
+    ; Wait for HLDA to go HIGH (active high - bus granted)
+    wait 1 gpio HLDA_PIN
+
+    ; Release HOLD by setting it high (release bus)
+    set pins, 1
+
+    ; Timing delay - 3x nop[31] as requested
+    nop [31]
+    nop [31]    
+    nop [31]
+
+.wrap  ; Loop back to beginning
+
+% c-sdk {
+#include "hardware/gpio.h"
+
+// SAFE helper function to initialize the test_hold_hlda program
+// ONLY touches pins 25 (HOLD) and 28 (HLDA)
+static inline void test_hold_hlda_program_init(PIO pio, uint sm, uint offset) {
+    // Just use the pin numbers directly - no need for verbose defines
+    const uint hold_pin = 25;
+    const uint hlda_pin = 28;
+
+    // Get the default config
+    pio_sm_config c = test_hold_hlda_program_get_default_config(offset);
+
+    // Configure SET pins - ONLY pin 25 (HOLD), count=1
+    sm_config_set_set_pins(&c, hold_pin, 1);
+
+    // Initialize ONLY the HOLD pin for PIO control (output)
+    pio_gpio_init(pio, hold_pin);
+
+    // Set ONLY HOLD as output (PIO controlled) - count=1 means only 1 pin
+    pio_sm_set_consecutive_pindirs(pio, sm, hold_pin, 1, true);
+
+    // Initialize HLDA for PIO to read (input only)
+    // Critical: On RP2350, must call pio_gpio_init even for inputs
+    pio_gpio_init(pio, hlda_pin);
+
+    // Explicitly ensure HLDA stays as input (never driven)
+    gpio_set_dir(hlda_pin, GPIO_IN);
+
+    // Set HOLD high initially (idle state, bus released)
+    pio_sm_set_pins(pio, sm, 1);
+
+    // Initialize the state machine with our config
+    pio_sm_init(pio, sm, offset, &c);
+
+    // RP2350 workaround: Execute a dummy pindirs to activate pindirs functionality
+    // Set pindirs to 0 first (all inputs), then the SM will control only HOLD
+    pio_sm_exec(pio, sm, pio_encode_set(pio_pindirs, 0));
+
+    // Now set just HOLD pin as output via PIO
+    pio_sm_exec(pio, sm, pio_encode_set(pio_pindirs, 1));
+
+    // Enable the state machine
+    pio_sm_set_enabled(pio, sm, true);
+}
+%}

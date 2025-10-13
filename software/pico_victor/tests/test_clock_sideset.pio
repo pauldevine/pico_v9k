@@ -1,0 +1,113 @@
+.pio_version 1
+
+; Pin definitions - matching your main program
+.define CLOCK_5_PIN  29
+.define CLOCK_15B_PIN 30
+.define DEN_PIN 25      ; First side-set pin
+.define IO_M_PIN 26     ; Second side-set pin (must be consecutive)
+
+; Test program to debug CLOCK wait and side-set functionality
+.program test_clock_sideset
+
+; Configure side-set with 2 pins (DEN and IO_M)
+; opt means the side-set is optional (we can choose when to use it)
+.side_set 2 opt
+
+; This test program will:
+; 1. Wait for CLOCK_5 to go low then high (detecting edges)
+; 2. Wait for CLOCK_15B to go low then high (detecting edges)
+; 3. Set both side-set pins (DEN and IO_M) high
+; 4. Hold them high for a few cycles
+; 5. Set them back low
+; 6. Loop back to start
+
+.wrap_target
+start:
+    ; Test 1: Wait for CLOCK_5 transitions
+    wait 0 GPIO CLOCK_5_PIN           ; Wait for CLOCK_5 to go low
+    nop                                ; Small delay to ensure stable signal
+    wait 1 GPIO CLOCK_5_PIN           ; Wait for CLOCK_5 to go high
+
+    ; Test 2: Wait for CLOCK_15B transitions
+    wait 0 GPIO CLOCK_15B_PIN         ; Wait for CLOCK_15B to go low
+    nop                                ; Small delay to ensure stable signal
+    wait 1 GPIO CLOCK_15B_PIN         ; Wait for CLOCK_15B to go high
+
+    ; Test 3: Activate side-set pins (both DEN and IO_M high)
+    ; side 0b11 sets both pins high (DEN=1, IO_M=1)
+    nop side 0b11                      ; Set both side-set pins high
+    nop side 0b11 [3]                  ; Hold high for 4 cycles total
+
+    ; Set one pin high, one low to verify independent control
+    nop side 0b01 [3]                  ; DEN=0, IO_M=1 for 4 cycles
+    nop side 0b10 [3]                  ; DEN=1, IO_M=0 for 4 cycles
+
+    ; Return both pins to low
+    nop side 0b00 [3]                  ; Both pins low for 4 cycles
+
+.wrap
+
+% c-sdk {
+#include <stdio.h>
+#include "hardware/pio.h"
+#include "hardware/gpio.h"
+#include "hardware/clocks.h"
+
+// Pin definitions matching the PIO program
+#define CLOCK_5_PIN  29
+#define CLOCK_15B_PIN 30
+#define DEN_PIN 25      // First side-set pin
+#define IO_M_PIN 26     // Second side-set pin (must be consecutive)
+
+static inline void test_clock_sideset_program_init(PIO pio, uint sm, uint offset) {
+    printf("Initializing test_clock_sideset program\n");
+    printf("CLOCK_5_PIN: %d\n", CLOCK_5_PIN);
+    printf("CLOCK_15B_PIN: %d\n", CLOCK_15B_PIN);
+    printf("DEN_PIN: %d\n", DEN_PIN);
+    printf("IO_M_PIN: %d\n", IO_M_PIN);
+
+    // Get the default config for this program
+    pio_sm_config c = test_clock_sideset_program_get_default_config(offset);
+
+    // Configure the side-set pins (DEN and IO_M)
+    // These will be controlled by the side-set in the PIO program
+    pio_gpio_init(pio, DEN_PIN);
+    pio_gpio_init(pio, IO_M_PIN);
+
+    // Set DEN and IO_M as outputs controlled by PIO
+    // Now that they're consecutive (26, 27), we can set them together
+    pio_sm_set_consecutive_pindirs(pio, sm, DEN_PIN, 2, true);  // 2 pins starting at DEN_PIN
+
+    // Configure side-set base pin and count
+    sm_config_set_sideset_pins(&c, DEN_PIN);  // Side-set starts at DEN_PIN
+
+    // We don't need to configure CLOCK pins as GPIO since we're just reading them
+    // But let's print their current state for debugging
+    gpio_init(CLOCK_5_PIN);
+    gpio_init(CLOCK_15B_PIN);
+    gpio_set_dir(CLOCK_5_PIN, GPIO_IN);
+    gpio_set_dir(CLOCK_15B_PIN, GPIO_IN);
+
+    // Optional: Add pull-ups if the clock signals need them
+    // gpio_pull_up(CLOCK_5_PIN);
+    // gpio_pull_up(CLOCK_15B_PIN);
+
+    // Set clock divider (1.0 = run at full system clock speed)
+    sm_config_set_clkdiv(&c, 1.0f);
+
+    // Clear FIFOs
+    pio_sm_clear_fifos(pio, sm);
+
+    // Initialize and enable the state machine
+    pio_sm_init(pio, sm, offset, &c);
+
+    printf("State machine configured. Starting execution...\n");
+    printf("Initial CLOCK_5 state: %d\n", gpio_get(CLOCK_5_PIN));
+    printf("Initial CLOCK_15B state: %d\n", gpio_get(CLOCK_15B_PIN));
+
+    pio_sm_set_enabled(pio, sm, true);
+
+    printf("Test program running. Monitor DEN_PIN (%d) and IO_M_PIN (%d) for output.\n", DEN_PIN, IO_M_PIN);
+}
+
+%}

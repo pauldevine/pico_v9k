@@ -160,3 +160,29 @@ pico_enable_stdio_usb(test_pio_hold_control 0)
 pico_enable_stdio_uart(test_pio_hold_control 1)
 pico_add_extra_outputs(test_pio_hold_control)
 pico_set_binary_type(test_pio_hold_control no_flash)
+
+# HOLD/HLDA handshaking test
+add_executable(test_hold_hlda
+    test_hold_hlda.c
+)
+
+target_include_directories(test_hold_hlda PRIVATE
+    ${CMAKE_SOURCE_DIR}
+    ${CMAKE_SOURCE_DIR}/pico_victor
+    ${CMAKE_SOURCE_DIR}/pico_victor/tests
+)
+
+# Generate PIO header for the test
+pico_generate_pio_header(test_hold_hlda ${CMAKE_SOURCE_DIR}/pico_victor/tests/test_hold_hlda.pio)
+
+target_link_libraries(test_hold_hlda
+    pico_stdlib
+    hardware_gpio
+    hardware_pio
+    hardware_clocks
+)
+
+pico_enable_stdio_usb(test_hold_hlda 0)
+pico_enable_stdio_uart(test_hold_hlda 1)
+pico_add_extra_outputs(test_hold_hlda)
+pico_set_binary_type(test_hold_hlda no_flash)
