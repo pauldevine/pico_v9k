@@ -97,22 +97,13 @@ int main() {
     // configs running the same code, saving on PIO space
     PIO dma_pio = PIO_DMA;
     int dma_read_write_program_offset = pio_add_program(dma_pio, &dma_read_write_program);
-    int read_sm = pio_claim_unused_sm(dma_pio, true);
-    int write_sm = pio_claim_unused_sm(dma_pio, true);
-    dma_read_write_program_init(dma_pio, read_sm, dma_read_write_program_offset, BD0_PIN, DMA_READ); 
-    dma_read_write_program_init(dma_pio, write_sm, dma_read_write_program_offset, BD0_PIN, DMA_WRITE); 
-    printf("pio: %d dma_read: %d dma_read_write_program_offset: %d pin: %d\n", dma_pio, read_sm, dma_read_write_program_offset, BD0_PIN);
-    printf("pio: %d dma_write: %d dma_read_write_program_offset: %d pin: %d\n", dma_pio, write_sm, dma_read_write_program_offset, BD0_PIN);
+    int dma_sm = pio_claim_unused_sm(dma_pio, true);  // Only need one SM for unified read/write
+    dma_read_write_program_init(dma_pio, dma_sm, dma_read_write_program_offset, BD0_PIN);
+    printf("pio: %d dma_sm: %d dma_read_write_program_offset: %d pin: %d\n", dma_pio, dma_sm, dma_read_write_program_offset, BD0_PIN);
 
-    printf("about to iniitialize read_sm with x %d and y %X\n", DMA_READ, DMA_READ_T2_PINDIRS);
-    pio_sm_put_blocking(dma_pio, read_sm, DMA_READ);  //initialize state machine for read operation
-    pio_sm_put_blocking(dma_pio, read_sm, DMA_READ_T2_PINDIRS);  //feed pindirs for RD operation to state machine
-
-    printf("about to iniitialize write_sm with x %d and y %X\n", DMA_WRITE, DMA_WRITE_T2_PINDIRS);
-    pio_sm_put_blocking(dma_pio, write_sm, DMA_WRITE);  //initialize state machine for write operation
-    pio_sm_put_blocking(dma_pio, write_sm, DMA_WRITE_T2_PINDIRS);  //not used in WR operation, but needed to keep the state machine happy
-
-    //state machines are already disabled from initialization, will enable when a DMA operation is requested
+    // The unified dma_read_write state machine handles both read and write operations
+    // It determines the operation type from bit 0 of the FIFO payload
+    // State machine is already disabled from initialization, will enable when a DMA operation is requested
 
     // Debug PIO state
     printf("PIO state: enabled=%d, stalled=%d, PC=0x%x\n", 
