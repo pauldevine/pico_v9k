@@ -1,7 +1,7 @@
 .pio_version 1
-.define CLOCK_15B_PIN 31 
-.define CLOCK_5_PIN  30
-.define ALE_PIN 27 
+.define CLOCK_15B_PIN 30 
+.define CLOCK_5_PIN  29
+.define ALE_PIN 23 
 
 .define ADDRESS_RD_WR_SIZE 22
 .define ADDRESS_BUS_SIZE 20
@@ -100,7 +100,7 @@ static inline void dma_registers_program_init(PIO pio, uint sm, uint offset) {
    printf("RD_PIN Pin %d func: %d, dir: %d\n", RD_PIN, gpio_get_function(RD_PIN), gpio_get_dir(RD_PIN));
    printf("WR_PIN Pin %d func: %d, dir: %d\n", WR_PIN, gpio_get_function(WR_PIN), gpio_get_dir(WR_PIN));
 
-   uint32_t execctrl = pio0->sm[sm].execctrl;
+   uint32_t execctrl = pio->sm[sm].execctrl;
    uint jmp_pin = (execctrl >> 24) & 0x1F;
    printf("SM%d EXECCTRL=0x%08x, JMP_PIN=%llu\n", sm, execctrl, jmp_pin);
 }
