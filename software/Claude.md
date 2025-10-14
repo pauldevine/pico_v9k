@@ -180,15 +180,71 @@ Hardware redesign branch to remove 74LVC245 level shifters and connect RP2350 di
 
 ### Current Work in Progress (as of October 13, 2025)
 
-#### Immediate Next Steps
-1. **Integration validation**: Need to pull back in the overall project and validate the changes to the PIO protocol have been updated throughout the codebase
-2. **Extended DMA testing**: Test writing and reading larger blocks (512 byte sections) of memory with test sequences to validate robustness
-3. **Register subsystem testing**: Validate the disk register handling and SASI command processing. This was in progress when focus shifted to fixing the DMA read/write layer.
+#### DMA Board + SASI Emulation Status
 
-#### Integration Priorities
-- Ensure all C code that interfaces with `dma_read_write.pio` is updated to match the new protocol
-- Verify timing margins and add additional cycle delays if needed for reliability
-- Test full boot sequence from Victor 9000 BIOS through to DOS disk operations
+After reconciling the previous fix list with the current code, here is an updated, actionable view of what works and what still needs attention for reliable boot.
+
+**What's Working:**
+- ✅ DMA read/write PIO layer (validated with small read/write test)
+- ✅ Register decode at `0xEF300` base with MAME-style low-bit masking
+- ✅ Address register read-back (0x80/0xA0/0xC0)
+- ✅ FujiNet SPI integration and sector I/O
+- ✅ Command byte collection and basic opcode routing
+
+**Updated Gap List (reconciled):**
+
+1. Unified DMA SM usage (Critical)
+- Current code initializes a single unified SM for `dma_read_write.pio`, but DMA helpers and SASI code still pass `READ_SM`/`WRITE_SM` and toggle pindirs/enables.
+- Action: Plumb the single SM ID into `dma_read_from_victor_ram()`/`dma_write_to_victor_ram()` and remove stale pin-dir/enable toggles. The PIO program owns bus arbitration and direction.
+
+2. Status register aliasing at +0x30 (Important)
+- Some firmware reads status at 0x30 as a mirror of 0x20. Today, 0x30 returns 0xFF.
+- Action: Treat 0x30 as an alias of 0x20 in both the standard and ultra-fast paths.
+
+3. Host IRQ signaling (Decision required)
+- `dma_update_interrupts()` only logs; no Victor IRQ pin is driven. Polling may be sufficient for boot, but proper IRQ improves fidelity.
+- Action: Either confirm polling-only boot path or map a chosen `IR_*` pin and assert/deassert alongside `dma_update_interrupts()` during command/status phases.
+
+4. Command-phase REQ/ACK modeling (Medium)
+- Command writes assert ACK but don’t explicitly drop REQ between bytes. While the current approach may work with polling, SASI expects REQ/ACK handshake per byte.
+- Action: On each non-DMA command byte, set ACK and clear REQ in `bus_ctrl`, then re-assert REQ when requesting the next byte (via `sasi_request_cmd_byte`).
+
+5. Data-phase model consistency (Clarification)
+- The code uses direct data-phase handlers (`sasi.c`) and has an unused `dma_handle_sasi_req()` path. DMA transfers do occur; the previous note that DMA “never triggers” is not accurate.
+- Action: Prefer the direct handler approach for now, or adopt the REQ-driven path consistently. Remove or comment the unused path to reduce confusion.
+
+6. Command buffer ownership (Nice-to-have)
+- `handle_sasi_command_byte()` uses static buffers; `dma->buffer` exists for this purpose.
+- Action: Move command accumulation to `dma->buffer` for clarity/reentrancy (single target is fine today).
+
+7. Reset semantics (Nice-to-have)
+- `DMA_RESET_BIT` clears internal state but doesn’t reset the backing device.
+- Action: Clear `bus_ctrl` to idle and optionally reinit/reset the selected FujiNet target on reset.
+
+8. Mode Select(6) parameters (Nice-to-have)
+- Parameter list is read but not interpreted. For boot, returning GOOD is typically fine.
+- Action: Accept standard 512-byte sector configuration; log unsupported parameters for future mapping if needed.
+
+9. Tests and boundaries (Recommended)
+- Add tests that cross 64K boundaries (verify 20-bit carry) and confirm status reads at both 0x20 and 0x30 during boot traces.
+
+Notes on previously listed items:
+- “DMA transfer never triggered” — Not accurate: DMA transfers occur in `sasi.c` handlers.
+- “Per-sector REQ pulsing” — Not required for host-visible status during DMA; the DMA board hides REQ/ACK during bus mastering. Keep as internal-only if you later emulate SASI wires explicitly.
+- “Incomplete diagnostic support” — Command bytes are consumed by the collector; returning GOOD is acceptable for boot.
+
+**Reference Documentation for Fixes:**
+- SASI handshake: `notes/Manuals/Victor 9000 Sirius 1 Hard Disk Subsystem.txt` §3.1.4.2
+- DMA board state machine: same document §2.1.3
+- BIOS command sequences: `notes/mame boot example.log`
+- Register layout: `notes/MS-DOS 3.1 Listings/SASIDMA.LST`
+
+#### Immediate Next Steps
+1. Wire single-SM usage through DMA helpers and SASI code; remove stale per-SM/pindirs toggles
+2. Add status alias handling for 0x30 in both handlers (standard + ultra)
+3. Decide on IRQ strategy; if polling-only, document that choice; otherwise map and drive an `IR_*` pin
+4. Tighten command-phase REQ/ACK bookkeeping for robustness
+5. Run extended 512B+ DMA tests and a boot smoke test; capture traces
 
 ### PIO GPIO Initialization Requirements
 
