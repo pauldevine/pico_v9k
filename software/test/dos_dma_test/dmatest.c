@@ -28,10 +28,10 @@
 #define DMA_WR_MODE_BIT  0x08
 #define DMA_SELECT_BIT   0x10
 
-/* Status register bits - Corrected to match dma.h and hardware */
+/* Status register bits (match firmware: see pico_victor/dma.h) */
 #define SASI_INP_BIT    0x01  /* I/O signal (Input/Output direction) */
-#define SASI_BSY_BIT    0x02  /* BUSY signal (controller active) */
-#define SASI_CTL_BIT    0x04  /* C/D signal (Command/Data phase) */
+#define SASI_CTL_BIT    0x02  /* C/D signal (Command/Data phase) */
+#define SASI_BSY_BIT    0x04  /* BUSY signal (controller active) */
 #define SASI_REQ_BIT    0x08  /* REQ signal (byte transfer request) */
 #define SASI_MSG_BIT    0x10  /* MSG signal (message phase) */
 
@@ -83,7 +83,7 @@ void test_control_register(void) {
 
     print_header("Control Register Tests");
 
-    for (i = 0; i < sizeof(test_values); i++) {
+    for (i = 0; i < (int)(sizeof(test_values)/sizeof(test_values[0])); i++) {
         char msg[80];
         printf("Writing 0x%02X to control register...\n", test_values[i]);
         dma_write(CONTROL_REG, test_values[i]);
@@ -104,7 +104,7 @@ void test_data_register(void) {
 
     print_header("Data Register Tests");
 
-    for (i = 0; i < sizeof(test_values); i++) {
+    for (i = 0; i < (int)(sizeof(test_values)/sizeof(test_values[0])); i++) {
         char msg[80];
 
         dma_write(DATA_REG, test_values[i]);
