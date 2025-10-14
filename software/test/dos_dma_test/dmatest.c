@@ -28,12 +28,12 @@
 #define DMA_WR_MODE_BIT  0x08
 #define DMA_SELECT_BIT   0x10
 
-/* Status register bits */
-#define SASI_REQ_BIT    0x01
-#define SASI_BSY_BIT    0x02
-#define SASI_CTL_BIT    0x04
-#define SASI_INP_BIT    0x08
-#define SASI_MSG_BIT    0x10
+/* Status register bits - Corrected to match dma.h and hardware */
+#define SASI_INP_BIT    0x01  /* I/O signal (Input/Output direction) */
+#define SASI_BSY_BIT    0x02  /* BUSY signal (controller active) */
+#define SASI_CTL_BIT    0x04  /* C/D signal (Command/Data phase) */
+#define SASI_REQ_BIT    0x08  /* REQ signal (byte transfer request) */
+#define SASI_MSG_BIT    0x10  /* MSG signal (message phase) */
 
 /* Far pointer macros for accessing DMA registers */
 #define DMA_REG(offset) ((volatile unsigned char far *)(MK_FP(DMA_BASE, offset)))

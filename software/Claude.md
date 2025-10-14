@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-This is a Raspberry Pi Pico RP2350 project that implements DMA (Direct Memory Access) functionality for interfacing with a Victor 9000 computer, a 1982 machine that uses an 8088. The PIO programming will be responsible for emulating the DMA Expansion Card, which in the legacy hardware spoke to a SASI Xebec 1410 controller that fronted MFM drives. The pico will be speaking SPI to a fujinet that will act ast the storage unit. The pico will not need to emulate the full SASI protocol or the xebec, but instead react to the registers in the DMA card that are metadata for controlling the interaction as well as doing DMA to the 8088 to fullfil read and write operations against the virutal drive in the fujinet. The project uses PIO (Programmable I/O) state machines to handle bus timing and data transfer operations between the pico and the 8088. One state machine of the pio will be setup to listen to a memory mapped set of registers that control the SASI card. It receives metadata like what sector to be retrieved, where to place the resulting data in 8088 memory on a read, etc. The other state machine will be used to do actual DMA transfers against the 8088 memory space.
+This is a Raspberry Pi Pico RP2350 project that implements DMA (Direct Memory Access) functionality for interfacing with a Victor 9000 computer, a 1982 machine that uses an 8088. The PIO programming will be responsible for emulating the DMA Expansion Card, which in the legacy hardware spoke to a SASI Xebec 1410 controller that fronted MFM drives. The pico will be speaking SPI to a fujinet that will act as the storage unit. The pico will not need to emulate the full SASI protocol or the xebec, but instead react to the registers in the DMA card that are metadata for controlling the interaction as well as doing DMA to the 8088 to fulfill read and write operations against the virtual drive in the fujinet. The project uses PIO (Programmable I/O) state machines to handle bus timing and data transfer operations between the pico and the 8088. One state machine of the pio will be setup to listen to a memory mapped set of registers that control the SASI card. It receives metadata like what sector to be retrieved, where to place the resulting data in 8088 memory on a read, etc. The other state machine will be used to do actual DMA transfers against the 8088 memory space.
 
 ## Build Commands
 
@@ -43,7 +43,7 @@ make
   - `0x00`: Control register (write-only)
   - `0x10`: Data/Status register (read/write)
   - `0x80`: DMA address low byte
-  - `0xA0`: DMA address middle byte  
+  - `0xA0`: DMA address middle byte
   - `0xC0`: DMA address high byte (4 bits)
 
 ### Hardware Configuration
@@ -120,19 +120,36 @@ The main test runs in `test/register_test.c` and:
   - `notes/Manuals/Victor 9000 Applications Programmers Toolkit II Volume I.pdf`
   - `notes/Manuals/Victor 9000 Applications Programmers Toolkit II Volume II.pdf`
 - **Technical Reference Disk**: `notes/Manuals/Technical Reference Disk in ascii/` - Contains detailed technical specifications in text format
-- **June 1982 Technical Reference**: `notes/Manuals/Victor9000TechRef_Jun82_OCR.pdf` - Early technical reference documentation 
+- **June 1982 Technical Reference**: `notes/Manuals/Victor9000TechRef_Jun82_OCR.pdf` - Early technical reference documentation
 
 ## Mame Emulator for Reference
-- Mame also has an emulation of the same hardware in the `notes/victor9k_hdc.cpp` file. It works today to emulate this behavior and is a good reference implementation. In `notes/mame boot example.log` there's the output from booting mame with hard drive register interaction logging enabled. You can see what the typical boot squence looks like.
+- Mame also has an emulation of the same hardware in the `notes/victor9k_hdc.cpp` file. It works today to emulate this behavior and is a good reference implementation. In `notes/mame boot example.log` there's the output from booting mame with hard drive register interaction logging enabled. You can see what the typical boot sequence looks like.
 
 ## Recent Development Status
 
-### Current Branch: `pico_rewire_oct_25`
-Hardware redesign to remove 74LVC245 level shifters and connect RP2350 directly to 8088 bus.
+### Current Branch: `pico_rewire_oct_b_25`
+Hardware redesign branch to remove 74LVC245 level shifters and connect RP2350 directly to 8088 bus.
 
-### Latest Changes (as of 2025-09-28)
+### Major Hardware Changes (October 2025)
 
-#### Performance Optimizations
+#### 74LVC245 Buffer Removal
+- **Hardware simplification**: Removed all 74LVC245 bidirectional buffers from the design
+- **RP2350 5V tolerance**: Leveraging the RP2350's certified 5V-tolerant GPIO for direct 8088 bus connection
+- **PIO code updates**: Modified both `dma_read_write.pio` and `board_registers.pio` to remove buffer control logic:
+  - Removed `.side_set` directives that controlled buffer direction pins
+  - Eliminated all references to LOW_ADDR_DIR and BUS_CNTRL_DIR pins
+  - Simplified pin direction management using only PIO `pindirs` instructions
+- **Code review completed**: Both PIO programs verified to correctly handle 8088 bus protocol without buffers
+
+### Recent Accomplishments (September-October 2025)
+
+#### DMA Read/Write PIO Program - Complete Rewrite
+- **Major breakthrough**: After extensive debugging and troubleshooting efforts, successfully rewrote `dma_read_write.pio` from scratch
+- **Validation complete**: Successfully tested bidirectional DMA transfers - wrote two characters to Victor 9000 RAM and read them back correctly
+- **Critical timing**: The PIO code is highly timing-dependent at the nanosecond level. Small changes can have significant impact. The fundamental framework is now working and should not be modified without careful consideration and discussion first.
+- **Bus arbitration resolved**: HOLD/HLDA signaling now working correctly after implementing proper handshaking sequences
+
+#### Performance Optimizations (September 2025)
 - **Ultra-fast DMA implementation** (`dma_ultra_fast.c/h`): New optimized register handler that eliminates function pointers for address registers (0x80-0xFF), using direct memory mapping for improved performance
 - **Debug queue system** (`debug_queue.c/h`): Added non-blocking debug logging system for timing-critical code sections
 - **Benchmarking infrastructure** (`test/benchmark_irq.c`): Created IRQ performance benchmarking tools to measure and optimize response times
@@ -153,14 +170,6 @@ Hardware redesign to remove 74LVC245 level shifters and connect RP2350 directly 
 - **DOS DMA test** (`test/dos_dma_test/`): Added DOS-based DMA testing utilities
 - **Register access patterns**: Documented and tested Victor 9000 register access sequences
 - **Performance metrics**: Established baseline measurements for IRQ response times
-
-### Current Work in Progress (as of 2025-09-30)
-- **Debugging DMA hardware layer**: Created comprehensive test programs to validate `dma_read_write.pio` independently from `board_registers.pio`
-- **Hardware validation**: Testing revealed issues with DMA write operations not reaching Victor RAM
-- Investigating bus arbitration (HOLD/HLDA) and timing issues
-- Testing with actual Victor 9000 hardware using diagnostic tools
-
-### Test Infrastructure
 - **test_dma_hardware**: Validates DMA read/write operations with 100-byte test patterns
 - **test_dma_diagnostic**: Comprehensive hardware diagnostic that checks:
   - Bus signal verification (HOLD/HLDA handshaking)
@@ -169,19 +178,25 @@ Hardware redesign to remove 74LVC245 level shifters and connect RP2350 directly 
   - Direct GPIO pin direction management
   - PIO state machine progression and error states
 
+### Current Work in Progress (as of October 13, 2025)
+
+#### Immediate Next Steps
+1. **Integration validation**: Need to pull back in the overall project and validate the changes to the PIO protocol have been updated throughout the codebase
+2. **Extended DMA testing**: Test writing and reading larger blocks (512 byte sections) of memory with test sequences to validate robustness
+3. **Register subsystem testing**: Validate the disk register handling and SASI command processing. This was in progress when focus shifted to fixing the DMA read/write layer.
+
+#### Integration Priorities
+- Ensure all C code that interfaces with `dma_read_write.pio` is updated to match the new protocol
+- Verify timing margins and add additional cycle delays if needed for reliability
+- Test full boot sequence from Victor 9000 BIOS through to DOS disk operations
+
 ### PIO GPIO Initialization Requirements
 
-#### Critical distinction for PIO pin initialization:
-- **Output pins** (address bus, data bus during writes, control outputs): Use `pio_gpio_init()` which sets both the GPIO function multiplexer AND enables PIO control of pin direction
-- **Input-only pins** (clocks, READY, HLDA, etc.): Use `gpio_set_function(pin, GPIO_FUNC_PIO0)` to route the pin to PIO without giving PIO control over pin direction
-- **Why this matters**: The PIO `wait` instruction requires the GPIO to be routed to the PIO peripheral via the function multiplexer, even for input-only operations. The SDK documentation is misleading when it says initialization isn't needed for inputs - it's only not needed if the pin was already initialized elsewhere.
-- **Symptoms of incorrect initialization**:
-  - `wait` instructions hang forever if pins aren't routed to PIO
-  - `mov pindirs, ~null` affects ALL pins initialized with `pio_gpio_init()`, not just OUT pins
-  - Using `pio_gpio_init()` on input-only pins can cause them to briefly glitch to output mode during `pindirs` operations
+#### Critical Warnings
+- **DO NOT MODIFY `dma_read_write.pio`** without careful consideration and discussion first. This code has been extensively debugged and tested at the nanosecond timing level. It is now working correctly for basic DMA operations.
 - **Side-set note**: With `.side_set N opt` the assembler automatically sets the optional-enable bit for any instruction that uses a `side` value, so missing activity on DEN/ or IO/M/ almost always traces back to pin direction or pin mapping mistakes rather than the literal side value.
 
-#### Critical Pin Initialization Rules (as of 2025-10-11):
+#### Critical Pin Initialization Rules (as of October 11, 2025)
 
 **Output pins (controlled by PIO via pindirs):**
 - A0-A19 (address bus) - pins 0-19
@@ -205,31 +220,22 @@ Hardware redesign to remove 74LVC245 level shifters and connect RP2350 directly 
 3. Test/debug code interfering by re-initializing pins after PIO setup
 4. Missing the function routing entirely - PIO wait instructions will hang forever
 
-### Latest Hardware Changes (as of 2025-10-25)
+### Previously Resolved Issues (Historical Reference)
 
-#### 74LVC245 Buffer Removal
-- **Hardware simplification**: Removed all 74LVC245 bidirectional buffers from the design
-- **RP2350 5V tolerance**: Leveraging the RP2350's certified 5V-tolerant GPIO for direct 8088 bus connection
-- **PIO code updates**: Modified both `dma_read_write.pio` and `board_registers.pio` to remove buffer control logic:
-  - Removed `.side_set` directives that controlled buffer direction pins
-  - Eliminated all references to LOW_ADDR_DIR and BUS_CNTRL_DIR pins
-  - Simplified pin direction management using only PIO `pindirs` instructions
-- **Code review completed**: Both PIO programs verified to correctly handle 8088 bus protocol without buffers
+These issues have been fully resolved but are documented here for historical context and to help understand the evolution of the project:
 
-### Known Issues - RESOLVED
 - **RP2350 PIO side-set pindirs initialization bug**: On RP2350, the PIO side-set pindirs functionality doesn't work until the state machine has executed at least one explicit pindirs instruction.
   - **Workaround**: Execute `pio_sm_exec(pio, sm, pio_encode_set(pio_pindirs, 0))` after `pio_sm_init()` to "unlock" side-set pindirs
   - **Symptoms**: DBG_PADOE remains at 0x00000000 despite side-set pindirs operations in the PIO program
   - Without this workaround, no pins will be driven as outputs even though the side-set configuration is correct
   - This appears to be an undocumented RP2350 silicon behavior
-- **PIO `wait` instruction works correctly** once the pindirs issue is resolved
+
+- **PIO `wait` instruction**: Now works correctly once the pindirs issue is resolved
   - The apparent wait instruction bug was actually caused by HOLD never being asserted due to the pindirs issue
   - Once pindirs are working, the `wait gpio` instructions function properly
-- **DMA Write Failure**: Writes to Victor RAM are not completing successfully
-  - Data written doesn't appear in Victor memory when checked via debugger
-  - Read operations return sequential data (00,01,02,03...) instead of test pattern
-  - Bus arbitration is working now (HOLD/HLDA signaling with jmp pin workaround)
-- **Possible root causes under investigation**:
-  - sideset pins aren't being driven correctly during the T cycles
-  - Clock timing issues
-  - Direct GPIO drive strength or signal integrity issues
+
+- **DMA Write Failure**: Writes to Victor RAM were not completing successfully
+  - Data written wasn't appearing in Victor memory when checked via debugger
+  - Read operations were returning sequential data (00,01,02,03...) instead of test pattern
+  - Bus arbitration HOLD/HLDA signaling required jmp pin workaround
+  - **Resolution**: After a complete rewrite of `dma_read_write.pio`, successfully validated writing two characters to Victor RAM and reading them back correctly. The fundamental DMA read/write protocol is now functioning.
