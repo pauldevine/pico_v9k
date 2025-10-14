@@ -102,6 +102,6 @@ static inline void dma_registers_program_init(PIO pio, uint sm, uint offset) {
 
    uint32_t execctrl = pio->sm[sm].execctrl;
    uint jmp_pin = (execctrl >> 24) & 0x1F;
-   printf("SM%d EXECCTRL=0x%08x, JMP_PIN=%llu\n", sm, execctrl, jmp_pin);
+   printf("SM%d EXECCTRL=0x%08x, JMP_PIN=%u\n", sm, execctrl, (unsigned)jmp_pin);
 }
 %}

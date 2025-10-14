@@ -1,5 +1,6 @@
 #include "pico/stdlib.h"
 #include "hardware/pio.h"
+#include "hardware/gpio.h"
 #include "hardware/dma.h"
 #include "hardware/structs/systick.h"
 #include <stdio.h>
@@ -13,6 +14,11 @@
 #include "dma_ultra_fast.h"
 
 #define SASI_SECTOR_SIZE 512
+
+// Forward declarations for GPIO mux switching helpers
+static inline void switch_gpio_to_registers_pio(void);
+static inline void switch_gpio_to_dma_pio(void);
+static inline void set_bus_pins_function(uint func);
 
 static inline uint8_t sasi_dma_target_device(const dma_registers_t *dma) {
     uint8_t target = dma ? (dma->selected_target & 0x07) : 0;
@@ -33,8 +39,12 @@ static bool sasi_dma_device_to_ram(dma_registers_t *dma) {
     uint32_t sectors_remaining = sasi_dma_sector_count(dma);
     uint32_t addr = dma->dma_address.full;
 
-    // Optional: quiesce register SM during DMA to avoid spurious IRQs
+    // Disable register SM and switch GPIO mux to DMA PIO
     pio_sm_set_enabled(PIO_REGISTERS, REGISTERS_SM, false);
+    switch_gpio_to_dma_pio();
+    if (dma_get_unified_sm() >= 0) {
+        pio_sm_set_enabled(dma_get_unified_pio(), dma_get_unified_sm(), true);
+    }
 
     if (sectors_remaining == 0) {
         return false;
@@ -59,6 +69,11 @@ static bool sasi_dma_device_to_ram(dma_registers_t *dma) {
     dma->logical_block.full = lba;
     dma->block_count.full = 0;
 
+    // Switch GPIO back to register PIO and re-enable register SM
+    if (dma_get_unified_sm() >= 0) {
+        pio_sm_set_enabled(dma_get_unified_pio(), dma_get_unified_sm(), false);
+    }
+    switch_gpio_to_registers_pio();
     pio_sm_set_enabled(PIO_REGISTERS, REGISTERS_SM, true);
     return true;
 }
@@ -69,8 +84,12 @@ static bool sasi_dma_ram_to_device(dma_registers_t *dma) {
     uint32_t sectors_remaining = sasi_dma_sector_count(dma);
     uint32_t addr = dma->dma_address.full;
 
-    // Optional: quiesce register SM during DMA to avoid spurious IRQs
+    // Disable register SM and switch GPIO mux to DMA PIO
     pio_sm_set_enabled(PIO_REGISTERS, REGISTERS_SM, false);
+    switch_gpio_to_dma_pio();
+    if (dma_get_unified_sm() >= 0) {
+        pio_sm_set_enabled(dma_get_unified_pio(), dma_get_unified_sm(), true);
+    }
 
     if (sectors_remaining == 0) {
         return false;
@@ -95,6 +114,11 @@ static bool sasi_dma_ram_to_device(dma_registers_t *dma) {
     dma->logical_block.full = lba;
     dma->block_count.full = 0;
 
+    // Switch GPIO back to register PIO and re-enable register SM
+    if (dma_get_unified_sm() >= 0) {
+        pio_sm_set_enabled(dma_get_unified_pio(), dma_get_unified_sm(), false);
+    }
+    switch_gpio_to_registers_pio();
     pio_sm_set_enabled(PIO_REGISTERS, REGISTERS_SM, true);
     return true;
 }
@@ -118,6 +142,29 @@ int dma_get_unified_sm() {
 
 PIO dma_get_unified_pio() {
     return unified_dma_pio ? unified_dma_pio : PIO_DMA;
+}
+
+// --- GPIO function switching between PIO instances ---
+static inline void set_bus_pins_function(uint func) {
+    // Map outputs and side-set pins
+    for (int pin = BD0_PIN; pin <= IO_M_PIN; ++pin) {
+        gpio_set_function(pin, func);
+    }
+    // Map input pins used by wait/in
+    for (int pin = READY_PIN; pin <= CLOCK_15B_PIN; ++pin) {
+        gpio_set_function(pin, func);
+        gpio_set_input_enabled(pin, true);
+    }
+}
+
+static inline void switch_gpio_to_registers_pio(void) {
+    uint func = GPIO_FUNC_PIO0 + pio_get_index(PIO_REGISTERS);
+    set_bus_pins_function(func);
+}
+
+static inline void switch_gpio_to_dma_pio(void) {
+    uint func = GPIO_FUNC_PIO0 + pio_get_index(dma_get_unified_pio());
+    set_bus_pins_function(func);
 }
 
 void core1_main() {

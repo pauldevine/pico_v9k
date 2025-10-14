@@ -95,6 +95,8 @@ int main() {
     // configure the two pio state machines for DMA reading and writing, the same code is used for both reading and writing
     // the init controls which mode the program runs in, ends up with 2 state machines with different
     // configs running the same code, saving on PIO space
+    // Keep DMA on the other PIO instance (PIO0). We'll switch GPIO mux
+    // between PIO1 (registers) and PIO0 (DMA) around DMA operations.
     PIO dma_pio = PIO_DMA;
     int dma_read_write_program_offset = pio_add_program(dma_pio, &dma_read_write_program);
     int dma_sm = pio_claim_unused_sm(dma_pio, true);  // Only need one SM for unified read/write
