@@ -2,13 +2,10 @@
 #define DMA_VICTOR_H
 #include "hardware/pio.h"
 
-#define WRITE_SM 0
-#define READ_SM  1
 #define REGISTERS_SM  0
 #define PIO_BUS pio0
 #define PIO_ADDRESS pio1
 
-// Back to PIO0 - PIO1 has output control issues
 #define PIO_DMA pio0
 #define PIO_REGISTERS pio1
 
@@ -180,6 +177,10 @@ typedef enum {
 void core1_main();
 void setup_bus_control();
 dma_registers_t* dma_get_registers();
+// Unified DMA SM management (single-SM dma_read_write.pio)
+void dma_set_unified_sm(PIO pio, int sm);
+int dma_get_unified_sm();
+PIO dma_get_unified_pio();
 void dma_write_to_victor_ram(PIO write_pio, int write_sm, uint8_t *data, size_t length, uint32_t start_address);
 void dma_read_from_victor_ram(PIO read_pio, int read_sm, uint8_t *data, size_t length, uint32_t start_address);
 void registers_irq_handler();

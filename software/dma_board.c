@@ -99,11 +99,14 @@ int main() {
     int dma_read_write_program_offset = pio_add_program(dma_pio, &dma_read_write_program);
     int dma_sm = pio_claim_unused_sm(dma_pio, true);  // Only need one SM for unified read/write
     dma_read_write_program_init(dma_pio, dma_sm, dma_read_write_program_offset, BD0_PIN);
+    // Expose unified DMA SM to helpers and enable it persistently
+    dma_set_unified_sm(dma_pio, dma_sm);
+    pio_sm_set_enabled(dma_pio, dma_sm, true);
     printf("pio: %d dma_sm: %d dma_read_write_program_offset: %d pin: %d\n", dma_pio, dma_sm, dma_read_write_program_offset, BD0_PIN);
 
     // The unified dma_read_write state machine handles both read and write operations
     // It determines the operation type from bit 0 of the FIFO payload
-    // State machine is already disabled from initialization, will enable when a DMA operation is requested
+    // The unified SM stays enabled and blocks on FIFO when idle
 
     // Debug PIO state
     printf("PIO state: enabled=%d, stalled=%d, PC=0x%x\n", 

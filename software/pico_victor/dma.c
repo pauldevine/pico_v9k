@@ -33,10 +33,8 @@ static bool sasi_dma_device_to_ram(dma_registers_t *dma) {
     uint32_t sectors_remaining = sasi_dma_sector_count(dma);
     uint32_t addr = dma->dma_address.full;
 
+    // Optional: quiesce register SM during DMA to avoid spurious IRQs
     pio_sm_set_enabled(PIO_REGISTERS, REGISTERS_SM, false);
-    pio_sm_set_consecutive_pindirs(PIO_DMA, WRITE_SM, RD_PIN, DATA_SIZE, true);
-    pio_sm_set_enabled(PIO_DMA, WRITE_SM, true);
-    pio_sm_set_enabled(PIO_DMA, READ_SM, false);
 
     if (sectors_remaining == 0) {
         return false;
@@ -50,7 +48,7 @@ static bool sasi_dma_device_to_ram(dma_registers_t *dma) {
             return false;
         }
 
-        dma_write_to_victor_ram(PIO_DMA, WRITE_SM, sector, SASI_SECTOR_SIZE, addr);
+        dma_write_to_victor_ram(dma_get_unified_pio(), dma_get_unified_sm(), sector, SASI_SECTOR_SIZE, addr);
 
         addr += SASI_SECTOR_SIZE;
         sectors_remaining--;
@@ -61,7 +59,6 @@ static bool sasi_dma_device_to_ram(dma_registers_t *dma) {
     dma->logical_block.full = lba;
     dma->block_count.full = 0;
 
-    pio_sm_set_enabled(PIO_DMA, WRITE_SM, false);
     pio_sm_set_enabled(PIO_REGISTERS, REGISTERS_SM, true);
     return true;
 }
@@ -72,10 +69,8 @@ static bool sasi_dma_ram_to_device(dma_registers_t *dma) {
     uint32_t sectors_remaining = sasi_dma_sector_count(dma);
     uint32_t addr = dma->dma_address.full;
 
+    // Optional: quiesce register SM during DMA to avoid spurious IRQs
     pio_sm_set_enabled(PIO_REGISTERS, REGISTERS_SM, false);
-    pio_sm_set_consecutive_pindirs(PIO_DMA, READ_SM, RD_PIN, DATA_SIZE, true);
-    pio_sm_set_enabled(PIO_DMA, WRITE_SM, false);
-    pio_sm_set_enabled(PIO_DMA, READ_SM, true);
 
     if (sectors_remaining == 0) {
         return false;
@@ -84,7 +79,7 @@ static bool sasi_dma_ram_to_device(dma_registers_t *dma) {
     while (sectors_remaining > 0) {
         uint8_t sector[SASI_SECTOR_SIZE];
 
-        dma_read_from_victor_ram(PIO_DMA, READ_SM, sector, SASI_SECTOR_SIZE, addr);
+        dma_read_from_victor_ram(dma_get_unified_pio(), dma_get_unified_sm(), sector, SASI_SECTOR_SIZE, addr);
 
         if (!fujinet_write_sector(device, lba, sector, SASI_SECTOR_SIZE)) {
             printf("Warning: FujiNet write LBA %lu failed\n", (unsigned long)lba);
@@ -100,7 +95,6 @@ static bool sasi_dma_ram_to_device(dma_registers_t *dma) {
     dma->logical_block.full = lba;
     dma->block_count.full = 0;
 
-    pio_sm_set_enabled(PIO_DMA, READ_SM, false);
     pio_sm_set_enabled(PIO_REGISTERS, REGISTERS_SM, true);
     return true;
 }
@@ -108,6 +102,23 @@ static bool sasi_dma_ram_to_device(dma_registers_t *dma) {
 // Place the actual registers in time_critical section
 static dma_registers_t registers_storage __attribute__((section(".time_critical.dma_registers")));
 static dma_registers_t *registers = NULL;
+
+// Unified DMA SM storage and accessors
+static PIO unified_dma_pio = NULL;
+static int unified_dma_sm = -1;
+
+void dma_set_unified_sm(PIO pio, int sm) {
+    unified_dma_pio = pio;
+    unified_dma_sm = sm;
+}
+
+int dma_get_unified_sm() {
+    return unified_dma_sm;
+}
+
+PIO dma_get_unified_pio() {
+    return unified_dma_pio ? unified_dma_pio : PIO_DMA;
+}
 
 void core1_main() {
     //run IRQ processing on separate core
@@ -316,6 +327,12 @@ void dma_write_register(dma_registers_t *dma, dma_reg_offsets_t offset, uint8_t 
                 // Workaround like MAME: ensure SEL isn't asserted during data bus change
                 dma->bus_ctrl &= ~SASI_SEL_BIT;
                 dma->control &= ~DMA_SELECT_BIT;
+                // Initiate command phase request immediately when selection completes via data write
+                // Mirrors behavior when control write deasserts SELECT
+                dma->bus_ctrl |= (SASI_BSY_BIT | SASI_REQ_BIT | SASI_CTL_BIT);
+                dma->bus_ctrl &= ~SASI_INP_BIT; // host -> device
+                dma->state.non_dma_req = 1;
+                dma_update_interrupts(dma, true);
             }
 
             bool pending_non_dma = dma->state.non_dma_req;
@@ -401,6 +418,7 @@ uint8_t dma_read_register(dma_registers_t *dma, dma_reg_offsets_t offset) {
             break;
 
         case REG_STATUS:
+        case 0x30: // Treat 0x30 as status alias
             // For status register reads, construct from bus control state
             data = ((dma->bus_ctrl & SASI_INP_BIT) ? SASI_INP_BIT : 0) |
                    ((dma->bus_ctrl & SASI_CTL_BIT) ? SASI_CTL_BIT : 0) |

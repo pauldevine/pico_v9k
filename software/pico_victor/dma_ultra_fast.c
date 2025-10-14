@@ -92,13 +92,13 @@ void registers_irq_handler_ultra_init(void) {
     (void)dummy32;
 }
 
-// Keep register handlers only for complex registers (0x00-0x2F)
+// Keep register handlers only for complex registers (0x00-0x3F)
 typedef struct {
     void (*write)(dma_registers_t *dma, uint8_t value);
     uint8_t (*read)(dma_registers_t *dma);
 } complex_handler_t;
 
-static complex_handler_t complex_handlers[0x30];
+static complex_handler_t complex_handlers[0x40];
 
 // Complex register handlers (only for 0x00-0x2F)
 static void handle_control_write(dma_registers_t *dma, uint8_t value) {
@@ -207,9 +207,13 @@ static void init_ultra_fast(dma_registers_t *dma) {
         complex_handlers[i].read = handle_data_read;
     }
     
-    // Status register
+    // Status register (include 0x20 and alias at 0x30)
     for (int i = 0x20; i < 0x30; i++) {
         complex_handlers[i].write = NULL;  // Read-only
+        complex_handlers[i].read = handle_status_read;
+    }
+    for (int i = 0x30; i < 0x40; i++) {
+        complex_handlers[i].write = NULL;  // Read-only alias
         complex_handlers[i].read = handle_status_read;
     }
     
@@ -290,10 +294,10 @@ void __time_critical_func(registers_irq_handler_ultra)() {
             // Note: register_memory array is not used for address registers
         }
     } else {
-        // Complex registers (0x00-0x2F) - use handlers
+        // Complex registers (0x00-0x3F) - use handlers
         offset &= ~0xf;  // MAME-style masking
         
-        if (offset < 0x30) {
+        if (offset < 0x40) {
             if (read_flag) {
                 if (complex_handlers[offset].read) {
                     data = complex_handlers[offset].read(dma);
