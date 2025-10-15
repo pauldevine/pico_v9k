@@ -52,13 +52,13 @@ make
 - **Platform**: rp2350-arm-s
 - **GPIO count**: 48 pins
 - **Clock**: 200MHz system clock
-- **Memory target**: Runs from RAM (no_flash configuration)
+- **Memory target**: Default firmware builds run from flash; select test targets (for example `test_dma_cleaned`) use the `no_flash` RAM configuration
 
 ## Development Workflow
 
 1. The project uses CMake with the Pico SDK
 2. PIO programs are automatically compiled to headers during build
-3. UART output is enabled on UART1 (pins 4/5) at 115200 baud
+3. UART output uses `uart0` with TX on GPIO 46 at 115200 baud; RX is not connected and GPIO 45 is repurposed for logic-analyzer triggers
 4. The system includes timing-critical interrupt handlers marked with `__time_critical_func`
 
 ## Key Libraries Used
@@ -170,13 +170,9 @@ Hardware redesign branch to remove 74LVC245 level shifters and connect RP2350 di
 - **DOS DMA test** (`test/dos_dma_test/`): Added DOS-based DMA testing utilities
 - **Register access patterns**: Documented and tested Victor 9000 register access sequences
 - **Performance metrics**: Established baseline measurements for IRQ response times
-- **test_dma_hardware**: Validates DMA read/write operations with 100-byte test patterns
-- **test_dma_diagnostic**: Comprehensive hardware diagnostic that checks:
-  - Bus signal verification (HOLD/HLDA handshaking)
-  - Clock signals (CLK5, CLK15B)
-  - GPIO pin states for all data/address/control lines
-  - Direct GPIO pin direction management
-  - PIO state machine progression and error states
+- **test_dma_cleaned**: Minimal hardware DMA harness that validates HOLD/HLDA hand-off and a single read/write cycle
+- **test_clock_check**: Simple on-device diagnostic that watches CLK5/CLK15 activity and basic GPIO wiring
+- **benchmark_irq**: Measures register IRQ latency across representative Victor register transactions
 
 ### Current Work in Progress (as of October 13, 2025)
 
@@ -190,42 +186,36 @@ After reconciling the previous fix list with the current code, here is an update
 - ✅ Address register read-back (0x80/0xA0/0xC0)
 - ✅ FujiNet SPI integration and sector I/O
 - ✅ Command byte collection and basic opcode routing
+- ✅ Single unified DMA state machine claimed in `dma_board.c`/`dma.c` and used for both read and write transfers
+- ✅ Status register reads at 0x20 and 0x30 return the live SASI bus flags in both standard and ultra-fast handlers
 
 **Updated Gap List (reconciled):**
 
-1. Unified DMA SM usage (Critical)
-- Current code initializes a single unified SM for `dma_read_write.pio`, but DMA helpers and SASI code still pass `READ_SM`/`WRITE_SM` and toggle pindirs/enables.
-- Action: Plumb the single SM ID into `dma_read_from_victor_ram()`/`dma_write_to_victor_ram()` and remove stale pin-dir/enable toggles. The PIO program owns bus arbitration and direction.
-
-2. Status register aliasing at +0x30 (Important)
-- Some firmware reads status at 0x30 as a mirror of 0x20. Today, 0x30 returns 0xFF.
-- Action: Treat 0x30 as an alias of 0x20 in both the standard and ultra-fast paths.
-
-3. Host IRQ signaling (Decision required)
+1. Host IRQ signaling (Decision required)
 - `dma_update_interrupts()` only logs; no Victor IRQ pin is driven. Polling may be sufficient for boot, but proper IRQ improves fidelity.
 - Action: Either confirm polling-only boot path or map a chosen `IR_*` pin and assert/deassert alongside `dma_update_interrupts()` during command/status phases.
 
-4. Command-phase REQ/ACK modeling (Medium)
+2. Command-phase REQ/ACK modeling (Medium)
 - Command writes assert ACK but don’t explicitly drop REQ between bytes. While the current approach may work with polling, SASI expects REQ/ACK handshake per byte.
 - Action: On each non-DMA command byte, set ACK and clear REQ in `bus_ctrl`, then re-assert REQ when requesting the next byte (via `sasi_request_cmd_byte`).
 
-5. Data-phase model consistency (Clarification)
+3. Data-phase model consistency (Clarification)
 - The code uses direct data-phase handlers (`sasi.c`) and has an unused `dma_handle_sasi_req()` path. DMA transfers do occur; the previous note that DMA “never triggers” is not accurate.
 - Action: Prefer the direct handler approach for now, or adopt the REQ-driven path consistently. Remove or comment the unused path to reduce confusion.
 
-6. Command buffer ownership (Nice-to-have)
+4. Command buffer ownership (Nice-to-have)
 - `handle_sasi_command_byte()` uses static buffers; `dma->buffer` exists for this purpose.
 - Action: Move command accumulation to `dma->buffer` for clarity/reentrancy (single target is fine today).
 
-7. Reset semantics (Nice-to-have)
+5. Reset semantics (Nice-to-have)
 - `DMA_RESET_BIT` clears internal state but doesn’t reset the backing device.
 - Action: Clear `bus_ctrl` to idle and optionally reinit/reset the selected FujiNet target on reset.
 
-8. Mode Select(6) parameters (Nice-to-have)
+6. Mode Select(6) parameters (Nice-to-have)
 - Parameter list is read but not interpreted. For boot, returning GOOD is typically fine.
 - Action: Accept standard 512-byte sector configuration; log unsupported parameters for future mapping if needed.
 
-9. Tests and boundaries (Recommended)
+7. Tests and boundaries (Recommended)
 - Add tests that cross 64K boundaries (verify 20-bit carry) and confirm status reads at both 0x20 and 0x30 during boot traces.
 
 Notes on previously listed items:
