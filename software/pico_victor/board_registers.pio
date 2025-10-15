@@ -48,15 +48,16 @@ T3_READ:                               ; 8088 read cycle // pico's writing
     out pindirs, DATA_SIZE             ; set output pins to output mode
     wait 1 GPIO CLOCK_5_PIN            ; Wait for CLK5 to go high
     wait 0 GPIO CLOCK_5_PIN            ; Wait for CLK5 to go low
+T4:
+    wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
 .wrap
 
 T3_WRITE:                              ; 8088 write cycle // pico's reading
     wait 1 GPIO CLOCK_5_PIN            ; Wait for CLK5 to go high
-    wait 0 GPIO CLOCK_5_PIN            ; Wait for CLK5 to go low
     in pins, DATA_SIZE                 ; read data the 8088 is writing max 0xFF
     in null, 4                         ; shift in 4 null bits to signal it's a write
     push                               ; send address from earlier and data to arm for storage
-    jmp T0                             ; jump to T4 for the next clock cycle
+    jmp T4                             ; jump to T4 for the next clock cycle
 
 % c-sdk {
 #include <stdio.h>
