@@ -151,7 +151,7 @@ static inline void set_bus_pins_function(uint func) {
         gpio_set_function(pin, func);
     }
     // Map input pins used by wait/in
-    for (int pin = READY_PIN; pin <= CLOCK_15B_PIN; ++pin) {
+    for (int pin = READY_PIN; pin <= IR_4_PIN; ++pin) {
         gpio_set_function(pin, func);
         gpio_set_input_enabled(pin, true);
     }

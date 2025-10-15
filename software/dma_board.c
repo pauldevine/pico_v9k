@@ -101,9 +101,20 @@ int main() {
     int dma_read_write_program_offset = pio_add_program(dma_pio, &dma_read_write_program);
     int dma_sm = pio_claim_unused_sm(dma_pio, true);  // Only need one SM for unified read/write
     dma_read_write_program_init(dma_pio, dma_sm, dma_read_write_program_offset, BD0_PIN);
-    // Expose unified DMA SM to helpers and enable it persistently
     dma_set_unified_sm(dma_pio, dma_sm);
-    pio_sm_set_enabled(dma_pio, dma_sm, true);
+    // Keep DMA SM disabled until a DMA transfer is requested
+    pio_sm_set_enabled(dma_pio, dma_sm, false);
+    // After initializing the DMA PIO, return bus ownership to the register PIO (PIO1)
+    {
+        uint func = GPIO_FUNC_PIO0 + pio_get_index(PIO_REGISTERS);
+        for (int pin = BD0_PIN; pin <= IO_M_PIN; ++pin) {
+            gpio_set_function(pin, func);
+        }
+        for (int pin = READY_PIN; pin <= IR_4_PIN; ++pin) {
+            gpio_set_function(pin, func);
+            gpio_set_input_enabled(pin, true);
+        }
+    }
     printf("pio: %d dma_sm: %d dma_read_write_program_offset: %d pin: %d\n", dma_pio, dma_sm, dma_read_write_program_offset, BD0_PIN);
 
     // The unified dma_read_write state machine handles both read and write operations

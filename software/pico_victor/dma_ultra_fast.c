@@ -341,11 +341,7 @@ void __time_critical_func(registers_irq_handler_ultra_asm)() {
     // Extract offset
     offset = (raw_value & 0xFFFFF) - DMA_REGISTER_BASE;
 
-    // Log only address register accesses to debug the issue
-    if (offset == 0x80 || offset == 0xA0 || offset == 0xC0) {
-        fast_log("ADDR_REG: raw=0x%08x, offset=0x%02x, read=%d\n",
-                 raw_value, offset, (raw_value & 0x10000000) ? 1 : 0);
-    }
+    // Ultra-fast path: suppress logging to meet tight bus timing
 
     // Bounds check
     if (offset >= 0x100) {
@@ -369,13 +365,10 @@ void __time_critical_func(registers_irq_handler_ultra_asm)() {
 
             if (offset == 0x80) {
                 data = dma->dma_address.bytes.low;
-                fast_log("READ 0x80: returning 0x%02x\n", data);
             } else if (offset == 0xA0) {
                 data = dma->dma_address.bytes.mid;
-                fast_log("READ 0xA0: returning 0x%02x\n", data);
             } else if (offset == 0xC0) {
                 data = dma->dma_address.bytes.high & 0x0F;
-                fast_log("READ 0xC0: returning 0x%02x\n", data);
             } else {
                 data = 0xFF;
             }
@@ -400,13 +393,10 @@ void __time_critical_func(registers_irq_handler_ultra_asm)() {
 
             if (offset == 0x80) {
                 dma->dma_address.bytes.low = data;
-                fast_log("WRITE 0x80: data=0x%02x stored\n", data);
             } else if (offset == 0xA0) {
                 dma->dma_address.bytes.mid = data;
-                fast_log("WRITE 0xA0: data=0x%02x stored\n", data);
             } else if (offset == 0xC0) {
                 dma->dma_address.bytes.high = data & 0x0F;
-                fast_log("WRITE 0xC0: data=0x%02x stored\n", data & 0x0F);
             }
         } else {
             // Complex register write
