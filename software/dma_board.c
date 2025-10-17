@@ -34,7 +34,7 @@ void initialize_uart() {
     return;
 }
 
-int main() {
+ int main() {
 
     stdio_init_all();
 
@@ -142,7 +142,11 @@ int main() {
             }
         }
 
+#ifdef CACHED_MODE
+        dma_process_deferred_events_cached();
+#else
         dma_process_deferred_events();
+#endif
 
         // Process debug queue entries (non-blocking)
         debug_queue_process();    

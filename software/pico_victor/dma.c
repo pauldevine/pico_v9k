@@ -120,7 +120,17 @@ PIO dma_get_unified_pio() {
     return unified_dma_pio ? unified_dma_pio : PIO_DMA;
 }
 
+#ifdef CACHED_MODE
+// Forward declaration for cached version
+void core1_main_cached(void);
+#endif
+
 void core1_main() {
+#ifdef CACHED_MODE
+    // Use the cached/deferred version for improved timing
+    core1_main_cached();
+    return;  // Never reached as core1_main_cached doesn't return
+#endif
     //run IRQ processing on separate core
     //configure the IRQs used to indicate a Register has been accessed on the 8088 bus
     // Set up IRQ when RX FIFO has >= 1 item
@@ -688,3 +698,11 @@ void dma_handle_sasi_req(dma_registers_t *dma) {
         dma_update_interrupts(dma, true);
     }
 }
+
+#ifndef CACHED_MODE
+// Stub implementation for non-cached mode
+// In non-cached mode, all processing happens synchronously in the IRQ handler
+void dma_process_deferred_events(void) {
+    // Nothing to do - all processing happens immediately in the IRQ handler
+}
+#endif

@@ -185,6 +185,14 @@ void dma_write_to_victor_ram(PIO write_pio, int write_sm, uint8_t *data, size_t 
 void dma_read_from_victor_ram(PIO read_pio, int read_sm, uint8_t *data, size_t length, uint32_t start_address);
 void registers_irq_handler();
 void dma_process_deferred_events(void);
+
+// Cached/deferred processing functions
+#ifdef CACHED_MODE
+void registers_irq_handler_cached(void);
+void registers_irq_handler_cached_asm(void);
+void registers_irq_handler_cached_init(void);
+void dma_process_deferred_events_cached(void);
+#endif
 void dma_write_register(dma_registers_t *dma, dma_reg_offsets_t offset, uint8_t value);
 uint8_t dma_read_register(dma_registers_t *dma, dma_reg_offsets_t offset);
 void dma_device_reset(dma_registers_t *dma);
