@@ -34,10 +34,9 @@ T1:
     in pins, ADDRESS_BUS_SIZE          ; gather full address to send to arm
 
 T2:
-    wait 1 GPIO CLOCK_5_PIN            ; Wait for CLK5 to go high //waiting two CLK15 cycles for signal setup time
-    wait 0 GPIO CLOCK_5_PIN            ; Wait for CLK5 to go low
-    wait 1 GPIO CLOCK_15B_PIN          ; Wait for CLK15 to go high
-    wait 0 GPIO CLOCK_15B_PIN          ; Wait for CLK15 to go low
+    wait 0 GPIO ALE_PIN                ; wait for ALE to go low = T1 start
+    wait 0 GPIO CLOCK_5_PIN            ; Wait for CLK5 to go low //waiting two CLK15 cycles for signal setup time
+    wait 1 GPIO CLOCK_5_PIN            ; Wait for CLK5 to go high
     jmp pin T3_WRITE                   ; if RD pin is high 8088 is writing, if low 8088 is reading
 
 T3_READ:                               ; 8088 read cycle // pico's writing
@@ -60,6 +59,7 @@ T3_WRITE:                              ; 8088 write cycle // pico's reading
 
 % c-sdk {
 #include <stdio.h>
+#include "pico/error.h"
 #include "pico_victor/dma.h"
 #define ADDRESS_RD_WR_SIZE 22 
 
@@ -83,17 +83,24 @@ static inline void dma_registers_program_init(PIO pio, uint sm, uint offset) {
    sm_config_set_in_pin_count(&c, ADDRESS_BUS_SIZE);
    sm_config_set_out_pins(&c, BD0_PIN, DATA_SIZE);
    sm_config_set_jmp_pin(&c, RD_PIN); // RD pin is the pin we check for write vs read cycle
-
+   
    sm_config_set_out_shift(&c, true, false, DATA_SIZE);
    sm_config_set_in_shift(&c, true, false, ADDRESS_BUS_SIZE);
+   printf("Config execctrl before init: 0x%08x pinhi:0x%08x pinctrl:0x%08x\n",
+          (uint32_t)c.execctrl, (uint32_t)c.pinhi, (uint32_t)c.pinctrl);
    
    sm_config_set_clkdiv(&c, 1.0f);  
    
    pio_sm_clear_fifos(pio, sm);
 
    // Load our configuration, and jump to the start of the program
-   pio_sm_init(pio, sm, offset, &c);
-   pio_sm_set_enabled(pio, sm, true);
+   int init_rc = pio_sm_init(pio, sm, offset, &c);
+   printf("pio_sm_init rc=%d, SM%d execctrl after init=0x%08x\n", init_rc, sm, pio->sm[sm].execctrl);
+   if (init_rc == PICO_OK) {
+       pio_sm_set_enabled(pio, sm, true);
+   } else {
+       printf("WARNING: pio_sm_init failed; SM%d not enabled\n", sm);
+   }
 
    printf("finished configuring dma_registers_program_init\n");
    printf("HOLD_PIN Pin %d func: %d, dir: %d\n", HOLD_PIN, gpio_get_function(HOLD_PIN), gpio_get_dir(HOLD_PIN));
