@@ -38,9 +38,50 @@
 // Place in time_critical section to ensure it's in RAM
 static uint8_t register_memory[256] __attribute__((aligned(64), section(".time_critical.register_memory")));
 
+#define DEFER_QUEUE_SIZE 128
+#define DEFER_QUEUE_MASK (DEFER_QUEUE_SIZE - 1)
+static volatile uint32_t deferred_queue[DEFER_QUEUE_SIZE];
+static volatile uint32_t deferred_head = 0;
+static volatile uint32_t deferred_tail = 0;
+
 // Forward declarations
 static bool initialized = false;
 static void init_ultra_fast(dma_registers_t *dma);
+static inline uint32_t mask_offset(uint32_t offset) {
+    if (offset >= 0x80) {
+        return offset & ~0x1F;
+    }
+    return offset & ~0x0F;
+}
+
+static inline uint8_t compute_status_value(const dma_registers_t *dma) {
+    return (uint8_t)((dma->bus_ctrl & SASI_INP_BIT ? SASI_INP_BIT : 0) |
+                     (dma->bus_ctrl & SASI_CTL_BIT ? SASI_CTL_BIT : 0) |
+                     (dma->bus_ctrl & SASI_BSY_BIT ? SASI_BSY_BIT : 0) |
+                     (dma->bus_ctrl & SASI_REQ_BIT ? SASI_REQ_BIT : 0) |
+                     (dma->bus_ctrl & SASI_MSG_BIT ? SASI_MSG_BIT : 0));
+}
+
+static inline void deferred_enqueue(uint32_t value) {
+    uint32_t head = deferred_head;
+    uint32_t next = (head + 1) & DEFER_QUEUE_MASK;
+    if (next == deferred_tail) {
+        return; // queue full, drop event
+    }
+    deferred_queue[head] = value;
+    __asm volatile("" ::: "memory");
+    deferred_head = next;
+}
+
+static inline bool deferred_try_dequeue(uint32_t *value) {
+    uint32_t tail = deferred_tail;
+    if (tail == deferred_head) {
+        return false;
+    }
+    *value = deferred_queue[tail];
+    deferred_tail = (tail + 1) & DEFER_QUEUE_MASK;
+    return true;
+}
 
 // Initialization function to pre-warm caches
 void registers_irq_handler_ultra_init(void) {
@@ -52,6 +93,8 @@ void registers_irq_handler_ultra_init(void) {
     for (int i = 0; i < 256; i++) {
         register_memory[i] = 0xFF;
     }
+    register_memory[REG_STATUS] = 0x00;
+    register_memory[0x30] = 0x00;
 
     // Second pass: Read all register memory multiple times to ensure caching
     for (int iter = 0; iter < 3; iter++) {
@@ -90,6 +133,8 @@ void registers_irq_handler_ultra_init(void) {
 
     (void)dummy; // Prevent unused variable warning
     (void)dummy32;
+
+    deferred_head = deferred_tail = 0;
 }
 
 // Keep register handlers only for complex registers (0x00-0x3F)
@@ -236,90 +281,55 @@ static void init_ultra_fast(dma_registers_t *dma) {
 void __time_critical_func(registers_irq_handler_ultra)() {
     gpio_put(DEBUG_PIN, 1);
 
-    // Get raw value from PIO FIFO - this is our bottleneck
     uint32_t raw_value = pio_sm_get(PIO_REGISTERS, REGISTERS_SM);
-
-    // Push to debug queue - optimized for minimal overhead when disabled
-    // debug_queue_push_fast(raw_value);
-    
-    // Extract fields using bit operations
     uint32_t address = raw_value & 0xFFFFF;
-    uint8_t data = (raw_value >> 20) & 0xFF;
-    uint32_t read_flag = raw_value & 0x10000000;  // Bit 28
-    
-    // Quick bounds check - optimize for common case
     uint32_t offset = address - DMA_REGISTER_BASE;
     if (offset >= 0x100) {
         gpio_put(DEBUG_PIN, 0);
         return;
     }
-    
-    // Get DMA registers
+
     dma_registers_t *dma = dma_get_registers();
     if (!dma) {
         gpio_put(DEBUG_PIN, 0);
         return;
     }
-    
-    // Ensure initialization
+
     if (!initialized) {
         init_ultra_fast(dma);
     }
-    
-    // Fast path for address registers (0x80-0xFF) - most common case
-    if (offset >= 0x80) {
-        // Apply MAME-style masking
-        offset &= ~0x1f;
-        
-        if (read_flag) {
-            // Get actual value from DMA structure (not from register_memory!)
-            if (offset == 0x80) {
-                data = dma->dma_address.bytes.low;
-            } else if (offset == 0xA0) {
-                data = dma->dma_address.bytes.mid;
-            } else if (offset == 0xC0) {
-                data = dma->dma_address.bytes.high & 0x0F;
-            } else {
-                data = 0xFF;  // Unknown register in this range
-            }
+
+    bool is_read = (raw_value & 0x10000000u) != 0;
+    uint32_t masked_offset = mask_offset(offset);
+    if (masked_offset == 0x30) {
+        masked_offset = REG_STATUS;
+    }
+
+    if (is_read) {
+        uint8_t value;
+        if (masked_offset == REG_STATUS) {
+            value = compute_status_value(dma);
+            register_memory[REG_STATUS] = value;
+            register_memory[0x30] = value;
         } else {
-            // Write to DMA structure
-            if (offset == 0x80) {
-                dma->dma_address.bytes.low = data;
-            } else if (offset == 0xA0) {
-                dma->dma_address.bytes.mid = data;
-            } else if (offset == 0xC0) {
-                dma->dma_address.bytes.high = data & 0x0F;
-            }
-            // Note: register_memory array is not used for address registers
+            value = register_memory[masked_offset];
         }
+#ifndef BENCHMARK_MODE
+        uint32_t response = (0xFF00u | (uint32_t)(value & 0xFF));
+        pio_sm_put_blocking(PIO_REGISTERS, REGISTERS_SM, response);
+#endif
     } else {
-        // Complex registers (0x00-0x3F) - use handlers
-        offset &= ~0xf;  // MAME-style masking
-        
-        if (offset < 0x40) {
-            if (read_flag) {
-                if (complex_handlers[offset].read) {
-                    data = complex_handlers[offset].read(dma);
-                } else {
-                    data = 0xFF;
-                }
-            } else {
-                if (complex_handlers[offset].write) {
-                    complex_handlers[offset].write(dma, data);
-                }
-            }
+        uint8_t write_data = (raw_value >> 20) & 0xFF;
+        if (masked_offset == REG_ADDR_H) {
+            write_data &= 0x0F;
+        }
+        register_memory[masked_offset] = write_data;
+        if (masked_offset == REG_STATUS) {
+            register_memory[0x30] = write_data;
         }
     }
-    
-    // Send data back to 8088 if this was a read
-    if (read_flag) {
-        uint32_t pindirs_and_data = (0xFF << 8) | data;
-        #ifndef BENCHMARK_MODE
-        pio_sm_put_blocking(PIO_REGISTERS, REGISTERS_SM, pindirs_and_data);
-        #endif
-    }
-    
+
+    deferred_enqueue(raw_value);
     gpio_put(DEBUG_PIN, 0);
 }
 
@@ -341,7 +351,11 @@ void __time_critical_func(registers_irq_handler_ultra_asm)() {
     // Extract offset
     offset = (raw_value & 0xFFFFF) - DMA_REGISTER_BASE;
 
-    // Ultra-fast path: suppress logging to meet tight bus timing
+    // Log only address register accesses to debug the issue
+    if (offset == 0x80 || offset == 0xA0 || offset == 0xC0) {
+        fast_log("ADDR_REG: raw=0x%08x, offset=0x%02x, read=%d\n",
+                 raw_value, offset, (raw_value & 0x10000000) ? 1 : 0);
+    }
 
     // Bounds check
     if (offset >= 0x100) {
@@ -365,10 +379,13 @@ void __time_critical_func(registers_irq_handler_ultra_asm)() {
 
             if (offset == 0x80) {
                 data = dma->dma_address.bytes.low;
+                fast_log("READ 0x80: returning 0x%02x\n", data);
             } else if (offset == 0xA0) {
                 data = dma->dma_address.bytes.mid;
+                fast_log("READ 0xA0: returning 0x%02x\n", data);
             } else if (offset == 0xC0) {
                 data = dma->dma_address.bytes.high & 0x0F;
+                fast_log("READ 0xC0: returning 0x%02x\n", data);
             } else {
                 data = 0xFF;
             }
@@ -393,10 +410,13 @@ void __time_critical_func(registers_irq_handler_ultra_asm)() {
 
             if (offset == 0x80) {
                 dma->dma_address.bytes.low = data;
+                fast_log("WRITE 0x80: data=0x%02x stored\n", data);
             } else if (offset == 0xA0) {
                 dma->dma_address.bytes.mid = data;
+                fast_log("WRITE 0xA0: data=0x%02x stored\n", data);
             } else if (offset == 0xC0) {
                 dma->dma_address.bytes.high = data & 0x0F;
+                fast_log("WRITE 0xC0: data=0x%02x stored\n", data & 0x0F);
             }
         } else {
             // Complex register write

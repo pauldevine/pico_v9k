@@ -44,20 +44,19 @@ T3_READ:                               ; 8088 read cycle // pico's writing
     in osr, 12                         ; Shift in 12 bits of 1's (0xFFF) to signal arm we're reading
     push                               ; Push the current ISR address + read signal onto RX FIFO
     pull block                         ; Pull data to send to 8088 from TX FIFO
-    out pins, DATA_SIZE                ; set BD0-BD7 to data for 8088 to read
-    out pindirs, DATA_SIZE             ; set output pins to output mode
+    out pins, DATA_SIZE                ; drive BD0-BD7 with data for 8088 to read
+    out pindirs, DATA_SIZE             ; set BD0-BD7 as outputs
     wait 1 GPIO CLOCK_5_PIN            ; Wait for CLK5 to go high
     wait 0 GPIO CLOCK_5_PIN            ; Wait for CLK5 to go low
-T4:
-    wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
 .wrap
 
 T3_WRITE:                              ; 8088 write cycle // pico's reading
     wait 1 GPIO CLOCK_5_PIN            ; Wait for CLK5 to go high
+    wait 0 GPIO CLOCK_5_PIN            ; Wait for CLK5 to go low
     in pins, DATA_SIZE                 ; read data the 8088 is writing max 0xFF
     in null, 4                         ; shift in 4 null bits to signal it's a write
     push                               ; send address from earlier and data to arm for storage
-    jmp T4                             ; jump to T4 for the next clock cycle
+    jmp T0                             ; jump to T4 for the next clock cycle
 
 % c-sdk {
 #include <stdio.h>
@@ -72,7 +71,7 @@ static inline void dma_registers_program_init(PIO pio, uint sm, uint offset) {
     for (int i = 0; i < ADDRESS_RD_WR_SIZE; i++) {
         uint pin = BD0_PIN + i;
         pio_gpio_init(pio, pin);
-        printf("pio_gpio_init %d\n", pin);
+       // printf("pio_gpio_init %d\n", pin);
     }
    pio_sm_set_consecutive_pindirs(pio, sm, BD0_PIN, ADDRESS_RD_WR_SIZE, false);  
 

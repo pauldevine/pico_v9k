@@ -1,6 +1,5 @@
 #include "pico/stdlib.h"
 #include "hardware/pio.h"
-#include "hardware/gpio.h"
 #include "hardware/dma.h"
 #include "hardware/structs/systick.h"
 #include <stdio.h>
@@ -14,11 +13,6 @@
 #include "dma_ultra_fast.h"
 
 #define SASI_SECTOR_SIZE 512
-
-// Forward declarations for GPIO mux switching helpers
-static inline void switch_gpio_to_registers_pio(void);
-static inline void switch_gpio_to_dma_pio(void);
-static inline void set_bus_pins_function(uint func);
 
 static inline uint8_t sasi_dma_target_device(const dma_registers_t *dma) {
     uint8_t target = dma ? (dma->selected_target & 0x07) : 0;
@@ -38,61 +32,35 @@ static bool sasi_dma_device_to_ram(dma_registers_t *dma) {
     uint32_t lba = dma->logical_block.full;
     uint32_t sectors_remaining = sasi_dma_sector_count(dma);
     uint32_t addr = dma->dma_address.full;
-    bool success = false;
 
-    PIO dma_pio = dma_get_unified_pio();
-    int dma_sm = dma_get_unified_sm();
-
-    // Disable register SM and switch GPIO mux to DMA PIO
+    // Optional: quiesce register SM during DMA to avoid spurious IRQs
     pio_sm_set_enabled(PIO_REGISTERS, REGISTERS_SM, false);
-    switch_gpio_to_dma_pio();
-    if (dma_sm >= 0) {
-        pio_sm_set_enabled(dma_pio, dma_sm, true);
-    }
 
     if (sectors_remaining == 0) {
-        fast_log("SASI DMA dev->RAM requested with zero sectors\n");
-        goto cleanup;
+        return false;
     }
-
-    fast_log("SASI DMA dev->RAM start: LBA=%lu count=%lu addr=0x%06lx\n",
-             (unsigned long)lba,
-             (unsigned long)sectors_remaining,
-             (unsigned long)addr);
 
     while (sectors_remaining > 0) {
         uint8_t sector[SASI_SECTOR_SIZE];
 
         if (!fujinet_read_sector(device, lba, sector, SASI_SECTOR_SIZE)) {
-            fast_log("FujiNet read LBA %lu failed\n", (unsigned long)lba);
-            break;
+            printf("Warning: FujiNet read LBA %lu failed\n", (unsigned long)lba);
+            return false;
         }
 
-        dma_write_to_victor_ram(dma_pio, dma_sm, sector, SASI_SECTOR_SIZE, addr);
+        dma_write_to_victor_ram(dma_get_unified_pio(), dma_get_unified_sm(), sector, SASI_SECTOR_SIZE, addr);
 
         addr += SASI_SECTOR_SIZE;
         sectors_remaining--;
         lba++;
     }
 
-    success = (sectors_remaining == 0);
     dma->dma_address.full = addr;
     dma->logical_block.full = lba;
-    dma->block_count.full = sectors_remaining;
+    dma->block_count.full = 0;
 
-    if (success) {
-        fast_log("SASI DMA dev->RAM complete\n");
-    } else if (sectors_remaining > 0) {
-        fast_log("SASI DMA dev->RAM incomplete, remaining=%lu\n", (unsigned long)sectors_remaining);
-    }
-
-cleanup:
-    if (dma_sm >= 0) {
-        pio_sm_set_enabled(dma_pio, dma_sm, false);
-    }
-    switch_gpio_to_registers_pio();
     pio_sm_set_enabled(PIO_REGISTERS, REGISTERS_SM, true);
-    return success;
+    return true;
 }
 
 static bool sasi_dma_ram_to_device(dma_registers_t *dma) {
@@ -100,36 +68,22 @@ static bool sasi_dma_ram_to_device(dma_registers_t *dma) {
     uint32_t lba = dma->logical_block.full;
     uint32_t sectors_remaining = sasi_dma_sector_count(dma);
     uint32_t addr = dma->dma_address.full;
-    bool success = false;
 
-    PIO dma_pio = dma_get_unified_pio();
-    int dma_sm = dma_get_unified_sm();
-
-    // Disable register SM and switch GPIO mux to DMA PIO
+    // Optional: quiesce register SM during DMA to avoid spurious IRQs
     pio_sm_set_enabled(PIO_REGISTERS, REGISTERS_SM, false);
-    switch_gpio_to_dma_pio();
-    if (dma_sm >= 0) {
-        pio_sm_set_enabled(dma_pio, dma_sm, true);
-    }
 
     if (sectors_remaining == 0) {
-        fast_log("SASI DMA RAM->dev requested with zero sectors\n");
-        goto cleanup;
+        return false;
     }
-
-    fast_log("SASI DMA RAM->dev start: LBA=%lu count=%lu addr=0x%06lx\n",
-             (unsigned long)lba,
-             (unsigned long)sectors_remaining,
-             (unsigned long)addr);
 
     while (sectors_remaining > 0) {
         uint8_t sector[SASI_SECTOR_SIZE];
 
-        dma_read_from_victor_ram(dma_pio, dma_sm, sector, SASI_SECTOR_SIZE, addr);
+        dma_read_from_victor_ram(dma_get_unified_pio(), dma_get_unified_sm(), sector, SASI_SECTOR_SIZE, addr);
 
         if (!fujinet_write_sector(device, lba, sector, SASI_SECTOR_SIZE)) {
-            fast_log("FujiNet write LBA %lu failed\n", (unsigned long)lba);
-            break;
+            printf("Warning: FujiNet write LBA %lu failed\n", (unsigned long)lba);
+            return false;
         }
 
         addr += SASI_SECTOR_SIZE;
@@ -137,24 +91,12 @@ static bool sasi_dma_ram_to_device(dma_registers_t *dma) {
         lba++;
     }
 
-    success = (sectors_remaining == 0);
     dma->dma_address.full = addr;
     dma->logical_block.full = lba;
-    dma->block_count.full = sectors_remaining;
+    dma->block_count.full = 0;
 
-    if (success) {
-        fast_log("SASI DMA RAM->dev complete\n");
-    } else if (sectors_remaining > 0) {
-        fast_log("SASI DMA RAM->dev incomplete, remaining=%lu\n", (unsigned long)sectors_remaining);
-    }
-
-cleanup:
-    if (dma_sm >= 0) {
-        pio_sm_set_enabled(dma_pio, dma_sm, false);
-    }
-    switch_gpio_to_registers_pio();
     pio_sm_set_enabled(PIO_REGISTERS, REGISTERS_SM, true);
-    return success;
+    return true;
 }
 
 // Place the actual registers in time_critical section
@@ -176,29 +118,6 @@ int dma_get_unified_sm() {
 
 PIO dma_get_unified_pio() {
     return unified_dma_pio ? unified_dma_pio : PIO_DMA;
-}
-
-// --- GPIO function switching between PIO instances ---
-static inline void set_bus_pins_function(uint func) {
-    // Map outputs and side-set pins
-    for (int pin = BD0_PIN; pin <= IO_M_PIN; ++pin) {
-        gpio_set_function(pin, func);
-    }
-    // Map input pins used by wait/in
-    for (int pin = READY_PIN; pin <= IR_4_PIN; ++pin) {
-        gpio_set_function(pin, func);
-        gpio_set_input_enabled(pin, true);
-    }
-}
-
-static inline void switch_gpio_to_registers_pio(void) {
-    uint func = GPIO_FUNC_PIO0 + pio_get_index(PIO_REGISTERS);
-    set_bus_pins_function(func);
-}
-
-static inline void switch_gpio_to_dma_pio(void) {
-    uint func = GPIO_FUNC_PIO0 + pio_get_index(dma_get_unified_pio());
-    set_bus_pins_function(func);
 }
 
 void core1_main() {
@@ -239,7 +158,7 @@ void core1_main() {
         irq_set_enabled(PIO1_IRQ_0, false);
 
         // Set handler
-        irq_set_exclusive_handler(PIO1_IRQ_0, registers_irq_handler_ultra_asm);
+        irq_set_exclusive_handler(PIO1_IRQ_0, registers_irq_handler_ultra);
 
         // Call handler multiple times with different operations to fully warm caches
         // This ensures all code paths and data are cached
@@ -261,7 +180,7 @@ void core1_main() {
                     pio_sm_put(register_pio, register_sm, test_addresses[i]);
 
                     // Call the handler
-                    registers_irq_handler_ultra_asm();
+                    registers_irq_handler_ultra();
 
                     // Clear any response data
                     if (!pio_sm_is_rx_fifo_empty(register_pio, register_sm)) {
@@ -280,7 +199,7 @@ void core1_main() {
         for (int i = 0; i < 5; i++) {
             if (pio_sm_is_tx_fifo_empty(register_pio, register_sm)) {
                 pio_sm_put(register_pio, register_sm, 0x000EF380);
-                registers_irq_handler_ultra_asm();
+                registers_irq_handler_ultra();
                 if (!pio_sm_is_rx_fifo_empty(register_pio, register_sm)) {
                     pio_sm_get(register_pio, register_sm);
                 }
@@ -361,13 +280,16 @@ void dma_write_register(dma_registers_t *dma, dma_reg_offsets_t offset, uint8_t 
     switch (offset) {
         case REG_CONTROL: // 0x00 - Control register
         {
-            bool prev_sel = (dma->control & DMA_SELECT_BIT) != 0;
+            uint8_t prev_control = dma->control;
+            bool prev_sel = (prev_control & DMA_SELECT_BIT) != 0;
             dma->control = value;
 
-            if (value & DMA_RESET_BIT) {
+            // RESET is a pulse - trigger only on rising edge and auto-clear
+            if ((value & DMA_RESET_BIT) && !(prev_control & DMA_RESET_BIT)) {
                 // Handle reset
                 dma_device_reset(dma);
-                break;
+                dma->control &= ~DMA_RESET_BIT;
+                value &= ~DMA_RESET_BIT;
             }
 
             // Handle DMA enable with latch mechanism 
@@ -617,38 +539,47 @@ uint8_t dma_read_register(dma_registers_t *dma, dma_reg_offsets_t offset) {
 // Write function using two-word FIFO protocol:
 //  Word 1: bits 0=W/R flag (1=write), bits 1-20=address A0-A19
 //  Word 2: bits 0-7=data byte, bits 8-19=address A8-A19 (MSB)
-void dma_write_to_victor_ram(PIO write_pio, int write_sm, const uint8_t *data, size_t length, uint32_t start_address) {
-    if (!length || !data || write_sm < 0) {
-        return;
-    }
+void dma_write_to_victor_ram(PIO write_pio, int write_sm, uint8_t *data, size_t length, uint32_t start_address) {
 
-    fast_log("DMA write->Victor addr=0x%06lx len=%u\n",
-             (unsigned long)(start_address & 0xFFFFF),
-             (unsigned)length);
+    printf("Starting DMA write to Victor RAM\n");
+    printf("Length: %zu\n", length);
+    print_segment_offset(start_address);
+
+    printf("write_pio: %p, write_sm: %d\n", write_pio, write_sm);
+    debug_pio_state(write_pio, write_sm);
 
     for (size_t i = 0; i < length; i++) {
         uint32_t addr = (start_address + i) & 0xFFFFF;  // 20-bit address
-        uint32_t payload = (addr & 0xFFF00) | data[i];
+        uint8_t byte = data[i];                         // Data byte to write
 
-        // Word 1: address with write flag
+        printf("Writing %02X to Victor RAM at address %08X ", byte, addr);
+        print_segment_offset(addr);
+
+        // Send two FIFO words per the PIO protocol
+        // Word 1: address shifted left with write flag in LSB
         pio_sm_put_blocking(write_pio, write_sm, (addr << 1) | 1);
-        // Word 2: MSBs of address + data byte
-        pio_sm_put_blocking(write_pio, write_sm, payload);
+        // Word 2: address MSB (A8-A19) in upper bits, data byte in lower bits
+        pio_sm_put_blocking(write_pio, write_sm, (addr & 0xFFF00) | byte);
     }
+    printf("Finished DMA write to Victor RAM\n");
 }
 
 // Read function (PIO-based) using two-word FIFO protocol:
 //  Word 1: bits 0=W/R flag (0=read), bits 1-20=address A0-A19
 //  Word 2: pindirs control value 0xFFF00 (A8-A19 outputs, BD0-BD7 inputs)
 void dma_read_from_victor_ram(PIO read_pio, int read_sm, uint8_t *data, size_t length, uint32_t start_address) {
-    if (!length || !data || read_sm < 0) {
+    printf("Starting DMA read from Victor RAM\n");
+    printf("Length: %zu, start_address: %d ", length, start_address);
+    print_segment_offset(start_address);
+
+    uint8_t *temp = malloc((length + 1) * sizeof(uint8_t));
+    if (!temp) {
+        printf("Failed to allocate memory for DMA transfer\n");
         return;
     }
 
-    fast_log("DMA read<-Victor addr=0x%06lx len=%u\n",
-             (unsigned long)(start_address & 0xFFFFF),
-             (unsigned)length);
-
+    debug_pio_state(read_pio, read_sm);
+    printf("Reading from Victor RAM at address %08X\n", start_address);
     for (size_t i = 0; i < length; i++) {
         uint32_t addr = (start_address + i) & 0xFFFFF;  // 20-bit address
 
@@ -660,15 +591,18 @@ void dma_read_from_victor_ram(PIO read_pio, int read_sm, uint8_t *data, size_t l
 
         // Get the data byte that was read
         uint32_t char_data = pio_sm_get_blocking(read_pio, read_sm);
-        data[i] = (uint8_t)(char_data & 0xFF);
+        temp[i] = char_data & 0xFF;
     }
+    memcpy(data, temp, length);
+    free(temp);
+    printf("\n\nFinished DMA read from Victor RAM\n");
 }
 #else
 // Unit-test in-memory Victor RAM model (64 KiB to fit SRAM)
 static uint8_t test_victor_ram[1 << 16];
 static const size_t TEST_VICTOR_RAM_SIZE = (1 << 16);
 
-void dma_write_to_victor_ram(PIO write_pio, int write_sm, const uint8_t *data, size_t length, uint32_t start_address) {
+void dma_write_to_victor_ram(PIO write_pio, int write_sm, uint8_t *data, size_t length, uint32_t start_address) {
     (void)write_pio; (void)write_sm;
     for (size_t i = 0; i < length; i++) {
         uint32_t addr = (start_address + i) & 0xFFFFF;

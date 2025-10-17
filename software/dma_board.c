@@ -142,13 +142,16 @@ int main() {
             }
         }
 
+        dma_process_deferred_events();
+
         // Process debug queue entries (non-blocking)
         debug_queue_process();    
             
         // Every 10M iterations, check PIO state
         if (i % 10000000 == 0) {
-            printf("\nPIO check: FIFO level=%d, PC=0x%x, stalled=%d\n", 
+            printf("\nPIO check: FIFO RX level=%d, TX level=%d, PC=0x%x, stalled=%d\n", 
                     pio_sm_get_rx_fifo_level(register_pio, register_sm),
+                    pio_sm_get_tx_fifo_level(register_pio, register_sm),
                     pio_sm_get_pc(register_pio, register_sm),
                     pio_sm_is_exec_stalled(register_pio, register_sm));
         }
