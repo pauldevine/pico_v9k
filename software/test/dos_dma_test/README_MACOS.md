@@ -5,7 +5,8 @@ This directory contains DOS test programs that can be cross-compiled on macOS us
 ## Prerequisites
 
 1. **OpenWatcom for macOS** - Install the macOS version of OpenWatcom
-2. **Ensure tools are in PATH** - `bwcc` and `bwlink` should be accessible
+2. **Ensure tools are in PATH** - `bwcc` and `bwlink` should be accessible. you can add them to your path with `cd ~/projects/open-watcom-v2/ \
+source mysetvars.sh`
 
 ## Build Methods
 

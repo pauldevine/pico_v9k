@@ -10,8 +10,8 @@ WATCOM_INC="${WATCOM_PATH}/rel/h"
 WATCOM_LIB="${WATCOM_PATH}/rel/lib286/dos"
 
 # Compiler and linker commands for macOS
-CC="bwcc"
-LINK="bwlink"
+CC="${WATCOM_PATH}/build/binbuild/bwcc"
+LINK="${WATCOM_PATH}/build/binbuild/bwlink"
 
 # Compiler flags
 # -bt=dos    : Build for DOS target

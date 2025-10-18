@@ -17,8 +17,8 @@
 /* Macro to access DMA registers */
 #define DMA_REG(offset) ((volatile unsigned char far *)(MK_FP(DMA_SEG, offset)))
 
-/* Small delay */
-void delay(int ms) {
+/* Small delay - renamed to avoid conflict with i86.h */
+void test_delay(int ms) {
     int i, j;
     for (i = 0; i < ms; i++) {
         for (j = 0; j < 1000; j++) {
@@ -57,7 +57,7 @@ int main(void) {
     printf("\nTest 2: Write 0x05 with 1ms delay before read:\n");
 
     *DMA_REG(DMA_ADDR_HIGH) = 0x05;
-    delay(1);
+    test_delay(1);
     value_read = *DMA_REG(DMA_ADDR_HIGH) & 0x0F;
 
     printf("  Wrote: 0x05\n");
@@ -139,3 +139,4 @@ int main(void) {
     getch();
     return 0;
 }
+
