@@ -105,6 +105,15 @@ build_all() {
         success=false
     fi
 
+    # Build minimal.exe
+    if compile minimal.c; then
+        if ! link minimal.exe minimal.o; then
+            success=false
+        fi
+    else
+        success=false
+    fi
+
     if $success; then
         print_status "Build complete! DOS executables ready:"
         ls -la *.exe
@@ -170,6 +179,11 @@ main() {
                 link addrtest.exe addrtest.o
             fi
             ;;
+        minimal)
+            if compile minimal.c; then
+                link minimal.exe minimal.o
+            fi
+            ;;
         help|--help|-h)
             echo "Usage: $0 [command]"
             echo ""
@@ -179,6 +193,7 @@ main() {
             echo "  debug    - Build with debug symbols"
             echo "  dmatest  - Build only dmatest.exe"
             echo "  addrtest - Build only addrtest.exe"
+            echo "  minimal  - Build only minimal.exe (single register test)"
             echo "  help     - Show this help message"
             echo ""
             echo "Environment:"

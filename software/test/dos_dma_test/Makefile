@@ -20,11 +20,11 @@ CFLAGS_DEBUG = -bt=dos -ms -0 -od -zq -za99 -d2 -I$(WATCOM_INC)
 LFLAGS = system dos LIBPATH $(WATCOM_LIB)
 
 # Target executables
-TARGETS = dmatest.exe addrtest.exe
+TARGETS = dmatest.exe addrtest.exe minimal.exe
 
 # Source and object files
-SOURCES = dmatest.c addrtest.c
-OBJECTS = dmatest.o addrtest.o
+SOURCES = dmatest.c addrtest.c minimal.c
+OBJECTS = dmatest.o addrtest.o minimal.o
 
 # Default target
 .PHONY: all
@@ -36,6 +36,10 @@ dmatest.exe: dmatest.o
 	@$(LINK) $(LFLAGS) name $@ file $<
 
 addrtest.exe: addrtest.o
+	@echo "Linking $@..."
+	@$(LINK) $(LFLAGS) name $@ file $<
+
+minimal.exe: minimal.o
 	@echo "Linking $@..."
 	@$(LINK) $(LFLAGS) name $@ file $<
 
@@ -72,6 +76,12 @@ test-addr: addrtest.exe
 	@echo "Address test built: addrtest.exe"
 	@echo "Copy to DOS environment to run"
 
+# Run minimal test only
+.PHONY: test-min
+test-min: minimal.exe
+	@echo "Minimal test built: minimal.exe"
+	@echo "Copy to DOS environment to run"
+
 # Show help
 .PHONY: help
 help:
@@ -88,6 +98,7 @@ help:
 	@echo "Individual programs:"
 	@echo "  dmatest.exe  - Full DMA board test suite"
 	@echo "  addrtest.exe - Address register focused test"
+	@echo "  minimal.exe  - Minimal single register test (REG_ADDR_H)"
 	@echo ""
 	@echo "Environment:"
 	@echo "  WATCOM_PATH = $(WATCOM_PATH)"
