@@ -25,7 +25,9 @@ CFLAGS="-bt=dos -ms -0 -os -zq -za99 -d0 -I${WATCOM_INC}"
 CFLAGS_DEBUG="-bt=dos -ms -0 -od -zq -za99 -d2 -I${WATCOM_INC}"
 
 # Linker flags
-LFLAGS="system dos LIBPATH ${WATCOM_LIB}"
+# Use 'format dos' instead of 'system dos' to avoid W1107 warning
+# Include both DOS-specific and general 286 library paths for math libraries
+LFLAGS="format dos LIBPATH ${WATCOM_LIB} LIBPATH ${WATCOM_PATH}/rel/lib286"
 
 # Colors for output
 RED='\033[0;31m'
@@ -114,6 +116,15 @@ build_all() {
         success=false
     fi
 
+    # Build read.exe
+    if compile read.c; then
+        if ! link read.exe read.o; then
+            success=false
+        fi
+    else
+        success=false
+    fi
+
     if $success; then
         print_status "Build complete! DOS executables ready:"
         ls -la *.exe
@@ -184,6 +195,11 @@ main() {
                 link minimal.exe minimal.o
             fi
             ;;
+        read)
+            if compile read.c; then
+                link read.exe read.o
+            fi
+            ;;
         help|--help|-h)
             echo "Usage: $0 [command]"
             echo ""
@@ -193,7 +209,8 @@ main() {
             echo "  debug    - Build with debug symbols"
             echo "  dmatest  - Build only dmatest.exe"
             echo "  addrtest - Build only addrtest.exe"
-            echo "  minimal  - Build only minimal.exe (single register test)"
+            echo "  minimal  - Build only minimal.exe (multi-operation test)"
+            echo "  read     - Build only read.exe (single read test)"
             echo "  help     - Show this help message"
             echo ""
             echo "Environment:"

@@ -17,14 +17,16 @@ CFLAGS = -bt=dos -ms -0 -os -zq -za99 -d0 -I$(WATCOM_INC)
 CFLAGS_DEBUG = -bt=dos -ms -0 -od -zq -za99 -d2 -I$(WATCOM_INC)
 
 # Linker flags
-LFLAGS = system dos LIBPATH $(WATCOM_LIB)
+# Use 'format dos' instead of 'system dos' to avoid W1107 warning
+# Include both DOS-specific and general 286 library paths for math libraries
+LFLAGS = format dos LIBPATH $(WATCOM_LIB) LIBPATH $(WATCOM_PATH)/rel/lib286
 
 # Target executables
-TARGETS = dmatest.exe addrtest.exe minimal.exe
+TARGETS = dmatest.exe addrtest.exe minimal.exe read.exe
 
 # Source and object files
-SOURCES = dmatest.c addrtest.c minimal.c
-OBJECTS = dmatest.o addrtest.o minimal.o
+SOURCES = dmatest.c addrtest.c minimal.c read.c
+OBJECTS = dmatest.o addrtest.o minimal.o read.o
 
 # Default target
 .PHONY: all
@@ -40,6 +42,10 @@ addrtest.exe: addrtest.o
 	@$(LINK) $(LFLAGS) name $@ file $<
 
 minimal.exe: minimal.o
+	@echo "Linking $@..."
+	@$(LINK) $(LFLAGS) name $@ file $<
+
+read.exe: read.o
 	@echo "Linking $@..."
 	@$(LINK) $(LFLAGS) name $@ file $<
 
@@ -80,6 +86,12 @@ test-addr: addrtest.exe
 .PHONY: test-min
 test-min: minimal.exe
 	@echo "Minimal test built: minimal.exe"
+	@echo "Copy to DOS environment to run"
+
+# Run read test only
+.PHONY: test-read
+test-read: read.exe
+	@echo "Read test built: read.exe"
 	@echo "Copy to DOS environment to run"
 
 # Show help
