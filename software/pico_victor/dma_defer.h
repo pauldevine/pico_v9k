@@ -89,4 +89,8 @@ static inline uint8_t defer_get_cached(cached_registers_t *cached, uint32_t offs
     return cached->values[offset & 0xFF];
 }
 
+// External cache and queue instances - place in time_critical section for fast access
+extern defer_queue_t defer_queue;
+extern cached_registers_t cached_regs;
+
 #endif // DMA_DEFER_H

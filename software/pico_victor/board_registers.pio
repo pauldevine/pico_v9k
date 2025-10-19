@@ -9,13 +9,18 @@
 .define REGISTER_SIZE 12
 .define DATA_SIZE 8
 
+.define FIFO_PREFETCH_ADDRESS 0x00
+.define FIFO_READ_COMMIT 0x01
+.define FIFO_WRITE_VALUE 0x02
+
+
 .program dma_registers
 
 ; --- Pre-amble ---
 ; This code runs once at the start for each state machine initialization
 ; It expects a bitmask of the 12 MSBs of the address bus to be used for the DMA Board Registers
 pull block          ; Pull bitmask for the 0xEF300 MSB that I'll match against later
-mov y, osr          ; Store bitmask in Y register for 12 MSB address comparison later
+out y, 12          ; Store bitmask in Y register for 12 MSB address comparison later
 
 .wrap_target
 T0:
@@ -24,38 +29,38 @@ T0:
     wait 0 GPIO CLOCK_5_PIN            ; Wait for CLK5 to go low
     
 T1:   
-    wait 1 GPIO ALE_PIN                ; wait for ALE to go high = T1 start
-    wait 0 GPIO CLOCK_15B_PIN          ; Wait for CLK15B to go low to allow for address to stabilize
+    wait 1 GPIO ALE_PIN [11]               ; wait for ALE to go high = T1 start & wait for address to stabilize
     in pins, ADDRESS_BUS_SIZE          ; shift 12 bits of address into ISR
+    mov osr, isr                       ; use OSR to store full 20-bit address for later
     in null, 20                        ; move the address into the lower 12 bits of the register, dropping 8 LSB to compare against 12 MSB
     mov x, isr                         ; X = 12 MSB address bits
     jmp x!=y, T0                       ; if we're not at 0xEF300, restart T0 to try again
-    mov isr, null                      ; CRITICAL FIX: Clear ISR before reading address again
-    in pins, ADDRESS_BUS_SIZE          ; gather full address to send to arm
-
+    mov isr, osr                       ; restore full 20-bit address into ISR
+    set x, FIFO_PREFETCH_ADDRESS       ; signal to arm prefetch address payload
+    in x, 2                            ; move the prefetch flag into ISR as MSBs // ISR has 00[address]
 T2:
-    wait 0 GPIO ALE_PIN                ; wait for ALE to go low = T1 start
-    wait 0 GPIO CLOCK_5_PIN            ; Wait for CLK5 to go low //waiting two CLK15 cycles for signal setup time
-    wait 1 GPIO CLOCK_5_PIN            ; Wait for CLK5 to go high
+    push                               ; Push the current ISR address + read signal onto RX FIFO
+    mov isr, osr                       ; restore full 20-bit address into ISR
+    pull block                         ; Pull data to send to 8088 from TX FIFO
     jmp pin T3_WRITE                   ; if RD pin is high 8088 is writing, if low 8088 is reading
 
 T3_READ:                               ; 8088 read cycle // pico's writing
-    mov osr, ~null                     ; set OSR to all 1's
-    in osr, 12                         ; Shift in 12 bits of 1's (0xFFF) to signal arm we're reading
-    push                               ; Push the current ISR address + read signal onto RX FIFO
-    pull block                         ; Pull data to send to 8088 from TX FIFO
     out pins, DATA_SIZE                ; drive BD0-BD7 with data for 8088 to read
     out pindirs, DATA_SIZE             ; set BD0-BD7 as outputs
-    wait 1 GPIO RD_PIN                ; wait for RD to go high (end of read cycle)
+    wait 1 GPIO RD_PIN                 ; wait for RD to go high (end of read cycle)
+    set x, FIFO_READ_COMMIT [12]       ; signal to arm commit earlier read // wait for 12 cycles to allow for data hold time
+    in x, 2                            ; move the read commit flag into ISR as MSBs // ISR has 01[address]
+T4:
+    push [11]                          ; send commit signal to arm
+    jmp T0                             ; jump to T4 for the next clock cycle
 .wrap
 
 T3_WRITE:                              ; 8088 write cycle // pico's reading
-    wait 1 GPIO CLOCK_5_PIN            ; Wait for CLK5 to go high
-    wait 0 GPIO CLOCK_5_PIN            ; Wait for CLK5 to go low
+    wait 1 GPIO CLOCK_5_PIN            ; Wait for CLK5 to go high to allow data to stabilize
+    set x, FIFO_WRITE_VALUE            ; signal to arm write value payload
     in pins, DATA_SIZE                 ; read data the 8088 is writing max 0xFF
-    in null, 4                         ; shift in 4 null bits to signal it's a write
-    push                               ; send address from earlier and data to arm for storage
-    jmp T0                             ; jump to T4 for the next clock cycle
+    in x, 2                            ; move the WRITE prefetch flag into ISR as MSBs //ISR has 10[data][address]
+    jmp T4                             ; jump to T4 for the next clock cycle
 
 % c-sdk {
 #include <stdio.h>

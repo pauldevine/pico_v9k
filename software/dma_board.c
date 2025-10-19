@@ -63,10 +63,22 @@ void initialize_uart() {
     // Initialize SPI bus for FujiNet storage
     spi_bus_init();
 
-    // Repurpose RX pin as output for logic analyzer trigger
-    gpio_init(UART_RX_PIN);  // or whatever pin you want
-    gpio_set_dir(UART_RX_PIN, GPIO_OUT);  // for logic analyzer flag
-    gpio_put(UART_RX_PIN, 0); // start low
+    //setup our debug pin
+    gpio_init(DEBUG_PIN);
+    gpio_set_function(DEBUG_PIN, GPIO_FUNC_SIO);  // Explicitly set to SIO (GPIO) mode
+    gpio_disable_pulls(DEBUG_PIN);  // Disable all pulls
+    gpio_set_dir(DEBUG_PIN, GPIO_OUT);  // Set as output
+
+    // Test toggles with delays to see on logic analyzer
+    gpio_put(DEBUG_PIN, 0);
+    sleep_ms(1);
+    gpio_put(DEBUG_PIN, 1);
+    sleep_ms(1);
+    gpio_put(DEBUG_PIN, 0);
+    sleep_ms(1);
+    gpio_put(DEBUG_PIN, 1);
+    sleep_ms(1);
+    gpio_put(DEBUG_PIN, 0);
     
     //configure the register PIO, used to read/write the DMA registers for controlling the DMA card behavior
     PIO register_pio = PIO_REGISTERS;

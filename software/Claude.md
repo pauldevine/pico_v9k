@@ -78,7 +78,7 @@ The main test runs in `test/register_test.c` and:
 - Processes register reads/writes through interrupt handlers
 
 ## Important Notes
-
+- NEVER EVER touch the pio files directly. Recommend courses of action only on those files. They are complex and you always mess them up!
 - This is embedded firmware for hardware interface emulation
 - Timing is critical - uses cycle-accurate measurements with SysTick
 - The code includes Victor 9000-specific memory addressing and SCSI/SASI protocol handling
@@ -86,6 +86,13 @@ The main test runs in `test/register_test.c` and:
 - **Direct GPIO connection**: The RP2350 is 5V tolerant, allowing direct connection to the 8088 bus without level shifters
 - The 8088 uses a multiplexed address/data bus where AD0-AD7 carry address bits during T1 (when ALE is high) and data during T2-T3
 - Pin direction management is handled directly through PIO `pindirs` instructions without external buffer control
+
+## Current Status (2025-oct-19)
+- Register-read path now emits three FIFO payloads with 2-bit tags (`prefetch`, `commit`, `write`) to support the cached IRQ handler; decoding logic on Core 1 matches this format. Some of the other code paths still have an older FIFO payload code that is incorrect.
+- The cached handler returns data within ~200 ns.
+- READY stretching on the Victor bus (~1 µs) when accessing the memmory-mapped hardware provides ample time margin.
+- FIFO warm-up no longer contaminates live traffic; when that path is used, remember to disable the SM before clearing FIFOs so the TX side starts empty.
+- the curent bug is doing a single READ on the 8088 to 0xEF3C0 is causing the PIO to fire two read events, one with 0xEF300 and one with 0xEF3C0. There's some kind of bug in the pio logic.
 
 ## Vintage Hardware Documentation
 

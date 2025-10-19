@@ -12,8 +12,8 @@
 #include "logging.h"
 
 // Static instances - place in time_critical section for fast access
-static defer_queue_t defer_queue __attribute__((section(".time_critical.defer_queue")));
-static cached_registers_t cached_regs __attribute__((section(".time_critical.cached_regs")));
+defer_queue_t defer_queue __attribute__((section(".time_critical.defer_queue")));
+cached_registers_t cached_regs __attribute__((section(".time_critical.cached_regs")));
 
 // Mask register offset based on MAME-style rules
 static inline uint32_t mask_offset(uint32_t offset) {
@@ -68,18 +68,14 @@ bool defer_dequeue(defer_queue_t *queue, defer_entry_t *entry) {
     return true;
 }
 
-// Process a deferred register operation
-void defer_process_entry(dma_registers_t *dma, const defer_entry_t *entry) {
-    uint32_t raw_value = entry->raw_value;
-    uint32_t address = raw_value & 0xFFFFF;
+// Read operations are handled entirely by the fast cached handler
+// We only need to process side effects here, not update cache values
+// The cache was already read and returned by the fast handler
+void defer_process_read(dma_registers_t *dma, uint32_t raw_value) {
+    // Extract address FIFO has 01[address]
+    fast_log("RAW=0x%08x\n", raw_value);
+    uint32_t address = (raw_value >> 10) & 0xFFFFF;
     uint32_t offset = address - DMA_REGISTER_BASE;
-
-    // Bounds check
-    if (offset >= 0x100) {
-        return;
-    }
-
-    bool is_read = (raw_value & 0x10000000u) != 0;
     uint32_t masked_offset = mask_offset(offset);
 
     // Handle alias for status register
@@ -87,165 +83,220 @@ void defer_process_entry(dma_registers_t *dma, const defer_entry_t *entry) {
         masked_offset = REG_STATUS;
     }
 
-    if (is_read) {
-        // Read operations are handled entirely by the fast cached handler
-        // We only need to process side effects here, not update cache values
-        // The cache was already read and returned by the fast handler
-
-        switch (masked_offset) {
-            case REG_STATUS:
-                // Clear interrupt on status read (side effect only)
-                dma_update_interrupts(dma, false);
-                break;
-
-            case REG_DATA:
-                // Data register read side effects
-                if (dma->state.non_dma_req) {
-                    if (dma->bus_ctrl & SASI_MSG_BIT) {
-                        // Message phase - clear bus
-                        dma->state.non_dma_req = 0;
-                        dma->bus_ctrl &= ~SASI_REQ_BIT;
-                        dma->bus_ctrl &= ~(SASI_CTL_BIT | SASI_INP_BIT | SASI_MSG_BIT |
-                                          SASI_ACK_BIT | SASI_BSY_BIT);
-                        dma_update_interrupts(dma, false);
-
-                        // Update cached status to reflect new bus state
-                        uint8_t new_status = 0;
-                        cached_regs.values[REG_STATUS] = new_status;
-                        cached_regs.values[0x30] = new_status;
-                    } else if ((dma->bus_ctrl & (SASI_CTL_BIT | SASI_INP_BIT)) ==
-                              (SASI_CTL_BIT | SASI_INP_BIT)) {
-                        // Status phase - set message phase
-                        dma->bus_ctrl |= (SASI_MSG_BIT | SASI_REQ_BIT);
-                        dma->state.non_dma_req = 1;
-                        dma_update_interrupts(dma, true);
-
-                        // Update cached status to reflect new bus state
-                        uint8_t new_status = SASI_MSG_BIT | SASI_REQ_BIT | SASI_CTL_BIT | SASI_INP_BIT;
-                        cached_regs.values[REG_STATUS] = new_status;
-                        cached_regs.values[0x30] = new_status;
-                    } else {
-                        dma->state.non_dma_req = 0;
-                    }
-                }
-                break;
-
-            case REG_ADDR_L:
-            case REG_ADDR_M:
-            case REG_ADDR_H:
-                // No side effects for address register reads
-                // The cached value was already returned by the fast handler
-                fast_log("DEFER_READ: offset=0x%02x (no action, cache already returned)\n", masked_offset);
-                break;
-
-            default:
-                // Unknown register
-                break;
-        }
-    } else {
-        // Write operation - process state change
-        uint8_t write_data = (raw_value >> 20) & 0xFF;
-
-        switch (masked_offset) {
-            case REG_CONTROL:
-                // Control register write
-                {
-                    bool prev_sel = (dma->control & DMA_SELECT_BIT) != 0;
-                    dma->control = write_data;
-
-                    if (write_data & DMA_RESET_BIT) {
-                        dma_device_reset(dma);
-                        // Reset cached status
-                        cached_regs.values[REG_STATUS] = 0x00;
-                        cached_regs.values[0x30] = 0x00;
-                    } else {
-                        if (write_data & DMA_ON_LATCH_BIT) {
-                            dma->state.dma_enabled = (write_data & DMA_ON_VALUE_BIT) != 0;
-                        }
-
-                        dma->state.dma_dir_in = (write_data & DMA_WR_MODE_BIT) != 0;
-
-                        bool now_sel = (write_data & DMA_SELECT_BIT) != 0;
-                        if (now_sel && !prev_sel) {
-                            // Selection phase starting
-                            dma->bus_ctrl |= SASI_SEL_BIT;
-                            dma->selected_target = (dma->command & 0x07);
-                            dma->bus_ctrl |= SASI_BSY_BIT;
-                        } else if (!now_sel && prev_sel) {
-                            // Selection phase ending - enter command phase
-                            dma->bus_ctrl &= ~SASI_SEL_BIT;
-                            dma->bus_ctrl |= (SASI_BSY_BIT | SASI_REQ_BIT | SASI_CTL_BIT);
-                            dma->bus_ctrl &= ~SASI_INP_BIT;
-                            dma->state.non_dma_req = 1;
-                            dma_update_interrupts(dma, true);
-                        }
-                    }
-                }
-                break;
-
-            case REG_DATA:
-                // Data register write
-                dma->command = write_data;
-                cached_regs.values[REG_DATA] = write_data;
-
-                if (dma->control & DMA_SELECT_BIT) {
-                    // During selection, data contains target ID
-                    dma->selected_target = (write_data & 0x07);
-                    dma->bus_ctrl &= ~SASI_SEL_BIT;
-                    dma->control &= ~DMA_SELECT_BIT;
-                }
-
-                // Handle command/data byte
-                bool pending_non_dma = dma->state.non_dma_req;
-                bool host_to_device = !(dma->bus_ctrl & SASI_INP_BIT);
-
-                if (pending_non_dma && host_to_device) {
-                    dma->state.non_dma_req = 0;
-                    dma->state.asserting_ack = 1;
-                    dma->bus_ctrl |= SASI_ACK_BIT;
-                }
-
-                if (dma->bus_ctrl & SASI_CTL_BIT) {
-                    // Command phase - process SASI command byte
-                    handle_sasi_command_byte(dma, write_data);
-                }
-                break;
-
-            case REG_ADDR_L:
-                dma->dma_address.bytes.low = write_data;
-                cached_regs.values[REG_ADDR_L] = write_data;
-                fast_log("DEFER: Write ADDR_L = 0x%02x\n", write_data);
-                break;
-
-            case REG_ADDR_M:
-                dma->dma_address.bytes.mid = write_data;
-                cached_regs.values[REG_ADDR_M] = write_data;
-                fast_log("DEFER: Write ADDR_M = 0x%02x\n", write_data);
-                break;
-
-            case REG_ADDR_H:
-                dma->dma_address.bytes.high = write_data & 0x0F;
-                cached_regs.values[REG_ADDR_H] = write_data & 0x0F;
-                fast_log("DEFER: Write ADDR_H = 0x%02x\n", write_data & 0x0F);
-                break;
-
-            default:
-                // Unknown register
-                break;
-        }
-
-        // After any write that changes bus state, update cached status
-        if (masked_offset == REG_CONTROL || masked_offset == REG_DATA) {
-            uint8_t new_status = ((dma->bus_ctrl & SASI_INP_BIT) ? SASI_INP_BIT : 0) |
-                                 ((dma->bus_ctrl & SASI_CTL_BIT) ? SASI_CTL_BIT : 0) |
-                                 ((dma->bus_ctrl & SASI_BSY_BIT) ? SASI_BSY_BIT : 0) |
-                                 ((dma->bus_ctrl & SASI_REQ_BIT) ? SASI_REQ_BIT : 0) |
-                                 ((dma->bus_ctrl & SASI_MSG_BIT) ? SASI_MSG_BIT : 0);
-            cached_regs.values[REG_STATUS] = new_status;
-            cached_regs.values[0x30] = new_status;
-        }
+    // Bounds check
+    if (offset >= 0x100) {
+        fast_log("DEFER_READ: out of range offset=0x%02x\n", offset);
+        return;
     }
 
+    switch (masked_offset) {
+        case REG_STATUS:
+            // Clear interrupt on status read (side effect only)
+            dma_update_interrupts(dma, false);
+            break;
+
+        case REG_DATA:
+            // Data register read side effects
+            if (dma->state.non_dma_req) {
+                if (dma->bus_ctrl & SASI_MSG_BIT) {
+                    // Message phase - clear bus
+                    dma->state.non_dma_req = 0;
+                    dma->bus_ctrl &= ~SASI_REQ_BIT;
+                    dma->bus_ctrl &= ~(SASI_CTL_BIT | SASI_INP_BIT | SASI_MSG_BIT |
+                                        SASI_ACK_BIT | SASI_BSY_BIT);
+                    dma_update_interrupts(dma, false);
+
+                    // Update cached status to reflect new bus state
+                    uint8_t new_status = 0;
+                    cached_regs.values[REG_STATUS] = new_status;
+                    cached_regs.values[0x30] = new_status;
+                } else if ((dma->bus_ctrl & (SASI_CTL_BIT | SASI_INP_BIT)) ==
+                            (SASI_CTL_BIT | SASI_INP_BIT)) {
+                    // Status phase - set message phase
+                    dma->bus_ctrl |= (SASI_MSG_BIT | SASI_REQ_BIT);
+                    dma->state.non_dma_req = 1;
+                    dma_update_interrupts(dma, true);
+
+                    // Update cached status to reflect new bus state
+                    uint8_t new_status = SASI_MSG_BIT | SASI_REQ_BIT | SASI_CTL_BIT | SASI_INP_BIT;
+                    cached_regs.values[REG_STATUS] = new_status;
+                    cached_regs.values[0x30] = new_status;
+                } else {
+                    dma->state.non_dma_req = 0;
+                }
+            }
+            fast_log("DEFER_READ: offset=0x%02x end_status %d (processed side effects, cache already returned)\n", masked_offset, cached_regs.values[REG_STATUS]    );
+            break;
+
+        case REG_ADDR_L:
+        case REG_ADDR_M:
+        case REG_ADDR_H:
+            // No side effects for address register reads
+            // The cached value was already returned by the fast handler
+            fast_log("DEFER_READ: offset=0x%02x (no action, cache already returned)\n", masked_offset);
+            break;
+
+        default:
+            // Unknown register
+            fast_log("DEFER_READ: Unknown register offset=0x%02x\n", masked_offset);
+            break;
+    }
+}
+
+//Write operations need to update both cache and actual DMA state
+//by processing side effects
+void defer_process_write(dma_registers_t *dma, uint32_t raw_value) {
+    // Extract address FIFO has 10[data][address]
+    uint32_t address = (raw_value >> 2) & 0xFFFFF;
+    uint32_t offset = address - DMA_REGISTER_BASE;
+    uint32_t masked_offset = mask_offset(offset);
+    uint8_t write_data = (raw_value >> 22) & 0xFF;
+
+    // Handle alias for status register
+    if (masked_offset == 0x30) {
+        masked_offset = REG_STATUS;
+    }
+
+    // Bounds check
+    if (offset >= 0x100) {
+        fast_log("DEFER_WRITE: out of range offset=0x%02x\n", offset);
+        return;
+    }
+
+    switch (masked_offset) {
+        case REG_CONTROL:
+            // Control register write
+            {
+                bool prev_sel = (dma->control & DMA_SELECT_BIT) != 0;
+                dma->control = write_data;
+
+                if (write_data & DMA_RESET_BIT) {
+                    dma_device_reset(dma);
+                    // Reset cached status
+                    cached_regs.values[REG_STATUS] = 0x00;
+                    cached_regs.values[0x30] = 0x00;
+                } else {
+                    if (write_data & DMA_ON_LATCH_BIT) {
+                        dma->state.dma_enabled = (write_data & DMA_ON_VALUE_BIT) != 0;
+                    }
+
+                    dma->state.dma_dir_in = (write_data & DMA_WR_MODE_BIT) != 0;
+
+                    bool now_sel = (write_data & DMA_SELECT_BIT) != 0;
+                    if (now_sel && !prev_sel) {
+                        // Selection phase starting
+                        dma->bus_ctrl |= SASI_SEL_BIT;
+                        dma->selected_target = (dma->command & 0x07);
+                        dma->bus_ctrl |= SASI_BSY_BIT;
+                    } else if (!now_sel && prev_sel) {
+                        // Selection phase ending - enter command phase
+                        dma->bus_ctrl &= ~SASI_SEL_BIT;
+                        dma->bus_ctrl |= (SASI_BSY_BIT | SASI_REQ_BIT | SASI_CTL_BIT);
+                        dma->bus_ctrl &= ~SASI_INP_BIT;
+                        dma->state.non_dma_req = 1;
+                        dma_update_interrupts(dma, true);
+                    }
+                }
+            }  
+            fast_log("DEFER: Write CONTROL = 0x%02x\n", write_data);
+            break;
+
+        case REG_DATA:
+            // Data register write
+            dma->command = write_data;
+            cached_regs.values[REG_DATA] = write_data;
+
+            if (dma->control & DMA_SELECT_BIT) {
+                // During selection, data contains target ID
+                dma->selected_target = (write_data & 0x07);
+                dma->bus_ctrl &= ~SASI_SEL_BIT;
+                dma->control &= ~DMA_SELECT_BIT;
+            }
+
+            // Handle command/data byte
+            bool pending_non_dma = dma->state.non_dma_req;
+            bool host_to_device = !(dma->bus_ctrl & SASI_INP_BIT);
+
+            if (pending_non_dma && host_to_device) {
+                dma->state.non_dma_req = 0;
+                dma->state.asserting_ack = 1;
+                dma->bus_ctrl |= SASI_ACK_BIT;
+            }
+
+            if (dma->bus_ctrl & SASI_CTL_BIT) {
+                // Command phase - process SASI command byte
+                handle_sasi_command_byte(dma, write_data);
+            }
+            fast_log("DEFER: Write DATA = 0x%02x\n", write_data);
+            break;
+
+        case REG_ADDR_L:
+            dma->dma_address.bytes.low = write_data;
+            cached_regs.values[REG_ADDR_L] = write_data;
+            fast_log("DEFER: Write ADDR_L = 0x%02x\n", write_data);
+            break;
+
+        case REG_ADDR_M:
+            dma->dma_address.bytes.mid = write_data;
+            cached_regs.values[REG_ADDR_M] = write_data;
+            fast_log("DEFER: Write ADDR_M = 0x%02x\n", write_data);
+            break;
+
+        case REG_ADDR_H:
+            dma->dma_address.bytes.high = write_data & 0x0F;
+            cached_regs.values[REG_ADDR_H] = write_data & 0x0F;
+            fast_log("DEFER: Write ADDR_H = 0x%02x\n", write_data & 0x0F);
+            break;
+
+        default:
+            // Unknown register
+            fast_log("DEFER_WRITE: Unknown register offset=0x%02x\n", masked_offset);
+            break;
+    }
+
+    // After any write that changes bus state, update cached status
+    if (masked_offset == REG_CONTROL || masked_offset == REG_DATA) {
+        uint8_t new_status = ((dma->bus_ctrl & SASI_INP_BIT) ? SASI_INP_BIT : 0) |
+                                ((dma->bus_ctrl & SASI_CTL_BIT) ? SASI_CTL_BIT : 0) |
+                                ((dma->bus_ctrl & SASI_BSY_BIT) ? SASI_BSY_BIT : 0) |
+                                ((dma->bus_ctrl & SASI_REQ_BIT) ? SASI_REQ_BIT : 0) |
+                                ((dma->bus_ctrl & SASI_MSG_BIT) ? SASI_MSG_BIT : 0);
+        cached_regs.values[REG_STATUS] = new_status;
+        cached_regs.values[0x30] = new_status;
+    }
+}
+
+
+// Process a deferred register operation
+void defer_process_entry(dma_registers_t *dma, const defer_entry_t *entry) {
+    
+    uint32_t raw_value = entry->raw_value;
+    //extract 2-bit payload type flag
+    uint32_t payload_type = (raw_value >> 30) & 0x03;
+    uint32_t address;
+    uint32_t offset;
+
+    switch (payload_type) {
+        case FIFO_PREFETCH_ADDRESS:
+            //Prefetch address operation should have been handled by fast path
+            //FIFO has 00[address]
+            address = (raw_value >> 10) & 0xFFFFF;
+            offset = address - DMA_REGISTER_BASE;
+            fast_log("DEFER_PREFETCH_ADDRESS: should not have arrived offset=0x%02x\n", offset);
+            break;
+        case FIFO_READ_COMMIT:
+            // Read operation - process side effects only
+            defer_process_read(dma, raw_value);
+            break;
+        case FIFO_WRITE_VALUE:
+            // Write operation - update cache and process side effects
+            defer_process_write(dma, raw_value);
+            break;
+        default:
+            // Unknown payload type
+            fast_log("DEFER: Unknown payload type: 0x%02x\n", payload_type);
+            return;
+    }
     defer_queue.processed++;
 }
 

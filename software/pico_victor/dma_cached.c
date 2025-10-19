@@ -108,6 +108,16 @@ void core1_main_cached() {
         }
     }
 
+    //clear the FIFOs so cache timing doesn't interfere with normal operation
+    pio_sm_set_enabled(register_pio, register_sm, false);   
+    pio_sm_clear_fifos(register_pio, register_sm);          
+    pio_sm_set_enabled(register_pio, register_sm, true);   
+    printf("\nPIO check: FIFO RX level=%d, TX level=%d, PC=0x%x, stalled=%d\n", 
+                    pio_sm_get_rx_fifo_level(register_pio, register_sm),
+                    pio_sm_get_tx_fifo_level(register_pio, register_sm),
+                    pio_sm_get_pc(register_pio, register_sm),
+                    pio_sm_is_exec_stalled(register_pio, register_sm));
+
     // Enable the IRQ
     pio_set_irq0_source_enabled(register_pio, fifo_sources[register_sm], true);
     irq_set_enabled(PIO1_IRQ_0, true);

@@ -15,7 +15,7 @@
 
 // Define DEBUG_PIN if not already defined
 #ifndef DEBUG_PIN
-#define DEBUG_PIN 45  // Using UART_RX_PIN as debug output
+#define DEBUG_PIN 44 
 #endif
 
 // For pins > 31, we need to use different registers
@@ -28,6 +28,10 @@
 #define SIO_GPIO_OUT_SET_REG (SIO_BASE + SIO_GPIO_OUT_SET_OFFSET)
 #define SIO_GPIO_OUT_CLR_REG (SIO_BASE + SIO_GPIO_OUT_CLR_OFFSET)
 #endif
+
+// External cache and queue instances from dma_defer.h - place in time_critical section for fast access
+extern defer_queue_t defer_queue;
+extern cached_registers_t cached_regs;
 
 // Mask register offset based on MAME-style rules
 static inline uint32_t mask_offset(uint32_t offset) {
@@ -148,72 +152,77 @@ void __time_critical_func(registers_irq_handler_cached)() {
 // Even more optimized version with minimal overhead
 void __time_critical_func(registers_irq_handler_cached_asm)() {
     uint32_t raw_value;
-    uint32_t offset;
+    static uint32_t offset;
     uint8_t data;
-
+    
     // Set debug pin high
     *(volatile uint32_t *)SIO_GPIO_OUT_SET_REG = DEBUG_PIN_MASK;
 
     // Get value from PIO FIFO - this is the critical timing point
     raw_value = PIO_REGISTERS->rxf[REGISTERS_SM];
 
-    // Extract offset
-    offset = (raw_value & 0xFFFFF) - DMA_REGISTER_BASE;
-
-    // Bounds check
-    if (offset >= 0x100) {
-        goto exit;
-    }
+    //extract 2-bit payload type flag
+    uint32_t payload_type = (raw_value >> 30) & 0x03;
 
     // Get cached registers pointer
-    cached_registers_t *cached = defer_get_cached_registers();
+    cached_registers_t *cached = &cached_regs;
 
-    // Apply masking inline for speed
-    if (offset >= 0x80) {
-        offset &= ~0x1F;  // Address registers
-    } else {
-        offset &= ~0x0F;  // Other registers
-        if (offset == 0x30) {
-            offset = 0x20;  // Status alias
-        }
+    bool enque_result = false;
+
+    // Handle different payload types
+    switch(payload_type) {
+        case FIFO_PREFETCH_ADDRESS:
+            // Handle prefetch address
+            offset = ((raw_value >> 10) & 0xFFFFF) - DMA_REGISTER_BASE;   // extract 20-bit payload, subtract base
+            offset &= 0xFF;    // guarantees the index stays inside cached->values[]
+            // READ - fetch from cache and respond immediately
+            data = cached->values[offset];
+            PIO_REGISTERS->txf[REGISTERS_SM] = (0xFF00 | (uint32_t)data); //send cached results w/in 200ns
+            //fast_log("CACHED ASM offset=0x%08x\n", offset);  // DO NOT LOG - kills performance!
+            *(volatile uint32_t *)SIO_GPIO_OUT_CLR_REG = DEBUG_PIN_MASK;
+            break;
+        case FIFO_READ_COMMIT:
+            enque_result = true;
+            break;
+        case FIFO_WRITE_VALUE:
+            enque_result = true;
+            // Update cache immediately
+            offset = ((raw_value >> 2) & 0xFFFFF) - DMA_REGISTER_BASE;   // extract 20-bit payload, subtract base
+            offset &= 0xFF;    // guarantees the index stays inside cached->values[]
+            data = (raw_value >> 22) & 0xFF; // extract 8-bit data
+            // Special handling for address high register
+            if (mask_offset(offset) == REG_ADDR_H) {
+                data &= 0x0F;
+            }
+            
+             // Update cache
+            cached->values[offset] = data;
+            //fast_log("CACHED ASM WRITE: raw_value=0x%08x, offset=0x%02x, data=0x%02x\n", raw_value, offset, data); // DO NOT LOG - kills performance!
+
+            // Handle status register alias
+            if (offset == 0x20) {
+                cached->values[0x30] = data;
+            }
+            break;
+        default:
+            fast_log("CACHED ASM: Unknown payload type: 0x%02x\n", payload_type);
+            goto exit; // Unknown payload type
+            break;
     }
 
-    // Check read flag (bit 28)
-    if (raw_value & 0x10000000) {
-        // READ - fetch from cache and respond immediately
-        data = cached->values[offset];
+    //fast_log("CACHED ASM before queue: raw_value=0x%08x\n", raw_value);
+    if (enque_result) {
+        // Enqueue for deferred processing (fast inline version)
+        //fast_log("CACHED ASM ENQUEUE: raw_value=0x%08x\n", raw_value);
+        defer_queue_t *queue = &defer_queue;
+        uint32_t head = queue->head;
+        uint32_t next = (head + 1) & DEFER_QUEUE_MASK;
 
-        #ifndef BENCHMARK_MODE
-        // Send response - this must happen within 200ns
-        PIO_REGISTERS->txf[REGISTERS_SM] = (0xFF00 | (uint32_t)data);
-        #endif
-    } else {
-        // WRITE - update cache immediately
-        data = (raw_value >> 20) & 0xFF;
-
-        // Special case for high address register
-        if (offset == 0xC0) {
-            data &= 0x0F;
+        if (next != queue->tail) {
+            queue->entries[head].raw_value = raw_value;
+            __asm volatile("dmb" ::: "memory");
+            queue->head = next;
         }
-
-        // Update cache
-        cached->values[offset] = data;
-
-        // Handle status alias
-        if (offset == 0x20) {
-            cached->values[0x30] = data;
-        }
-    }
-
-    // Enqueue for deferred processing (fast inline version)
-    defer_queue_t *queue = defer_get_queue();
-    uint32_t head = queue->head;
-    uint32_t next = (head + 1) & DEFER_QUEUE_MASK;
-
-    if (next != queue->tail) {
-        queue->entries[head].raw_value = raw_value;
-        __asm volatile("dmb" ::: "memory");
-        queue->head = next;
     }
 
 exit:

@@ -19,7 +19,7 @@
 
 // Define DEBUG_PIN if not already defined
 #ifndef DEBUG_PIN
-#define DEBUG_PIN 45  // Using UART_RX_PIN as debug output
+#define DEBUG_PIN 44
 #endif
 
 // For pins > 31, we need to use different registers
@@ -363,6 +363,12 @@ void __time_critical_func(registers_irq_handler_ultra_asm)() {
         return;
     }
 
+    // Quick reject non-DMA registers (0x40-0x7F and 0xE0-0xFF)
+    if ((offset >= 0x40 && offset < 0x80) || offset >= 0xE0) {
+        *(volatile uint32_t *)SIO_GPIO_OUT_CLR_REG = DEBUG_PIN_MASK;
+        return;
+    }
+
     // Get DMA registers
     dma_registers_t *dma = dma_get_registers();
     if (!dma) {
@@ -379,13 +385,13 @@ void __time_critical_func(registers_irq_handler_ultra_asm)() {
 
             if (offset == 0x80) {
                 data = dma->dma_address.bytes.low;
-                fast_log("READ 0x80: returning 0x%02x\n", data);
+               // fast_log("READ 0x80: returning 0x%02x\n", data);
             } else if (offset == 0xA0) {
                 data = dma->dma_address.bytes.mid;
-                fast_log("READ 0xA0: returning 0x%02x\n", data);
+              //  fast_log("READ 0xA0: returning 0x%02x\n", data);
             } else if (offset == 0xC0) {
                 data = dma->dma_address.bytes.high & 0x0F;
-                fast_log("READ 0xC0: returning 0x%02x\n", data);
+              //  fast_log("READ 0xC0: returning 0x%02x\n", data);
             } else {
                 data = 0xFF;
             }

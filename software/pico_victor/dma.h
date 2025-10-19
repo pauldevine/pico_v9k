@@ -46,6 +46,12 @@
 #define DMA_READ 1
 #define DMA_WRITE 0
 
+// FIFO operation types, defines for the 2-bit pio payload type flag
+#define FIFO_PREFETCH_ADDRESS 0x00
+#define FIFO_READ_COMMIT 0x01
+#define FIFO_WRITE_VALUE 0x02
+
+
 // DMA operations use a TWO-WORD FIFO protocol (see dma_read_write.pio for details):
 //
 // WRITE: pio_sm_put(pio, sm, (addr << 1) | 1);        // Word 1: address + write flag
