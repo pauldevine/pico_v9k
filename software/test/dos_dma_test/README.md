@@ -51,6 +51,12 @@ DMATEST.EXE -i
 ```
 This allows manual register reads/writes for debugging.
 
+### Targeted helper binaries
+- `ADDRTEST.EXE` exercises all three DMA address bytes.
+- `ADDR_MID.EXE` focuses solely on the mid byte, writing 0x55 and 0xAA and reporting the readback for each.
+- `MINIMAL.EXE` performs a single read of DMA_ADDR_HIGH.
+- `READ.EXE` reproduces the minimal DMA_ADDR_HIGH read used for timing bring-up.
+
 ## Test Coverage
 
 1. **Control Register Tests**: Writes various bit patterns to control register

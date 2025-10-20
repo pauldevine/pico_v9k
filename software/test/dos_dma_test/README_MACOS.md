@@ -19,6 +19,7 @@ source mysetvars.sh`
 # Build specific program
 ./build.sh dmatest
 ./build.sh addrtest
+./build.sh addr_mid
 
 # Build with debug symbols
 ./build.sh debug
@@ -39,6 +40,7 @@ make
 # Build specific program
 make dmatest.exe
 make addrtest.exe
+make addr_mid.exe
 
 # Build with debug symbols
 make debug
@@ -114,8 +116,9 @@ After building, copy the `.exe` files to your DOS environment:
 
 ## Programs
 
-- **dmatest.exe** - Comprehensive DMA board test suite
-- **addrtest.exe** - Focused address register test
+- **dmatest.exe**  - Comprehensive DMA board test suite
+- **addrtest.exe** - Focused address register span test
+- **addr_mid.exe** - Minimal DMA_ADDR_MID write/read isolation
 
 ## Notes
 

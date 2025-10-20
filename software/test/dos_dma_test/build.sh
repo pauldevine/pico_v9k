@@ -107,6 +107,15 @@ build_all() {
         success=false
     fi
 
+    # Build addr_mid.exe
+    if compile addr_mid.c; then
+        if ! link addr_mid.exe addr_mid.o; then
+            success=false
+        fi
+    else
+        success=false
+    fi
+
     # Build minimal.exe
     if compile minimal.c; then
         if ! link minimal.exe minimal.o; then
@@ -190,6 +199,11 @@ main() {
                 link addrtest.exe addrtest.o
             fi
             ;;
+        addr_mid)
+            if compile addr_mid.c; then
+                link addr_mid.exe addr_mid.o
+            fi
+            ;;
         minimal)
             if compile minimal.c; then
                 link minimal.exe minimal.o
@@ -209,6 +223,7 @@ main() {
             echo "  debug    - Build with debug symbols"
             echo "  dmatest  - Build only dmatest.exe"
             echo "  addrtest - Build only addrtest.exe"
+            echo "  addr_mid - Build only addr_mid.exe"
             echo "  minimal  - Build only minimal.exe (multi-operation test)"
             echo "  read     - Build only read.exe (single read test)"
             echo "  help     - Show this help message"

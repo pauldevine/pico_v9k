@@ -8,10 +8,10 @@ CC = wcc
 LINK = wlink
 
 # Target executables
-TARGETS = dmatest.exe addrtest.exe
+TARGETS = dmatest.exe addrtest.exe addr_mid.exe
 
 # Object files
-OBJS = dmatest.obj addrtest.obj
+OBJS = dmatest.obj addrtest.obj addr_mid.obj
 
 # Compiler flags
 # -bt=dos    : Build for DOS target
@@ -34,6 +34,9 @@ dmatest.exe: dmatest.obj
 
 addrtest.exe: addrtest.obj
 	$(LINK) $(LFLAGS) name addrtest.exe file addrtest.obj
+
+addr_mid.exe: addr_mid.obj
+	$(LINK) $(LFLAGS) name addr_mid.exe file addr_mid.obj
 
 # Compile source files
 .c.obj:
