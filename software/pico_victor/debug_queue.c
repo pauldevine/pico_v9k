@@ -67,23 +67,26 @@ void debug_queue_process(void) {
     const int max_per_call = 10;  // Process max 10 entries per call to avoid blocking
 
     while (count < max_per_call && debug_queue_pop(&value)) {
-        // Decode the raw PIO value
-        uint32_t address = value & 0xFFFFF;
-        uint8_t data = (value >> 20) & 0xFF;
-        bool is_read = (value & 0x10000000) != 0;
+        uint32_t payload_type = dma_fifo_payload_type(value);
 
-        // Calculate offset from DMA register base
-        uint32_t offset = address - DMA_REGISTER_BASE;
+        if (payload_type == FIFO_WRITE_VALUE) {
+            uint32_t address = dma_fifo_write_address(value);
+            uint8_t data = dma_fifo_write_data(value);
 
-        // Only print writes (reads have race conditions as you noted)
-        if (!is_read && offset < 0x100) {
-            const char* reg_name = get_register_name(offset);
+            uint32_t offset = address - DMA_REGISTER_BASE;
+            uint32_t masked_offset = dma_mask_offset(offset);
+
+            if (masked_offset == 0x30) {
+                masked_offset = REG_STATUS;
+            }
+
+            const char* reg_name = get_register_name(masked_offset);
 
             // Format based on register type
-            if (offset >= 0x80) {
+            if (masked_offset >= 0x80) {
                 // Address register - show hex value
                 printf("DMA: %s <- 0x%02X\n", reg_name, data);
-            } else if (offset == 0x00) {
+            } else if (masked_offset == 0x00) {
                 // Control register - decode bits
                 printf("DMA: CONTROL <- 0x%02X [", data);
                 if (data & DMA_RESET_BIT) printf("RESET ");

@@ -21,6 +21,42 @@ void registers_irq_handler_cached(void);
 void registers_irq_handler_cached_asm(void);
 void registers_irq_handler_cached_init(void);
 
+static inline void warmup_read_sequence(PIO pio, int sm, uint32_t address) {
+    if (pio_sm_is_tx_fifo_empty(pio, sm)) {
+        pio_sm_put(pio, sm, dma_fifo_encode_prefetch(address));
+        registers_irq_handler_cached_asm();
+        if (!pio_sm_is_rx_fifo_empty(pio, sm)) {
+            pio_sm_get(pio, sm);
+        }
+    }
+
+    if (pio_sm_is_tx_fifo_empty(pio, sm)) {
+        pio_sm_put(pio, sm, dma_fifo_encode_commit(address));
+        registers_irq_handler_cached_asm();
+        if (!pio_sm_is_rx_fifo_empty(pio, sm)) {
+            pio_sm_get(pio, sm);
+        }
+    }
+}
+
+static inline void warmup_write_sequence(PIO pio, int sm, uint32_t address, uint8_t value) {
+    if (pio_sm_is_tx_fifo_empty(pio, sm)) {
+        pio_sm_put(pio, sm, dma_fifo_encode_prefetch(address));
+        registers_irq_handler_cached_asm();
+        if (!pio_sm_is_rx_fifo_empty(pio, sm)) {
+            pio_sm_get(pio, sm);
+        }
+    }
+
+    if (pio_sm_is_tx_fifo_empty(pio, sm)) {
+        pio_sm_put(pio, sm, dma_fifo_encode_write(address, value));
+        registers_irq_handler_cached_asm();
+        if (!pio_sm_is_rx_fifo_empty(pio, sm)) {
+            pio_sm_get(pio, sm);
+        }
+    }
+}
+
 // Modified core1_main that uses cached handler and deferred processing
 void core1_main_cached() {
     // Run IRQ processing on separate core
@@ -64,31 +100,13 @@ void core1_main_cached() {
 
         // Call handler multiple times with different operations to fully warm caches
         for (int warm_iter = 0; warm_iter < 10; warm_iter++) {
-            // Test different register types to warm all code paths
-            uint32_t test_addresses[] = {
-                0x00000300 | DMA_REGISTER_BASE,  // Control register write
-                0x10000310 | DMA_REGISTER_BASE,  // Data register read
-                0x10000320 | DMA_REGISTER_BASE,  // Status register read
-                0x00000380 | DMA_REGISTER_BASE,  // DMA address low write
-                0x10000380 | DMA_REGISTER_BASE,  // DMA address low read
-                0x000003A0 | DMA_REGISTER_BASE,  // DMA address mid write
-                0x000003C0 | DMA_REGISTER_BASE,  // DMA address high write
-            };
-
-            for (int i = 0; i < 7; i++) {
-                if (pio_sm_is_tx_fifo_empty(register_pio, register_sm)) {
-                    // Put test data
-                    pio_sm_put(register_pio, register_sm, test_addresses[i]);
-
-                    // Call the handler
-                    registers_irq_handler_cached_asm();
-
-                    // Clear any response data
-                    if (!pio_sm_is_rx_fifo_empty(register_pio, register_sm)) {
-                        pio_sm_get(register_pio, register_sm);
-                    }
-                }
-            }
+            warmup_write_sequence(register_pio, register_sm, DMA_REGISTER_BASE + REG_CONTROL, 0x00);
+            warmup_read_sequence(register_pio, register_sm, DMA_REGISTER_BASE + REG_DATA);
+            warmup_read_sequence(register_pio, register_sm, DMA_REGISTER_BASE + REG_STATUS);
+            warmup_write_sequence(register_pio, register_sm, DMA_REGISTER_BASE + REG_ADDR_L, 0x00);
+            warmup_read_sequence(register_pio, register_sm, DMA_REGISTER_BASE + REG_ADDR_L);
+            warmup_write_sequence(register_pio, register_sm, DMA_REGISTER_BASE + REG_ADDR_M, 0x00);
+            warmup_write_sequence(register_pio, register_sm, DMA_REGISTER_BASE + REG_ADDR_H, 0x00);
         }
 
         printf("Cache pre-warming complete (70 handler calls)\n");
@@ -98,13 +116,7 @@ void core1_main_cached() {
 
         // One more round of warming after the delay
         for (int i = 0; i < 5; i++) {
-            if (pio_sm_is_tx_fifo_empty(register_pio, register_sm)) {
-                pio_sm_put(register_pio, register_sm, 0x000EF380);
-                registers_irq_handler_cached_asm();
-                if (!pio_sm_is_rx_fifo_empty(register_pio, register_sm)) {
-                    pio_sm_get(register_pio, register_sm);
-                }
-            }
+            warmup_write_sequence(register_pio, register_sm, DMA_REGISTER_BASE + REG_ADDR_L, (uint8_t)i);
         }
     }
 

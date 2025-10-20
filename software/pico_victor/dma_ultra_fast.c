@@ -282,12 +282,7 @@ void __time_critical_func(registers_irq_handler_ultra)() {
     gpio_put(DEBUG_PIN, 1);
 
     uint32_t raw_value = pio_sm_get(PIO_REGISTERS, REGISTERS_SM);
-    uint32_t address = raw_value & 0xFFFFF;
-    uint32_t offset = address - DMA_REGISTER_BASE;
-    if (offset >= 0x100) {
-        gpio_put(DEBUG_PIN, 0);
-        return;
-    }
+    uint32_t payload_type = dma_fifo_payload_type(raw_value);
 
     dma_registers_t *dma = dma_get_registers();
     if (!dma) {
@@ -299,37 +294,67 @@ void __time_critical_func(registers_irq_handler_ultra)() {
         init_ultra_fast(dma);
     }
 
-    bool is_read = (raw_value & 0x10000000u) != 0;
-    uint32_t masked_offset = mask_offset(offset);
-    if (masked_offset == 0x30) {
-        masked_offset = REG_STATUS;
-    }
+    switch (payload_type) {
+        case FIFO_PREFETCH_ADDRESS: {
+            uint32_t address = dma_fifo_prefetch_address(raw_value);
+            uint32_t offset = address - DMA_REGISTER_BASE;
+            if (offset >= 0x100) {
+                break;
+            }
 
-    if (is_read) {
-        uint8_t value;
-        if (masked_offset == REG_STATUS) {
-            value = compute_status_value(dma);
-            register_memory[REG_STATUS] = value;
-            register_memory[0x30] = value;
-        } else {
-            value = register_memory[masked_offset];
-        }
-#ifndef BENCHMARK_MODE
-        uint32_t response = (0xFF00u | (uint32_t)(value & 0xFF));
-        pio_sm_put_blocking(PIO_REGISTERS, REGISTERS_SM, response);
-#endif
-    } else {
-        uint8_t write_data = (raw_value >> 20) & 0xFF;
-        if (masked_offset == REG_ADDR_H) {
-            write_data &= 0x0F;
-        }
-        register_memory[masked_offset] = write_data;
-        if (masked_offset == REG_STATUS) {
-            register_memory[0x30] = write_data;
-        }
-    }
+            uint32_t masked_offset = mask_offset(offset);
+            if (masked_offset == 0x30) {
+                masked_offset = REG_STATUS;
+            }
 
-    deferred_enqueue(raw_value);
+            uint8_t value;
+            if (masked_offset == REG_STATUS) {
+                value = compute_status_value(dma);
+                register_memory[REG_STATUS] = value;
+                register_memory[0x30] = value;
+            } else {
+                value = register_memory[masked_offset];
+            }
+    #ifndef BENCHMARK_MODE
+            uint32_t response = (0xFF00u | (uint32_t)(value & 0xFFu));
+            pio_sm_put_blocking(PIO_REGISTERS, REGISTERS_SM, response);
+    #endif
+            break;
+        }
+
+        case FIFO_READ_COMMIT: {
+            deferred_enqueue(raw_value);
+            break;
+        }
+
+        case FIFO_WRITE_VALUE: {
+            uint32_t address = dma_fifo_write_address(raw_value);
+            uint32_t offset = address - DMA_REGISTER_BASE;
+            if (offset >= 0x100) {
+                break;
+            }
+
+            uint32_t masked_offset = mask_offset(offset);
+            if (masked_offset == 0x30) {
+                masked_offset = REG_STATUS;
+            }
+
+            uint8_t write_data = dma_fifo_write_data(raw_value);
+            if (masked_offset == REG_ADDR_H) {
+                write_data &= 0x0F;
+            }
+            register_memory[masked_offset] = write_data;
+            if (masked_offset == REG_STATUS) {
+                register_memory[0x30] = write_data;
+            }
+
+            deferred_enqueue(raw_value);
+            break;
+        }
+
+        default:
+            break;
+    }
     gpio_put(DEBUG_PIN, 0);
 }
 
@@ -345,92 +370,97 @@ void __time_critical_func(registers_irq_handler_ultra_asm)() {
     // Get value from PIO FIFO
     raw_value = pio_sm_get(PIO_REGISTERS, REGISTERS_SM);
 
-    // Push to debug queue - optimized for minimal overhead when disabled
-    // debug_queue_push_fast(raw_value);
-
-    // Extract offset
-    offset = (raw_value & 0xFFFFF) - DMA_REGISTER_BASE;
-
-    // Log only address register accesses to debug the issue
-    if (offset == 0x80 || offset == 0xA0 || offset == 0xC0) {
-        fast_log("ADDR_REG: raw=0x%08x, offset=0x%02x, read=%d\n",
-                 raw_value, offset, (raw_value & 0x10000000) ? 1 : 0);
-    }
-
-    // Bounds check
-    if (offset >= 0x100) {
-        *(volatile uint32_t *)SIO_GPIO_OUT_CLR_REG = DEBUG_PIN_MASK;
-        return;
-    }
-
-    // Quick reject non-DMA registers (0x40-0x7F and 0xE0-0xFF)
-    if ((offset >= 0x40 && offset < 0x80) || offset >= 0xE0) {
-        *(volatile uint32_t *)SIO_GPIO_OUT_CLR_REG = DEBUG_PIN_MASK;
-        return;
-    }
-
-    // Get DMA registers
+    uint32_t payload_type = dma_fifo_payload_type(raw_value);
     dma_registers_t *dma = dma_get_registers();
     if (!dma) {
         *(volatile uint32_t *)SIO_GPIO_OUT_CLR_REG = DEBUG_PIN_MASK;
         return;
     }
-    
-    // Check read flag (bit 28)
-    if (raw_value & 0x10000000) {
-        // Read path
-        if (offset >= 0x80) {
-            // Fast path for address registers
-            offset &= ~0x1f;
 
-            if (offset == 0x80) {
-                data = dma->dma_address.bytes.low;
-               // fast_log("READ 0x80: returning 0x%02x\n", data);
-            } else if (offset == 0xA0) {
-                data = dma->dma_address.bytes.mid;
-              //  fast_log("READ 0xA0: returning 0x%02x\n", data);
-            } else if (offset == 0xC0) {
-                data = dma->dma_address.bytes.high & 0x0F;
-              //  fast_log("READ 0xC0: returning 0x%02x\n", data);
+    switch (payload_type) {
+        case FIFO_PREFETCH_ADDRESS: {
+            uint32_t address = dma_fifo_prefetch_address(raw_value);
+            offset = address - DMA_REGISTER_BASE;
+
+            if (offset >= 0x100) {
+                break;
+            }
+
+            if ((offset >= 0x40 && offset < 0x80) || offset >= 0xE0) {
+                break;
+            }
+
+            uint32_t masked_offset = offset;
+            masked_offset = mask_offset(masked_offset);
+            if (masked_offset == 0x30) {
+                masked_offset = REG_STATUS;
+            }
+
+            if (masked_offset >= 0x80) {
+                if (masked_offset == 0x80) {
+                    data = dma->dma_address.bytes.low;
+                } else if (masked_offset == 0xA0) {
+                    data = dma->dma_address.bytes.mid;
+                } else if (masked_offset == 0xC0) {
+                    data = dma->dma_address.bytes.high & 0x0F;
+                } else {
+                    data = 0xFF;
+                }
             } else {
-                data = 0xFF;
+                data = dma_read_register(dma, masked_offset);
             }
-        } else {
-            // Complex register read - fall back to standard handler
-            offset &= ~0xf;
-            data = dma_read_register(dma, offset);
+
+            #ifndef BENCHMARK_MODE
+            uint32_t response = (0xFF00u | (uint32_t)data);
+            pio_sm_put_blocking(PIO_REGISTERS, REGISTERS_SM, response);
+            #endif
+            break;
         }
-        
-        // Send data back
-        #ifndef BENCHMARK_MODE
-        uint32_t response = (0xFF00 | (uint32_t)data);
-        pio_sm_put_blocking(PIO_REGISTERS, REGISTERS_SM, response);
-        #endif
-    } else {
-        // Write path
-        data = (raw_value >> 20) & 0xFF;
 
-        if (offset >= 0x80) {
-            // Fast path for address registers
-            offset &= ~0x1f;
+        case FIFO_READ_COMMIT: {
+            deferred_enqueue(raw_value);
+            break;
+        }
 
-            if (offset == 0x80) {
-                dma->dma_address.bytes.low = data;
-                fast_log("WRITE 0x80: data=0x%02x stored\n", data);
-            } else if (offset == 0xA0) {
-                dma->dma_address.bytes.mid = data;
-                fast_log("WRITE 0xA0: data=0x%02x stored\n", data);
-            } else if (offset == 0xC0) {
-                dma->dma_address.bytes.high = data & 0x0F;
-                fast_log("WRITE 0xC0: data=0x%02x stored\n", data & 0x0F);
+        case FIFO_WRITE_VALUE: {
+            uint32_t address = dma_fifo_write_address(raw_value);
+            offset = address - DMA_REGISTER_BASE;
+
+            if (offset >= 0x100) {
+                break;
             }
-        } else {
-            // Complex register write
-            offset &= ~0xf;
-            dma_write_register(dma, offset, data);
+
+            if ((offset >= 0x40 && offset < 0x80) || offset >= 0xE0) {
+                break;
+            }
+
+            uint32_t masked_offset = offset;
+            masked_offset = mask_offset(masked_offset);
+            if (masked_offset == 0x30) {
+                masked_offset = REG_STATUS;
+            }
+
+            data = dma_fifo_write_data(raw_value);
+
+            if (masked_offset >= 0x80) {
+                if (masked_offset == 0x80) {
+                    dma->dma_address.bytes.low = data;
+                } else if (masked_offset == 0xA0) {
+                    dma->dma_address.bytes.mid = data;
+                } else if (masked_offset == 0xC0) {
+                    dma->dma_address.bytes.high = data & 0x0F;
+                }
+            } else {
+                dma_write_register(dma, masked_offset, data);
+            }
+
+            deferred_enqueue(raw_value);
+            break;
         }
+
+        default:
+            break;
     }
-    
-    // Clear debug pin
+
     *(volatile uint32_t *)SIO_GPIO_OUT_CLR_REG = DEBUG_PIN_MASK;
 }

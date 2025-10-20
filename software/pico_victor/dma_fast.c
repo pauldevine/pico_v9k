@@ -221,66 +221,90 @@ static uint8_t addr_h_read(dma_registers_t *dma) {
 void __time_critical_func(registers_irq_handler_fast)() {
     gpio_put(DEBUG_PIN, 1);
     
-    // Get raw value from PIO FIFO
     uint32_t raw_value = pio_sm_get(PIO_REGISTERS, REGISTERS_SM);
-    
-    // Start cycle counter
+    uint32_t payload_type = dma_fifo_payload_type(raw_value);
     uint32_t start_cycles = systick_hw->cvr;
-    
-    // Extract fields
-    uint32_t address = raw_value & 0xFFFFF;
-    uint8_t data = (raw_value >> 20) & 0xFF;
-    bool read_flag = (raw_value >> 28) & 0x01;
-    
-    // Quick bounds check
-    if (address < DMA_REGISTER_BASE || address >= (DMA_REGISTER_BASE + DMA_REGISTER_SPACE_SIZE)) {
-        gpio_put(DEBUG_PIN, 0);
-        return;
-    }
-    
-    // Calculate offset - this is now just subtraction, no switch needed
-    uint8_t offset = address - DMA_REGISTER_BASE;
-    
-    // Get DMA registers
+
     dma_registers_t *dma = dma_get_registers();
     if (!dma) {
         gpio_put(DEBUG_PIN, 0);
         return;
     }
-    
-    // Ensure handlers are initialized
+
     if (!handlers_initialized) {
         init_register_handlers(dma);
     }
-    
-    // Direct index into handler table - this is the key optimization
-    reg_handler_t *handler = &register_handlers[offset];
-    
-    if (read_flag) {
-        // For simple address registers, use direct pointer if available
-        if (handler->direct_ptr && offset >= 0x80) {
-            data = *handler->direct_ptr;
-        } else if (handler->read) {
-            data = handler->read(dma);
-        } else {
-            data = 0xFF;
+
+    uint32_t last_offset = 0xFF;
+
+    switch (payload_type) {
+        case FIFO_PREFETCH_ADDRESS: {
+            uint32_t address = dma_fifo_prefetch_address(raw_value);
+            if (address < DMA_REGISTER_BASE || address >= (DMA_REGISTER_BASE + DMA_REGISTER_SPACE_SIZE)) {
+                break;
+            }
+
+            uint32_t offset = address - DMA_REGISTER_BASE;
+            uint32_t masked_offset = dma_mask_offset(offset);
+            if (masked_offset == 0x30) {
+                masked_offset = REG_STATUS;
+            }
+
+            last_offset = masked_offset;
+
+            reg_handler_t *handler = &register_handlers[masked_offset];
+            uint8_t data;
+
+            if (handler->direct_ptr && masked_offset >= 0x80) {
+                data = *handler->direct_ptr;
+            } else if (handler->read) {
+                data = handler->read(dma);
+            } else {
+                data = 0xFF;
+            }
+
+            uint32_t pindirs_and_data = (0xFFu << 8) | (data & 0xFFu);
+            #ifndef BENCHMARK_MODE
+            pio_sm_put_blocking(PIO_REGISTERS, REGISTERS_SM, pindirs_and_data);
+            #endif
+            break;
         }
-        
-        // Send data back to 8088
-        uint32_t pindirs_and_data = (0xFF << 8) | (data & 0xFF);
-        #ifndef BENCHMARK_MODE
-        pio_sm_put_blocking(PIO_REGISTERS, REGISTERS_SM, pindirs_and_data);
-        #endif
-    } else {
-        // For writes, use direct pointer for simple registers
-        if (handler->direct_ptr && offset >= 0x80) {
-            *handler->direct_ptr = data;
-        } else if (handler->write) {
-            handler->write(dma, data);
+
+        case FIFO_READ_COMMIT:
+            last_offset = 0xFF;
+            // Side effects handled during prefetch read
+            break;
+
+        case FIFO_WRITE_VALUE: {
+            uint32_t address = dma_fifo_write_address(raw_value);
+            if (address < DMA_REGISTER_BASE || address >= (DMA_REGISTER_BASE + DMA_REGISTER_SPACE_SIZE)) {
+                break;
+            }
+
+            uint32_t offset = address - DMA_REGISTER_BASE;
+            uint32_t masked_offset = dma_mask_offset(offset);
+            if (masked_offset == 0x30) {
+                masked_offset = REG_STATUS;
+            }
+
+            last_offset = masked_offset;
+
+            reg_handler_t *handler = &register_handlers[masked_offset];
+            uint8_t data = dma_fifo_write_data(raw_value);
+
+            if (handler->direct_ptr && masked_offset >= 0x80) {
+                *handler->direct_ptr = data;
+            }
+            if (handler->write) {
+                handler->write(dma, data);
+            }
+            break;
         }
+
+        default:
+            break;
     }
-    
-    // Measure cycles
+
     uint32_t end_cycles = systick_hw->cvr;
     uint32_t cycles_used = (start_cycles >= end_cycles) ? 
                           (start_cycles - end_cycles) : 
@@ -289,7 +313,7 @@ void __time_critical_func(registers_irq_handler_fast)() {
     // Only log if it takes more than 80ns (16 cycles at 200MHz)
     if (cycles_used > 16) {
         fast_log("Slow access: %lu cycles (%.1f ns) for offset 0x%02x\n", 
-                cycles_used, cycles_used * 5.0, offset);
+                cycles_used, cycles_used * 5.0, (uint32_t)(last_offset & 0xFF));
     }
     
     gpio_put(DEBUG_PIN, 0);

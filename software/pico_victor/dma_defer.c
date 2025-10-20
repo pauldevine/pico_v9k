@@ -15,14 +15,6 @@
 defer_queue_t defer_queue __attribute__((section(".time_critical.defer_queue")));
 cached_registers_t cached_regs __attribute__((section(".time_critical.cached_regs")));
 
-// Mask register offset based on MAME-style rules
-static inline uint32_t mask_offset(uint32_t offset) {
-    if (offset >= 0x80) {
-        return offset & ~0x1F;  // Address registers: mask to 0x80, 0xA0, 0xC0
-    }
-    return offset & ~0x0F;      // Other registers: mask to 0x00, 0x10, 0x20, 0x30
-}
-
 // Initialize the deferred processing system
 void dma_defer_init(void) {
     // Clear the queue
@@ -74,9 +66,9 @@ bool defer_dequeue(defer_queue_t *queue, defer_entry_t *entry) {
 void defer_process_read(dma_registers_t *dma, uint32_t raw_value) {
     // Extract address FIFO has 01[address]
     fast_log("RAW=0x%08x\n", raw_value);
-    uint32_t address = (raw_value >> 10) & 0xFFFFF;
+    uint32_t address = dma_fifo_commit_address(raw_value);
     uint32_t offset = address - DMA_REGISTER_BASE;
-    uint32_t masked_offset = mask_offset(offset);
+    uint32_t masked_offset = dma_mask_offset(offset);
 
     // Handle alias for status register
     if (masked_offset == 0x30) {
@@ -147,10 +139,10 @@ void defer_process_read(dma_registers_t *dma, uint32_t raw_value) {
 //by processing side effects
 void defer_process_write(dma_registers_t *dma, uint32_t raw_value) {
     // Extract address FIFO has 10[data][address]
-    uint32_t address = (raw_value >> 2) & 0xFFFFF;
+    uint32_t address = dma_fifo_write_address(raw_value);
     uint32_t offset = address - DMA_REGISTER_BASE;
-    uint32_t masked_offset = mask_offset(offset);
-    uint8_t write_data = (raw_value >> 22) & 0xFF;
+    uint32_t masked_offset = dma_mask_offset(offset);
+    uint8_t write_data = dma_fifo_write_data(raw_value);
 
     // Handle alias for status register
     if (masked_offset == 0x30) {

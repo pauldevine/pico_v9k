@@ -24,30 +24,30 @@
 typedef struct {
     uint32_t address;
     uint8_t data;
-    bool is_read;
+    uint8_t payload_type;
     const char *description;
 } test_case_t;
 
 // Test cases covering all register types
 static test_case_t test_cases[] = {
     // Control register tests
-    {0xEF300, 0x15, false, "Write control register"},
-    {0xEF300, 0x00, true,  "Read control register"},
+    {0xEF300, 0x15, FIFO_WRITE_VALUE,    "Write control register"},
+    {0xEF300, 0x00, FIFO_PREFETCH_ADDRESS, "Read control register"},
     
     // Data register tests  
-    {0xEF310, 0x55, false, "Write data register"},
-    {0xEF310, 0x00, true,  "Read data register"},
+    {0xEF310, 0x55, FIFO_WRITE_VALUE,    "Write data register"},
+    {0xEF310, 0x00, FIFO_PREFETCH_ADDRESS, "Read data register"},
     
     // Status register tests
-    {0xEF320, 0x00, true,  "Read status register"},
+    {0xEF320, 0x00, FIFO_PREFETCH_ADDRESS, "Read status register"},
     
     // Address register tests (most common)
-    {0xEF380, 0x00, false, "Write DMA addr low"},
-    {0xEF380, 0x00, true,  "Read DMA addr low"},
-    {0xEF3A0, 0x50, false, "Write DMA addr mid"},
-    {0xEF3A0, 0x00, true,  "Read DMA addr mid"},
-    {0xEF3C0, 0x0F, false, "Write DMA addr high"},
-    {0xEF3C0, 0x00, true,  "Read DMA addr high"},
+    {0xEF380, 0x00, FIFO_WRITE_VALUE,    "Write DMA addr low"},
+    {0xEF380, 0x00, FIFO_PREFETCH_ADDRESS, "Read DMA addr low"},
+    {0xEF3A0, 0x50, FIFO_WRITE_VALUE,    "Write DMA addr mid"},
+    {0xEF3A0, 0x00, FIFO_PREFETCH_ADDRESS, "Read DMA addr mid"},
+    {0xEF3C0, 0x0F, FIFO_WRITE_VALUE,    "Write DMA addr high"},
+    {0xEF3C0, 0x00, FIFO_PREFETCH_ADDRESS, "Read DMA addr high"},
 };
 
 // Simulate PIO FIFO access
@@ -75,9 +75,20 @@ typedef void (*irq_handler_t)(void);
 
 static void benchmark_handler(irq_handler_t handler, const char *name, test_case_t *test) {
     // Prepare simulated FIFO value
-    simulated_fifo_value = test->address | 
-                          (test->data << 20) | 
-                          (test->is_read ? 0x10000000 : 0);
+    switch (test->payload_type) {
+        case FIFO_PREFETCH_ADDRESS:
+            simulated_fifo_value = dma_fifo_encode_prefetch(test->address);
+            break;
+        case FIFO_READ_COMMIT:
+            simulated_fifo_value = dma_fifo_encode_commit(test->address);
+            break;
+        case FIFO_WRITE_VALUE:
+            simulated_fifo_value = dma_fifo_encode_write(test->address, test->data);
+            break;
+        default:
+            simulated_fifo_value = 0;
+            break;
+    }
     
     // Configure SysTick for measurement
     systick_hw->csr = 0x5; // Enable, use processor clock

@@ -50,6 +50,48 @@
 #define FIFO_PREFETCH_ADDRESS 0x00
 #define FIFO_READ_COMMIT 0x01
 #define FIFO_WRITE_VALUE 0x02
+#define FIFO_UNUSED 0x03
+
+static inline uint32_t dma_fifo_payload_type(uint32_t raw_value) {
+    return (raw_value >> 30) & 0x03u;
+}
+
+static inline uint32_t dma_fifo_prefetch_address(uint32_t raw_value) {
+    return (raw_value >> 10) & 0xFFFFFu;
+}
+
+static inline uint32_t dma_fifo_commit_address(uint32_t raw_value) {
+    return (raw_value >> 10) & 0xFFFFFu;
+}
+
+static inline uint32_t dma_fifo_write_address(uint32_t raw_value) {
+    return (raw_value >> 2) & 0xFFFFFu;
+}
+
+static inline uint8_t dma_fifo_write_data(uint32_t raw_value) {
+    return (raw_value >> 22) & 0xFFu;
+}
+
+static inline uint32_t dma_mask_offset(uint32_t offset) {
+    if (offset >= 0x80) {
+        return offset & ~0x1Fu;
+    }
+    return offset & ~0x0Fu;
+}
+
+static inline uint32_t dma_fifo_encode_prefetch(uint32_t address) {
+    return ((address & 0xFFFFFu) << 10) | ((uint32_t)FIFO_PREFETCH_ADDRESS << 30);
+}
+
+static inline uint32_t dma_fifo_encode_commit(uint32_t address) {
+    return ((address & 0xFFFFFu) << 10) | ((uint32_t)FIFO_READ_COMMIT << 30);
+}
+
+static inline uint32_t dma_fifo_encode_write(uint32_t address, uint8_t data) {
+    return ((address & 0xFFFFFu) << 2) |
+           (((uint32_t)data & 0xFFu) << 22) |
+           ((uint32_t)FIFO_WRITE_VALUE << 30);
+}
 
 
 // DMA operations use a TWO-WORD FIFO protocol (see dma_read_write.pio for details):
