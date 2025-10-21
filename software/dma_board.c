@@ -36,7 +36,8 @@ void initialize_uart() {
 
  int main() {
 
-    stdio_init_all();
+    // DO NOT call stdio_init_all() - it claims GPIO0/1 for UART which conflicts with BD0/BD1
+    // We manually initialize UART on pin 46 instead
 
     set_sys_clock_khz(200000, true);
 
@@ -170,6 +171,9 @@ void initialize_uart() {
                     pio_sm_get_tx_fifo_level(register_pio, register_sm),
                     pio_sm_get_pc(register_pio, register_sm),
                     pio_sm_is_exec_stalled(register_pio, register_sm));
+            bool dma_enabled = !!(PIO_DMA->ctrl & (1u << (PIO_CTRL_SM_ENABLE_LSB + dma_sm)));
+            printf("DMA SM enabled? %d\n", dma_enabled);
+
         }
     
         tight_loop_contents();

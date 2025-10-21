@@ -79,6 +79,9 @@ defer_queue_t* defer_get_queue(void);
 // Get the cached registers instance
 cached_registers_t* defer_get_cached_registers(void);
 
+// Flush FIFO tag trace buffer to logs (debug helper)
+void dma_fifo_trace_flush(void);
+
 // Update cached register value
 static inline void defer_update_cached(cached_registers_t *cached, uint32_t offset, uint8_t value) {
     cached->values[offset & 0xFF] = value;

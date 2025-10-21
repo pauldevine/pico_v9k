@@ -305,6 +305,9 @@ void defer_worker_main(void) {
             defer_process_entry(dma, &entry);
         }
 
+        // Emit recorded FIFO tag trace entries for debugging
+        dma_fifo_trace_flush();
+
         // Small delay to avoid burning CPU when queue is empty
         // This is a balance between latency and CPU usage
         busy_wait_us(1);

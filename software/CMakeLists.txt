@@ -26,6 +26,9 @@ endif()
 set(PICO_BOARD pimoroni_pga2350 CACHE STRING "Board type")
 set(PICO_PLATFORM "rp2350-arm-s")
 set(PICO_NUM_GPIOS 48)
+set(PICO_DEFAULT_UART_RX_PIN 45)
+set(PICO_DEFAULT_UART_TX_PIN 46)
+
 
 # Pull in Raspberry Pi Pico SDK (must be before project)
 include(pico_sdk_import.cmake)
@@ -58,7 +61,7 @@ pico_generate_pio_header(dma_board ${CMAKE_CURRENT_LIST_DIR}/pico_victor/board_r
 pico_generate_pio_header(dma_board ${CMAKE_CURRENT_LIST_DIR}/pico_victor/dma_read_write.pio)
 
 # Modify the below lines to enable/disable output over UART/USB
-pico_enable_stdio_uart(dma_board 1)
+pico_enable_stdio_uart(dma_board 0)
 pico_enable_stdio_usb(dma_board 0)
 
 # Add the standard library to the build
@@ -108,7 +111,7 @@ pico_set_binary_type(dma_board_cached default)
 pico_generate_pio_header(dma_board_cached ${CMAKE_CURRENT_LIST_DIR}/pico_victor/board_registers.pio)
 pico_generate_pio_header(dma_board_cached ${CMAKE_CURRENT_LIST_DIR}/pico_victor/dma_read_write.pio)
 
-pico_enable_stdio_uart(dma_board_cached 1)
+pico_enable_stdio_uart(dma_board_cached 0)
 pico_enable_stdio_usb(dma_board_cached 0)
 
 target_include_directories(dma_board_cached PRIVATE
@@ -119,6 +122,7 @@ target_include_directories(dma_board_cached PRIVATE
 
 target_link_libraries(dma_board_cached
         pico_stdlib
+        pico_stdio_uart
         pico_multicore
         pico_util
         hardware_pio
@@ -141,7 +145,7 @@ target_compile_definitions(dma_board_tests PRIVATE UNIT_TEST=1)
 pico_set_program_name(dma_board_tests "dma_board_tests")
 pico_set_program_version(dma_board_tests "0.1")
 
-pico_enable_stdio_uart(dma_board_tests 1)
+pico_enable_stdio_uart(dma_board_tests 0)
 pico_enable_stdio_usb(dma_board_tests 0)
 
 target_include_directories(dma_board_tests PRIVATE
@@ -174,7 +178,7 @@ target_compile_definitions(benchmark_irq PRIVATE BENCHMARK_MODE=1)
 pico_set_program_name(benchmark_irq "benchmark_irq")
 pico_set_program_version(benchmark_irq "0.1")
 
-pico_enable_stdio_uart(benchmark_irq 1)
+pico_enable_stdio_uart(benchmark_irq 0)
 pico_enable_stdio_usb(benchmark_irq 0)
 
 target_include_directories(benchmark_irq PRIVATE

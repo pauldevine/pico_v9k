@@ -1,0 +1,491 @@
+Debug queue enabled (size=256)
+
+=== DMA Board Initialization ===
+Sleeping for 5 seconds
+Awake!
+pio_set_gpio_base outcome: 0 PICO_PIO_USE_GPIO_BASE 1
+starting to configure dma_registers_program_init
+Config execctrl before init: 0x1401a200 pinhi:0xfe107fe0 pinctrl:0x00800000
+pio_sm_init rc=0, SM0 execctrl after init=0x1401a200
+finished configuring dma_registers_program_init
+HOLD_PIN Pin 25 func: 31, dir: 0
+RD_PIN Pin 20 func: 7, dir: 0
+WR_PIN Pin 21 func: 7, dir: 0
+SM0 EXECCTRL=0x1401a200, JMP_PIN=20
+Setting up CACHED IRQ for PIO1 SM0
+: 1345323008 register_sm: 0 dma_registers_program_offset: 2 pin: 0
+FIFO source: 0
+about to iniitialize dma_registers with offfset EF3 
+Initializing cached/deferred processing system...
+back to main loop
+HOLD_PIN=25
+DMA registers initialized in time_critical section
+Pin 25 func: 31, dir: 0
+Pre-warming IRQ handler cache...
+Configuring PIO for DMA READ/WRITE operations (single SM)
+starting to configure dma_read_write_program_init
+Cache pre-warming complete (70 handler calls)
+setting out pin mapping to 0, count 20
+
+PIO check: FIFO RX level=0, TX level=0, PC=0x7, stalled=0
+setting set pin mapping to 20, count 5
+Core1 started with CACHED handler, PIO: 1345323008 SM: 0
+setting sideset pin mapping to 25, count 2
+Testing IRQ setup... FIFO level: 0
+Configuring in/out pins for read/write mode
+Starting deferred processing worker on Core1...
+SM0 PINCTRL = 0x75406680
+  SIDESET_COUNT = 3
+  SET_COUNT = 5
+  OUT_COUNT = 20
+  IN_BASE = 0
+  SIDESET_BASE = 25
+  SET_BASE = 20
+  OUT_BASE = 0
+SM0 EXECCTRL = 0x6001c000
+  SIDE_EN = 1
+  SIDE_PINDIR = 1
+finished configuring dma_controller_program_init
+pio: 1344274432 dma_sm: 0 dma_read_write_program_offset: 0 pin: 0
+PIO state: enabled=1, stalled=0, PC=0x8
+DMA device reset
+waiting for DMA register access...
+FIFO WARN: Commit without prefetch raw=0x41efbcff
+
+PIO check: FIFO RX level=0, TX level=0, PC=0x7, stalled=0
+DEFER: Worker starting on Core 1
+RAW=0x41efbcff
+DEFER_READ: out of range offset=0xfff188ef
+FIFO TRACE tag=1 before=0 after=0 flags=0x01 data=0x00 raw=0x41efbcff
+......................................DEFER: Write CONTROL = 0x00
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc0000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x00 raw=0x803bcc00
+..DEFER: Write CONTROL = 0x08
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc0000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x08 raw=0x823bcc00
+..DEFER: Write CONTROL = 0x10
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x08 raw=0x3bcc0000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x10 raw=0x843bcc00
+...DMA device reset
+DEFER: Write CONTROL = 0x20
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x10 raw=0x3bcc0000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x20 raw=0x883bcc00
+..DEFER: Write CONTROL = 0x40
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x20 raw=0x3bcc0000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x40 raw=0x903bcc00
+..DEFER: Write CONTROL = 0x15
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x40 raw=0x3bcc0000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x15 raw=0x857bcc00
+...DMA device reset
+DEFER: Write CONTROL = 0xff
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x15 raw=0x3bcc0000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0xff raw=0xbffbcc00
+...DEFER: Write DATA = 0x00
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0xff raw=0x3bcc4000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x00 raw=0x803bcc40
+.RAW=0x7bcc4000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc4000
+DEFER_READ: offset=0x10 end_status 0 (processed side effects, cache already returned)
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc4000
+DEFER: Write DATA = 0x55
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc4000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x55 raw=0x957bcc40
+..RAW=0x7bcc4000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x55 raw=0x3bcc4000
+DEFER_READ: offset=0x10 end_status 0 (processed side effects, cache already returned)
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc4000
+.DEFER: Write DATA = 0xaa
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x55 raw=0x3bcc4000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0xaa raw=0xaabbcc40
+.RAW=0x7bcc4000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0xaa raw=0x3bcc4000
+DEFER_READ: offset=0x10 end_status 0 (processed side effects, cache already returned)
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc4000
+.DEFER: Write DATA = 0xff
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0xaa raw=0x3bcc4000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0xff raw=0xbffbcc40
+..RAW=0x7bcc4000
+DEFER_READ: offset=0x10 end_status 0 (processed side effects, cache already returned)
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0xff raw=0x3bcc4000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc4000
+DEFER: Write DATA = 0x01
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0xff raw=0x3bcc4000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x01 raw=0x807bcc40
+..RAW=0x7bcc4000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x01 raw=0x3bcc4000
+DEFER_READ: offset=0x10 end_status 0 (processed side effects, cache already returned)
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc4000
+.DEFER: Write DATA = 0x80
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x01 raw=0x3bcc4000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x80 raw=0xa03bcc40
+.RAW=0x7bcc4000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x80 raw=0x3bcc4000
+DEFER_READ: offset=0x10 end_status 0 (processed side effects, cache already returned)
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc4000
+..RAW=0x7bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc8000
+.RAW=0x7bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc8000
+..RAW=0x7bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc8000
+..RAW=0x7bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc8000
+...RAW=0x7bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc8000
+....DEFER: Write ADDR_L = 0x55
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bce0000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x55 raw=0x957bce00
+RAW=0x7bce0000
+DEFER_READ: offset=0x80 (no action, cache already returned)
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x55 raw=0x3bce0000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bce0000
+.DEFER: Write ADDR_L = 0xaa
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x55 raw=0x3bce0000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0xaa raw=0xaabbce00
+..RAW=0x7bce0000
+DEFER_READ: offset=0x80 (no action, cache already returned)
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0xaa raw=0x3bce0000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bce0000
+DEFER: Write ADDR_M = 0x55
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bce8000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x55 raw=0x957bce80
+..RAW=0x7bce8000
+DEFER_READ: offset=0xa0 (no action, cache already returned)
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x55 raw=0x3bce8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bce8000
+DEFER: Write ADDR_M = 0xaa
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x55 raw=0x3bce8000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0xaa raw=0xaabbce80
+..RAW=0x7bce8000
+DEFER_READ: offset=0xa0 (no action, cache already returned)
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0xaa raw=0x3bce8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bce8000
+.DEFER: Write ADDR_H = 0x05
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcf0000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x05 raw=0x817bcf00
+..RAW=0x7bcf0000
+DEFER_READ: offset=0xc0 (no action, cache already returned)
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x05 raw=0x3bcf0000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcf0000
+DEFER: Write ADDR_H = 0x0a
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x05 raw=0x3bcf0000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x0a raw=0x82bbcf00
+..RAW=0x7bcf0000
+DEFER_READ: offset=0xc0 (no action, cache already returned)
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x0a raw=0x3bcf0000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcf0000
+.DEFER: Write ADDR_L = 0x00
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0xaa raw=0x3bce0000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x00 raw=0x803bce00
+DEFER: Write ADDR_M = 0x00
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0xaa raw=0x3bce8000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x00 raw=0x803bce80
+DEFER: Write ADDR_H = 0x00
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x0a raw=0x3bcf0000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x00 raw=0x803bcf00
+.RAW=0x7bce0000
+DEFER_READ: offset=0x80 (no action, cache already returned)
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bce0000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bce0000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bce8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bce8000
+RAW=0x7bce8000
+DEFER_READ: offset=0xa0 (no action, cache already returned)
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcf0000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcf0000
+RAW=0x7bcf0000
+DEFER_READ: offset=0xc0 (no action, cache already returned)
+..RAW=0x7bce0000
+DEFER_READ: offset=0x80 (no action, cache already returned)
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bce0000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bce0000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bce8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bce8000
+RAW=0x7bce8000
+DEFER_READ: offset=0xa0 (no action, cache already returned)
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcf0000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcf0000
+RAW=0x7bcf0000
+DEFER_READ: offset=0xc0 (no action, cache already returned)
+.DEFER: Write ADDR_L = 0x34
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bce0000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x34 raw=0x8d3bce00
+DEFER: Write ADDR_M = 0x12
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bce8000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x12 raw=0x84bbce80
+DEFER: Write ADDR_H = 0x00
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcf0000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x00 raw=0x803bcf00
+.RAW=0x7bce0000
+DEFER_READ: offset=0x80 (no action, cache already returned)
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x34 raw=0x3bce0000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bce0000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x12 raw=0x3bce8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bce8000
+RAW=0x7bce8000
+DEFER_READ: offset=0xa0 (no action, cache already returned)
+RAW=0x7bcf0000
+DEFER_READ: offset=0xc0 (no action, cache already returned)
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcf0000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcf0000
+.
+PIO check: FIFO RX level=0, TX level=0, PC=0x8, stalled=0
+.RAW=0x7bce0000
+DEFER_READ: offset=0x80 (no action, cache already returned)
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x34 raw=0x3bce0000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bce0000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x12 raw=0x3bce8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bce8000
+RAW=0x7bce8000
+DEFER_READ: offset=0xa0 (no action, cache already returned)
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcf0000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcf0000
+RAW=0x7bcf0000
+DEFER_READ: offset=0xc0 (no action, cache already returned)
+...DEFER: Write ADDR_L = 0x00
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x34 raw=0x3bce0000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x00 raw=0x803bce00
+DEFER: Write ADDR_M = 0x00
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x12 raw=0x3bce8000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x00 raw=0x803bce80
+DEFER: Write ADDR_H = 0x0a
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcf0000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x0a raw=0x82bbcf00
+..RAW=0x7bce0000
+DEFER_READ: offset=0x80 (no action, cache already returned)
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bce0000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bce0000
+RAW=0x7bce8000
+DEFER_READ: offset=0xa0 (no action, cache already returned)
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bce8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bce8000
+RAW=0x7bcf0000
+DEFER_READ: offset=0xc0 (no action, cache already returned)
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x0a raw=0x3bcf0000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcf0000
+..RAW=0x7bce0000
+DEFER_READ: offset=0x80 (no action, cache already returned)
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bce0000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bce0000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bce8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bce8000
+RAW=0x7bce8000
+DEFER_READ: offset=0xa0 (no action, cache already returned)
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x0a raw=0x3bcf0000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcf0000
+RAW=0x7bcf0000
+DEFER_READ: offset=0xc0 (no action, cache already returned)
+.DEFER: Write ADDR_L = 0xff
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bce0000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0xff raw=0xbffbce00
+DEFER: Write ADDR_M = 0xff
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bce8000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0xff raw=0xbffbce80
+DEFER: Write ADDR_H = 0x0f
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x0a raw=0x3bcf0000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x0f raw=0x83fbcf00
+.RAW=0x7bce0000
+DEFER_READ: offset=0x80 (no action, cache already returned)
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0xff raw=0x3bce0000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bce0000
+RAW=0x7bce8000
+DEFER_READ: offset=0xa0 (no action, cache already returned)
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0xff raw=0x3bce8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bce8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x0f raw=0x3bcf0000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcf0000
+RAW=0x7bcf0000
+DEFER_READ: offset=0xc0 (no action, cache already returned)
+..RAW=0x7bce0000
+DEFER_READ: offset=0x80 (no action, cache already returned)
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0xff raw=0x3bce0000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bce0000
+RAW=0x7bce8000
+DEFER_READ: offset=0xa0 (no action, cache already returned)
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0xff raw=0x3bce8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bce8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x0f raw=0x3bcf0000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcf0000
+RAW=0x7bcf0000
+DEFER_READ: offset=0xc0 (no action, cache already returned)
+....RAW=0x7bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc8000
+RAW=0x7bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc8000
+RAW=0x7bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc8000
+RAW=0x7bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc8000
+RAW=0x7bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc8000
+RAW=0x7bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc8000
+RAW=0x7bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc8000
+RAW=0x7bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc8000
+RAW=0x7bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc8000
+RAW=0x7bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc8000
+RAW=0x7bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+RAW=0x7bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+RAW=0x7bcc8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+RAW=0x7bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+RAW=0x7bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+DEFER_STATS: processed=1073, drops=0, queue_level=0
+RAW=0x7bcc8000
+RAW=0x7bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc8000
+RAW=0x7bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc8000
+RAW=0x7bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc8000
+RAW=0x7bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc8000
+RAW=0x7bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc8000
+RAW=0x7bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc8000
+RAW=0x7bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc8000
+RAW=0x7bcc8000
+RAW=0x7bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc8000
+RAW=0x7bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc8000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc8000
+FIFO TRACE tag=1 before=1 after=0 flags=0x00 data=0x00 raw=0x7bcc8000
+DEFER_STATS: processed=1174, drops=0, queue_level=0
+.DEFER: Write DATA = 0x00
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x80 raw=0x3bcc4000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x00 raw=0x803bcc40
+DEFER: Write DATA = 0x01
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcc4000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x01 raw=0x807bcc40
+DEFER: Write DATA = 0x02
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x01 raw=0x3bcc4000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x02 raw=0x80bbcc40
+DEFER: Write DATA = 0x03
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x02 raw=0x3bcc4000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x03 raw=0x80fbcc40
+DEFER: Write DATA = 0x04
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x03 raw=0x3bcc4000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x04 raw=0x813bcc40
+DEFER: Write DATA = 0x05
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x04 raw=0x3bcc4000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x05 raw=0x817bcc40
+DEFER: Write DATA = 0x06
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x05 raw=0x3bcc4000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x06 raw=0x81bbcc40
+DEFER: Write DATA = 0x07
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x06 raw=0x3bcc4000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x07 raw=0x81fbcc40
+DEFER: Write DATA = 0x08
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x07 raw=0x3bcc4000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x08 raw=0x823bcc40
+DEFER: Write DATA = 0x09
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x08 raw=0x3bcc4000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x09 raw=0x827bcc40
+DEFER: Write DATA = 0x0a
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x09 raw=0x3bcc4000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x0a raw=0x82bbcc40
+DEFER: Write DATA = 0x1c
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x67 raw=0x3bcc4000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0xb2 raw=0x3bcc4000
+DEFER: Write DATA = 0xcf
+DEFER_STATS: processed=1430, drops=0, queue_level=0
+DEFER: Write ADDR_L = 0x00
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0xff raw=0x3bce0000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x00 raw=0x803bce00
+DEFER: Write ADDR_M = 0x00
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0xff raw=0x3bce8000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x00 raw=0x803bce80
+DEFER: Write ADDR_H = 0x00
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x0f raw=0x3bcf0000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x00 raw=0x803bcf00
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bce0000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x01 raw=0x807bce00
+DEFER: Write ADDR_L = 0x01
+DEFER: Write ADDR_M = 0x00
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bce8000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x00 raw=0x803bce80
+DEFER: Write ADDR_H = 0x00
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcf0000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x00 raw=0x803bcf00
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x01 raw=0x3bce0000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x02 raw=0x80bbce00
+DEFER: Write ADDR_L = 0x02
+DEFER: Write ADDR_M = 0x01
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bce8000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x01 raw=0x807bce80
+DEFER: Write ADDR_H = 0x00
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x00 raw=0x3bcf0000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x00 raw=0x803bcf00
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x02 raw=0x3bce0000
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x02 raw=0x80bbcf00
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x08 raw=0x3bcf0000
+FIFO TRACE tag=0 before=0 after=1 flags=0x00 data=0x0f raw=0x3bcf0000
+DEFER: Write ADDR_H = 0x02
+FIFO TRACE tag=2 before=1 after=0 flags=0x02 data=0x07 raw=0x85fbcf00
+DEFER_STATS: processed=1730, drops=0, queue_level=0
+.............................
+---- Closed serial port /dev/tty.usbmodem102 due to disconnection from the machine ----
+
