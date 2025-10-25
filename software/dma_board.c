@@ -16,7 +16,7 @@
 
 #define UART_ID uart0
 #define BAUD_RATE 115200
-#define UART_TX_PIN 46
+#define UART_TX_PIN 0
 #define UART_RX_PIN 45
 
 extern queue_t log_queue;
@@ -47,25 +47,6 @@ static void free_up_pin(uint pin) {
 
 void initialize_uart() {
     // Initialize UART for TX only
-
-    //capture initial GPIO_0 state for debug
-    uint32_t status = io_bank0_hw->io[BD0_PIN].status;
-    bool oe = status & IO_BANK0_GPIO0_STATUS_OETOPAD_BITS;
-    bool out_level = status & IO_BANK0_GPIO0_STATUS_OUTTOPAD_BITS;
-    bool pad_level = status & IO_BANK0_GPIO0_STATUS_INFROMPAD_BITS;
-    
-
-    gpio_function_t func = gpio_get_function(BD0_PIN);
-    bool pull_up = gpio_is_pulled_up(BD0_PIN);
-    bool pull_down = gpio_is_pulled_down(BD0_PIN);
-    const char *pull_desc = (!pull_up && !pull_down) ? "off" :
-                            (pull_up && !pull_down) ? "pull-up" :
-                            (!pull_up && pull_down) ? "pull-down" :
-                                                        "both";
-
-    stdio_uart_deinit();                            // removes stdio driver if linked
-    uart_deinit(uart0); uart_deinit(uart1);         // belt and suspenders
-    gpio_disable_pulls(0); gpio_disable_pulls(1);   // clear GP0/1 pulls explicitly
     gpio_init(UART_TX_PIN);
     gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
     
@@ -74,63 +55,14 @@ void initialize_uart() {
     uart_set_fifo_enabled(UART_ID, false);
     stdio_uart_init_full(UART_ID, BAUD_RATE, UART_TX_PIN, -1);
 
-    debug_dump_pin(BD0_PIN);
-
-    //clear GPIO0 to avoid conflicts, default stdio_init_all() uses GPIO0/1 for UART
-    //GPIO0 is TX, we just want to clear it, no issue with RX pin
-    printf("Initialize_uart(): SIO oe=0x%08lx\n", (unsigned long)sio_hw->gpio_oe);
-
-    printf("Initial GPIO%u state: OE=%d OUT=%d PAD=%d ",
-               BD0_PIN,
-               oe ? 1 : 0,
-               out_level ? 1 : 0,
-               pad_level ? 1 : 0);
-    printf("function=%u, pulls=%s\n\n",
-               func,
-               pull_desc);
-
-    gpio_init(BD0_PIN);
-    gpio_set_function(BD0_PIN, GPIO_FUNC_SIO);
-    gpio_set_dir(BD0_PIN, GPIO_OUT);
-    gpio_put(BD0_PIN, 0);
-    sleep_ms(2);
-    gpio_put(BD0_PIN, 1);
-    sleep_ms(2);
-    gpio_put(BD0_PIN, 0);
-    sleep_ms(2);
-    pio_debug_state();
-    gpio_set_dir(BD0_PIN, GPIO_IN);
-
-    gpio_set_function(BD0_PIN, GPIO_FUNC_NULL);     // detach from all peripherals
-    gpio_disable_pulls(BD0_PIN);                    // no internal bias (PUE/PDE = 0)
-    gpio_set_input_enabled(BD0_PIN, false);         // turn off the input buffer (IE = 0)
-    gpio_set_oeover(BD0_PIN, GPIO_OVERRIDE_LOW);    // force OE=0 regardless of SIO/peripherals
-    gpio_set_inover(BD0_PIN, GPIO_OVERRIDE_LOW);    // force the *reported* input low too
-    
-    gpio_pull_down(BD0_PIN);
-    gpio_set_function(BD0_PIN, GPIO_FUNC_NULL);
-    printf("Initialize_uart(): SIO oe=0x%08lx\n", (unsigned long)sio_hw->gpio_oe);
-
-    pio_debug_state();
-    debug_dump_pin(BD0_PIN);
-
-    free_up_pin(BD0_PIN);
-
-    pio_debug_state();
-    debug_dump_pin(BD0_PIN);
-
     return;
 }
 
 
 
  int main() {
-
-    // DO NOT call stdio_init_all() - it claims GPIO0/1 for UART which conflicts with BD0/BD1
-    // We manually initialize UART on pin 46 instead
-
     set_sys_clock_khz(200000, true);
-
+    stdio_init_all();
     initialize_uart();    
 
     queue_init(&log_queue, sizeof(char[256]), 32); // 32 message buffer
@@ -142,13 +74,13 @@ void initialize_uart() {
     debug_queue_enable(true);
 
     int ch=0;
-    uint32_t millis_per_second = 1000000;
-    uint32_t seconds = 5;
+    uint32_t millis_per_second = 1000;
+    uint32_t seconds = 3;
     uint32_t timeout = seconds * millis_per_second;
 
     printf("\n=== DMA Board Initialization ===\n");
     printf("Sleeping for %d seconds\n", seconds);
-    //sleep_ms(timeout);
+    sleep_ms(timeout);
     printf("Awake!\n");
 
     // Initialize SPI bus for FujiNet storage

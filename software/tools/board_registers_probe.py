@@ -8,11 +8,11 @@ Utility script intended to run on a Raspberry Pi to exercise the Pico
 write and read bus cycles so you can single-step through the PIO wait points.
 
 Hardware wiring (BCM numbering on the Pi):
-    5, 6, 13, 19  -> Pico GPIO 0, 1, 2, 3  (shared data bus, bit 0 first)
-    16            -> Pico GPIO 23 (ALE / sample trigger, active high)
-    20            -> Pico GPIO 20 (RD#, drive trigger, active low)
-    26            -> Pico GPIO 29 (CLOCK_5, idle high, pulse low to start T0)
-    12            -> Pico GPIO 27 (READY, hold low to pause, high to release)
+    5, 6, 13, 19  -> Pico GPIO 1, 2, 3, 4  (shared data bus, bit 0 first)
+    16            -> Pico GPIO 24 (ALE / sample trigger, active high)
+    20            -> Pico GPIO 21 (RD#, drive trigger, active low)
+    26            -> Pico GPIO 30 (CLOCK_5, idle high, pulse low to start T0)
+    12            -> Pico GPIO 28 (READY, hold low to pause, high to release)
 
 Only the lower four data lines (BD0-BD3) are driven/sampled; the Pico will see
 zero on the upper bits.  Write cycles alternate between the nibbles 0xA and 0x5.

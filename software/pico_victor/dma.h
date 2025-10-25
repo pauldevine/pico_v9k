@@ -9,7 +9,7 @@
 #define PIO_DMA pio0
 #define PIO_REGISTERS pio1
 
-#define ADDR_START_PIN 0 // DMA address output
+#define ADDR_START_PIN 1 // DMA address output
 #define LOWER_PIN_BASE 0
 #define UPPER_PIN_BASE 16
 #define DATA_SIZE 8
@@ -19,28 +19,28 @@
 #define ADDRESS_DATA_CONBIT_SIZE 29  // 20-bit address, 8-bit data, 1-bit control
 #define PIO_FULL_SIZE 32
 
-#define BD0_PIN 0
-#define RD_PIN 20
-#define WR_PIN 21
-#define DTR_PIN 22       
-#define ALE_PIN 23      
-#define DEN_PIN 24 
-#define HOLD_PIN 25  
-#define IO_M_PIN 26
-#define READY_PIN 27
-#define HLDA_PIN 28
-#define CLOCK_5_PIN 29
-#define CLOCK_15B_PIN 30
-#define IR_4_PIN 31
-#define XACK_PIN 32
-#define EXTIO_PIN 33
-#define IR_5_PIN 34
-#define SSO_PIN 35
-#define DLATCH_PIN 36
-#define CSEN_PIN 37
-#define PHASE_2_PIN 38
+#define BD0_PIN 1
+#define RD_PIN 21
+#define WR_PIN 22
+#define DTR_PIN 23       
+#define ALE_PIN 24      
+#define DEN_PIN 25 
+#define HOLD_PIN 26  
+#define IO_M_PIN 27
+#define READY_PIN 28
+#define HLDA_PIN 29
+#define CLOCK_5_PIN 30
+#define CLOCK_15B_PIN 31
+#define IR_4_PIN 32
+#define XACK_PIN 33
+#define EXTIO_PIN 34
+#define IR_5_PIN 35
+#define SSO_PIN 36
+#define DLATCH_PIN 37
+#define CSEN_PIN 38
+#define PHASE_2_PIN 39
 
-#define DEBUG_PIN 44
+#define DEBUG_PIN 45
 
 #define ADDRESS_DIR_PINCNT 2
 #define DMA_READ 1

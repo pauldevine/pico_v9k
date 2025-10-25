@@ -32,12 +32,12 @@ T0:
     
 T1:   
     wait 0 GPIO ALE_PIN side 0              ; wait for ALE to go low = T0 start & wait for address to stabilize
-    wait 1 GPIO ALE_PIN [11] side 0              ; wait for ALE to go high = T1 start & wait for address to stabilize
-    in pins, ADDRESS_BUS_SIZE side 0         ; shift 12 bits of address into ISR
+    wait 1 GPIO ALE_PIN [9] side 0              ; wait for ALE to go high = T1 start & wait for address to stabilize
+    in pins, ADDRESS_BUS_SIZE side 1         ; shift 12 bits of address into ISR
     mov osr, isr side 0                      ; use OSR to store full 20-bit address for later
     in null, 20 side 0                       ; move the address into the lower 12 bits of the register, dropping 8 LSB to compare against 12 MSB
     mov x, isr side 0                        ; X = 12 MSB address bits
-    jmp x!=y, T0 side 0                      ; if we're not at 0xEF300, restart T0 to try again
+    jmp x!=y, T0 side 1                      ; if we're not at 0xEF300, restart T0 to try again
     mov isr, osr side 0                      ; restore full 20-bit address into ISR
     set x, FIFO_PREFETCH_ADDRESS side 0      ; signal to arm prefetch address payload
     in x, 2 side 0                           ; move the prefetch flag into ISR as MSBs // ISR has 00[address]
@@ -90,45 +90,44 @@ static inline void dma_registers_program_init(PIO pio, uint sm, uint offset) {
         pio_sm_set_pins_with_mask(pio, sm, 0u, 1u << pin); // preload latch low
        // printf("pio_gpio_init %d\n", pin);
     }
-   pio_sm_set_consecutive_pindirs(pio, sm, BD0_PIN, REG_PIN_LAST + 1, false);  
-   
-   sm_config_set_in_pins(&c, BD0_PIN);
-   sm_config_set_in_pin_count(&c, ADDRESS_BUS_SIZE);
-   sm_config_set_out_pins(&c, BD0_PIN, DATA_SIZE);
-   sm_config_set_jmp_pin(&c, RD_PIN); // RD pin is the pin we check for write vs read cycle
+    pio_sm_set_consecutive_pindirs(pio, sm, BD0_PIN, REG_PIN_LAST + 1, false);  
 
-   //TODO: REMOVE AFTER DEBUGGING
-    pio_gpio_init(pio, HOLD_PIN);
-    pio_sm_set_consecutive_pindirs(pio, sm, HOLD_PIN, 1, true);
-    sm_config_set_sideset_pins(&c, HOLD_PIN);
+    sm_config_set_in_pins(&c, BD0_PIN);
+    sm_config_set_in_pin_count(&c, ADDRESS_BUS_SIZE);
+    sm_config_set_out_pins(&c, BD0_PIN, DATA_SIZE);
+    sm_config_set_jmp_pin(&c, RD_PIN); // RD pin is the pin we check for write vs read cycle
+
+    //TODO: REMOVE AFTER DEBUGGING
+    pio_gpio_init(pio, DEBUG_PIN);
+    sm_config_set_sideset_pins(&c, DEBUG_PIN);
     sm_config_set_sideset(&c, 1, false, false);
-    
+    pio_sm_set_consecutive_pindirs(pio, sm, DEBUG_PIN, 1, true);
+    printf("DEBUG_PIN Pin %d func: %d, dir: %d\n", DEBUG_PIN, gpio_get_function(DEBUG_PIN), gpio_get_dir(DEBUG_PIN));
+   
+    sm_config_set_out_shift(&c, true, false, DATA_SIZE);
+    sm_config_set_in_shift(&c, true, false, ADDRESS_BUS_SIZE);
+    printf("Config execctrl before init: 0x%08x pinhi:0x%08x pinctrl:0x%08x\n",
+            (uint32_t)c.execctrl, (uint32_t)c.pinhi, (uint32_t)c.pinctrl);
+
+    sm_config_set_clkdiv(&c, 1.0f);  
+
+    pio_sm_clear_fifos(pio, sm);
+
+    // Load our configuration, and jump to the start of the program
+    int init_rc = pio_sm_init(pio, sm, offset, &c);
+    printf("pio_sm_init rc=%d, SM%d execctrl after init=0x%08x\n", init_rc, sm, pio->sm[sm].execctrl);
+    if (init_rc == PICO_OK) {
+        pio_sm_set_enabled(pio, sm, true);
+    } else {
+        printf("WARNING: pio_sm_init failed; SM%d not enabled\n", sm);
+    }
+
+    printf("finished configuring dma_registers_program_init\n");
     printf("HOLD_PIN Pin %d func: %d, dir: %d\n", HOLD_PIN, gpio_get_function(HOLD_PIN), gpio_get_dir(HOLD_PIN));
-   
-   sm_config_set_out_shift(&c, true, false, DATA_SIZE);
-   sm_config_set_in_shift(&c, true, false, ADDRESS_BUS_SIZE);
-   printf("Config execctrl before init: 0x%08x pinhi:0x%08x pinctrl:0x%08x\n",
-          (uint32_t)c.execctrl, (uint32_t)c.pinhi, (uint32_t)c.pinctrl);
-   
-   sm_config_set_clkdiv(&c, 1.0f);  
-   
-   pio_sm_clear_fifos(pio, sm);
+    printf("RD_PIN Pin %d func: %d, dir: %d\n", RD_PIN, gpio_get_function(RD_PIN), gpio_get_dir(RD_PIN));
+    printf("WR_PIN Pin %d func: %d, dir: %d\n", WR_PIN, gpio_get_function(WR_PIN), gpio_get_dir(WR_PIN));
 
-   // Load our configuration, and jump to the start of the program
-   int init_rc = pio_sm_init(pio, sm, offset, &c);
-   printf("pio_sm_init rc=%d, SM%d execctrl after init=0x%08x\n", init_rc, sm, pio->sm[sm].execctrl);
-   if (init_rc == PICO_OK) {
-       pio_sm_set_enabled(pio, sm, true);
-   } else {
-       printf("WARNING: pio_sm_init failed; SM%d not enabled\n", sm);
-   }
-
-   printf("finished configuring dma_registers_program_init\n");
-   printf("HOLD_PIN Pin %d func: %d, dir: %d\n", HOLD_PIN, gpio_get_function(HOLD_PIN), gpio_get_dir(HOLD_PIN));
-   printf("RD_PIN Pin %d func: %d, dir: %d\n", RD_PIN, gpio_get_function(RD_PIN), gpio_get_dir(RD_PIN));
-   printf("WR_PIN Pin %d func: %d, dir: %d\n", WR_PIN, gpio_get_function(WR_PIN), gpio_get_dir(WR_PIN));
-
-   pio_debug_state();
-   debug_dump_pin(BD0_PIN);
+    pio_debug_state();
+    debug_dump_pin(BD0_PIN);
 }
 %}
