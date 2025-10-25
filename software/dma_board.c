@@ -21,8 +21,51 @@
 
 extern queue_t log_queue;
 
+static void free_up_pin(uint pin) {
+    // Make SIO benign first (SIO.OUT=0, SIO.OE=0)
+    gpio_set_function(0, GPIO_FUNC_SIO); 
+    gpio_init(pin);
+    gpio_put(pin, 0);
+    gpio_set_dir(pin, false);             // input (OE=0 from SIO perspective)
+
+    // Detach from ALL peripherals
+    gpio_set_function(pin, GPIO_FUNC_NULL);
+
+    // No internal bias
+    gpio_disable_pulls(pin);              // PUE=0, PDE=0
+
+    // Make sure the input sampler can’t see anything (optional, but stops “PAD=1” noise)
+    gpio_set_input_enabled(pin, false);   // IE=0
+
+    // **Strong guarantees**: even if something accidentally sets SIO/func later,
+    // these overrides prevent the pad from ever driving and make reads come back 0
+    gpio_set_oeover(pin,  GPIO_OVERRIDE_LOW);   // force OE=0 (tri-state)
+    gpio_set_outover(pin, GPIO_OVERRIDE_NORMAL);
+    gpio_set_inover(pin,  GPIO_OVERRIDE_LOW);   // force sampled input = 0
+}
+
+
 void initialize_uart() {
     // Initialize UART for TX only
+
+    //capture initial GPIO_0 state for debug
+    uint32_t status = io_bank0_hw->io[BD0_PIN].status;
+    bool oe = status & IO_BANK0_GPIO0_STATUS_OETOPAD_BITS;
+    bool out_level = status & IO_BANK0_GPIO0_STATUS_OUTTOPAD_BITS;
+    bool pad_level = status & IO_BANK0_GPIO0_STATUS_INFROMPAD_BITS;
+    
+
+    gpio_function_t func = gpio_get_function(BD0_PIN);
+    bool pull_up = gpio_is_pulled_up(BD0_PIN);
+    bool pull_down = gpio_is_pulled_down(BD0_PIN);
+    const char *pull_desc = (!pull_up && !pull_down) ? "off" :
+                            (pull_up && !pull_down) ? "pull-up" :
+                            (!pull_up && pull_down) ? "pull-down" :
+                                                        "both";
+
+    stdio_uart_deinit();                            // removes stdio driver if linked
+    uart_deinit(uart0); uart_deinit(uart1);         // belt and suspenders
+    gpio_disable_pulls(0); gpio_disable_pulls(1);   // clear GP0/1 pulls explicitly
     gpio_init(UART_TX_PIN);
     gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
     
@@ -31,8 +74,55 @@ void initialize_uart() {
     uart_set_fifo_enabled(UART_ID, false);
     stdio_uart_init_full(UART_ID, BAUD_RATE, UART_TX_PIN, -1);
 
+    debug_dump_pin(BD0_PIN);
+
+    //clear GPIO0 to avoid conflicts, default stdio_init_all() uses GPIO0/1 for UART
+    //GPIO0 is TX, we just want to clear it, no issue with RX pin
+    printf("Initialize_uart(): SIO oe=0x%08lx\n", (unsigned long)sio_hw->gpio_oe);
+
+    printf("Initial GPIO%u state: OE=%d OUT=%d PAD=%d ",
+               BD0_PIN,
+               oe ? 1 : 0,
+               out_level ? 1 : 0,
+               pad_level ? 1 : 0);
+    printf("function=%u, pulls=%s\n\n",
+               func,
+               pull_desc);
+
+    gpio_init(BD0_PIN);
+    gpio_set_function(BD0_PIN, GPIO_FUNC_SIO);
+    gpio_set_dir(BD0_PIN, GPIO_OUT);
+    gpio_put(BD0_PIN, 0);
+    sleep_ms(2);
+    gpio_put(BD0_PIN, 1);
+    sleep_ms(2);
+    gpio_put(BD0_PIN, 0);
+    sleep_ms(2);
+    pio_debug_state();
+    gpio_set_dir(BD0_PIN, GPIO_IN);
+
+    gpio_set_function(BD0_PIN, GPIO_FUNC_NULL);     // detach from all peripherals
+    gpio_disable_pulls(BD0_PIN);                    // no internal bias (PUE/PDE = 0)
+    gpio_set_input_enabled(BD0_PIN, false);         // turn off the input buffer (IE = 0)
+    gpio_set_oeover(BD0_PIN, GPIO_OVERRIDE_LOW);    // force OE=0 regardless of SIO/peripherals
+    gpio_set_inover(BD0_PIN, GPIO_OVERRIDE_LOW);    // force the *reported* input low too
+    
+    gpio_pull_down(BD0_PIN);
+    gpio_set_function(BD0_PIN, GPIO_FUNC_NULL);
+    printf("Initialize_uart(): SIO oe=0x%08lx\n", (unsigned long)sio_hw->gpio_oe);
+
+    pio_debug_state();
+    debug_dump_pin(BD0_PIN);
+
+    free_up_pin(BD0_PIN);
+
+    pio_debug_state();
+    debug_dump_pin(BD0_PIN);
+
     return;
 }
+
+
 
  int main() {
 
@@ -117,17 +207,10 @@ void initialize_uart() {
     dma_set_unified_sm(dma_pio, dma_sm);
     // Keep DMA SM disabled until a DMA transfer is requested
     pio_sm_set_enabled(dma_pio, dma_sm, false);
+
     // After initializing the DMA PIO, return bus ownership to the register PIO (PIO1)
-    {
-        uint func = GPIO_FUNC_PIO0 + pio_get_index(PIO_REGISTERS);
-        for (int pin = BD0_PIN; pin <= IO_M_PIN; ++pin) {
-            gpio_set_function(pin, func);
-        }
-        for (int pin = READY_PIN; pin <= IR_4_PIN; ++pin) {
-            gpio_set_function(pin, func);
-            gpio_set_input_enabled(pin, true);
-        }
-    }
+    setup_pio_instance(PIO_REGISTERS, register_sm);
+
     printf("pio: %d dma_sm: %d dma_read_write_program_offset: %d pin: %d\n", dma_pio, dma_sm, dma_read_write_program_offset, BD0_PIN);
 
     // The unified dma_read_write state machine handles both read and write operations

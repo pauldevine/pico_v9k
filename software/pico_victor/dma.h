@@ -93,6 +93,27 @@ static inline uint32_t dma_fifo_encode_write(uint32_t address, uint8_t data) {
            ((uint32_t)FIFO_WRITE_VALUE << 30);
 }
 
+static void setup_pio_instance(PIO pio, int sm) {
+
+    for (int pin = BD0_PIN + 1; pin <= IR_4_PIN; ++pin) {
+        gpio_set_function(pin, GPIO_FUNC_SIO);       // briefly take ownership
+        
+        gpio_disable_pulls(pin);                     // clear PUE/PDE (kills bus-keep)
+        gpio_set_dir(pin, false);                    // input
+        gpio_put(pin, 0);                         // drive low
+        gpio_set_drive_strength(pin, GPIO_DRIVE_STRENGTH_12MA);
+        uint function = GPIO_FUNC_PIO0 + pio_get_index(pio);
+        gpio_set_function(pin, function);
+        pio_gpio_init(pio, pin);
+        gpio_pull_down(pin);
+        pio_sm_set_pins_with_mask(pio, sm, 0u, 1u << pin); // preload latch low
+        pio_sm_set_pindirs_with_mask(pio, sm, 0u, 1u << pin); // input
+
+        //printf("dma gpio_init %d  ", pin);
+        //printf("GPIO%d_CTRL = 0x%08x\n", pin, io_bank0_hw->io[pin].ctrl);
+    }
+}
+
 
 // DMA operations use a TWO-WORD FIFO protocol (see dma_read_write.pio for details):
 //
@@ -222,6 +243,8 @@ typedef enum {
     SASI_ACK_BIT = 0x40
 } sasi_status_bits_t;
 
+void debug_dump_pin(uint pin); 
+void pio_debug_state();
 void core1_main();
 void setup_bus_control();
 dma_registers_t* dma_get_registers();

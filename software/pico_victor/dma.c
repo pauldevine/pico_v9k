@@ -2,6 +2,8 @@
 #include "hardware/pio.h"
 #include "hardware/dma.h"
 #include "hardware/structs/systick.h"
+#include "hardware/structs/iobank0.h"
+#include "hardware/structs/padsbank0.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
@@ -13,6 +15,38 @@
 #include "dma_ultra_fast.h"
 
 #define SASI_SECTOR_SIZE 512
+
+void debug_dump_pin(uint pin) {
+    uint32_t ctrl   = iobank0_hw->io[pin].ctrl;    // contains FUNCSEL, INOVER, OEOVER, OUTOVER
+    uint32_t status = iobank0_hw->io[pin].status;  // effective OE/OUT, input sample, etc.
+    uint32_t pad    = padsbank0_hw->io[pin];       // IE, PUE, PDE, DRIVE, SCHMITT, SLEWFAST
+    printf("GPIO%u: CTRL=%08x STATUS=%08x PADREG=%08x\n", pin, ctrl, status, pad);
+}
+
+void pio_debug_state() {
+    for (uint pin = BD0_PIN; pin < BD0_PIN + DATA_SIZE; ++pin) {
+        uint32_t status = io_bank0_hw->io[pin].status;
+        bool oe = status & IO_BANK0_GPIO0_STATUS_OETOPAD_BITS;
+        bool out_level = status & IO_BANK0_GPIO0_STATUS_OUTTOPAD_BITS;
+        bool pad_level = status & IO_BANK0_GPIO0_STATUS_INFROMPAD_BITS;
+        printf("GPIO%u state: OE=%d OUT=%d PAD=%d ",
+               pin,
+               oe ? 1 : 0,
+               out_level ? 1 : 0,
+               pad_level ? 1 : 0);
+    
+        gpio_function_t func = gpio_get_function(pin);
+        bool pull_up = gpio_is_pulled_up(pin);
+        bool pull_down = gpio_is_pulled_down(pin);
+        const char *pull_desc = (!pull_up && !pull_down) ? "off" :
+                                (pull_up && !pull_down) ? "pull-up" :
+                                (!pull_up && pull_down) ? "pull-down" :
+                                                          "both";
+        printf("function=%u, pulls=%s\n",
+               func,
+               pull_desc);
+    }
+}
 
 static inline uint8_t sasi_dma_target_device(const dma_registers_t *dma) {
     uint8_t target = dma ? (dma->selected_target & 0x07) : 0;
@@ -324,6 +358,7 @@ void core1_main() {
     pio_set_irq0_source_enabled(register_pio, fifo_sources[register_sm], true);
     irq_set_enabled(PIO1_IRQ_0, true);
     printf("Core1 started, PIO: %d SM: %d\n", register_pio, register_sm);
+    setup_pio_instance(register_pio, register_sm);
     
     // Add a test to see if IRQ is working
     printf("Testing IRQ setup... FIFO level: %d\n", pio_sm_get_rx_fifo_level(register_pio, register_sm));

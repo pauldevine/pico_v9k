@@ -71,22 +71,26 @@ T3_WRITE:                              ; 8088 write cycle // pico's reading
 #include "pico/error.h"
 #include "pico_victor/dma.h"
 #define ADDRESS_RD_WR_SIZE 22 
+#define REG_PIN_FIRST BD0_PIN
+#define REG_PIN_LAST IR_4_PIN
 
 static inline void dma_registers_program_init(PIO pio, uint sm, uint offset) {
+    pio_debug_state();
+    debug_dump_pin(BD0_PIN);
     printf("starting to configure dma_registers_program_init\n");
     pio_sm_config c = dma_registers_program_get_default_config(offset);
 
     // init all the pins i'll be using as output
-    for (int i = 0; i < ADDRESS_RD_WR_SIZE; i++) {
+    for (int i = 0; i <= REG_PIN_LAST; i++) {
         uint pin = BD0_PIN + i;
+        gpio_set_drive_strength(pin, GPIO_DRIVE_STRENGTH_12MA);
+        gpio_disable_pulls(pin);
         pio_gpio_init(pio, pin);
+        gpio_pull_down(pin);
+        pio_sm_set_pins_with_mask(pio, sm, 0u, 1u << pin); // preload latch low
        // printf("pio_gpio_init %d\n", pin);
     }
-   pio_sm_set_consecutive_pindirs(pio, sm, BD0_PIN, ADDRESS_RD_WR_SIZE, false);  
-
-   pio_gpio_init(pio, ALE_PIN);
-   pio_gpio_init(pio, CLOCK_5_PIN);
-   pio_gpio_init(pio, CLOCK_15B_PIN);
+   pio_sm_set_consecutive_pindirs(pio, sm, BD0_PIN, REG_PIN_LAST + 1, false);  
    
    sm_config_set_in_pins(&c, BD0_PIN);
    sm_config_set_in_pin_count(&c, ADDRESS_BUS_SIZE);
@@ -98,8 +102,6 @@ static inline void dma_registers_program_init(PIO pio, uint sm, uint offset) {
     pio_sm_set_consecutive_pindirs(pio, sm, HOLD_PIN, 1, true);
     sm_config_set_sideset_pins(&c, HOLD_PIN);
     sm_config_set_sideset(&c, 1, false, false);
-
-    pio_sm_set_consecutive_pindirs(pio, sm, BD0_PIN, DATA_SIZE, true); 
     
     printf("HOLD_PIN Pin %d func: %d, dir: %d\n", HOLD_PIN, gpio_get_function(HOLD_PIN), gpio_get_dir(HOLD_PIN));
    
@@ -126,8 +128,7 @@ static inline void dma_registers_program_init(PIO pio, uint sm, uint offset) {
    printf("RD_PIN Pin %d func: %d, dir: %d\n", RD_PIN, gpio_get_function(RD_PIN), gpio_get_dir(RD_PIN));
    printf("WR_PIN Pin %d func: %d, dir: %d\n", WR_PIN, gpio_get_function(WR_PIN), gpio_get_dir(WR_PIN));
 
-   uint32_t execctrl = pio->sm[sm].execctrl;
-   uint jmp_pin = (execctrl >> 24) & 0x1F;
-   printf("SM%d EXECCTRL=0x%08x, JMP_PIN=%u\n", sm, execctrl, (unsigned)jmp_pin);
+   pio_debug_state();
+   debug_dump_pin(BD0_PIN);
 }
 %}

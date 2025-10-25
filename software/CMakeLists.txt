@@ -78,6 +78,7 @@ target_include_directories(dma_board PRIVATE
 # Add any user requested libraries
 target_link_libraries(dma_board
         pico_stdlib
+        pico_stdio_uart
         pico_multicore
         pico_util
         hardware_pio
