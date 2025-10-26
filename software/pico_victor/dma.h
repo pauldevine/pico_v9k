@@ -1,5 +1,6 @@
 #ifndef DMA_VICTOR_H
 #define DMA_VICTOR_H
+#include <stdio.h>
 #include "hardware/pio.h"
 
 #define REGISTERS_SM  0
@@ -40,7 +41,8 @@
 #define CSEN_PIN 38
 #define PHASE_2_PIN 39
 
-#define DEBUG_PIN 45
+#define TEMP_DEBUG_PIN HOLD_PIN
+#define DEBUG_PIN 45 //TODO: After debugging completes move back to pin 45.
 
 #define ADDRESS_DIR_PINCNT 2
 #define DMA_READ 1
@@ -95,13 +97,7 @@ static inline uint32_t dma_fifo_encode_write(uint32_t address, uint8_t data) {
 
 static void setup_pio_instance(PIO pio, int sm) {
 
-    for (int pin = BD0_PIN + 1; pin <= IR_4_PIN; ++pin) {
-        gpio_set_function(pin, GPIO_FUNC_SIO);       // briefly take ownership
-        
-        gpio_disable_pulls(pin);                     // clear PUE/PDE (kills bus-keep)
-        gpio_set_dir(pin, false);                    // input
-        gpio_put(pin, 0);                         // drive low
-        gpio_set_drive_strength(pin, GPIO_DRIVE_STRENGTH_12MA);
+    for (int pin = BD0_PIN; pin <= CLOCK_15B_PIN; ++pin) {
         uint function = GPIO_FUNC_PIO0 + pio_get_index(pio);
         gpio_set_function(pin, function);
         pio_gpio_init(pio, pin);
@@ -109,8 +105,8 @@ static void setup_pio_instance(PIO pio, int sm) {
         pio_sm_set_pins_with_mask(pio, sm, 0u, 1u << pin); // preload latch low
         pio_sm_set_pindirs_with_mask(pio, sm, 0u, 1u << pin); // input
 
-        //printf("dma gpio_init %d  ", pin);
-        //printf("GPIO%d_CTRL = 0x%08x\n", pin, io_bank0_hw->io[pin].ctrl);
+        printf("dma gpio_init %d  ", pin);
+        printf("GPIO%d_CTRL = 0x%08x\n", pin, io_bank0_hw->io[pin].ctrl);
     }
 }
 

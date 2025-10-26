@@ -1,9 +1,9 @@
 .pio_version 1
-.define CLOCK_15B_PIN 30 
-.define CLOCK_5_PIN  29
-.define ALE_PIN 23 
-.define RD_PIN 20
-.define READY_PIN 27
+.define CLOCK_15B_PIN 31 
+.define CLOCK_5_PIN  30
+.define ALE_PIN 24 
+.define RD_PIN 21
+.define READY_PIN 28
 
 .define ADDRESS_RD_WR_SIZE 22
 .define ADDRESS_BUS_SIZE 20
@@ -33,11 +33,11 @@ T0:
 T1:   
     wait 0 GPIO ALE_PIN side 0              ; wait for ALE to go low = T0 start & wait for address to stabilize
     wait 1 GPIO ALE_PIN [9] side 0              ; wait for ALE to go high = T1 start & wait for address to stabilize
-    in pins, ADDRESS_BUS_SIZE side 1         ; shift 12 bits of address into ISR
+    in pins, ADDRESS_BUS_SIZE side 0         ; shift 12 bits of address into ISR
     mov osr, isr side 0                      ; use OSR to store full 20-bit address for later
     in null, 20 side 0                       ; move the address into the lower 12 bits of the register, dropping 8 LSB to compare against 12 MSB
     mov x, isr side 0                        ; X = 12 MSB address bits
-    jmp x!=y, T0 side 1                      ; if we're not at 0xEF300, restart T0 to try again
+    ;jmp x!=y, T0 side 0                      ; if we're not at 0xEF300, restart T0 to try again
     mov isr, osr side 0                      ; restore full 20-bit address into ISR
     set x, FIFO_PREFETCH_ADDRESS side 0      ; signal to arm prefetch address payload
     in x, 2 side 0                           ; move the prefetch flag into ISR as MSBs // ISR has 00[address]
@@ -46,7 +46,7 @@ T2:
     push side 0                              ; Push the current ISR address + read signal onto RX FIFO
     mov isr, osr side 0                      ; restore full 20-bit address into ISR
     pull block side 0                        ; Pull data to send to 8088 from TX FIFO
-    jmp pin T3_WRITE side 0                  ; if RD pin is high 8088 is writing, if low 8088 is reading
+    ;jmp pin T3_WRITE side 0                  ; if RD pin is high 8088 is writing, if low 8088 is reading
 
 T3_READ:                               ; 8088 read cycle // pico's writing
     out pins, DATA_SIZE side 1               ; drive BD0-BD7 with data for 8088 to read
@@ -72,7 +72,7 @@ T3_WRITE:                              ; 8088 write cycle // pico's reading
 #include "pico_victor/dma.h"
 #define ADDRESS_RD_WR_SIZE 22 
 #define REG_PIN_FIRST BD0_PIN
-#define REG_PIN_LAST IR_4_PIN
+#define REG_PIN_LAST CLOCK_15B_PIN
 
 static inline void dma_registers_program_init(PIO pio, uint sm, uint offset) {
     pio_debug_state();
@@ -81,34 +81,35 @@ static inline void dma_registers_program_init(PIO pio, uint sm, uint offset) {
     pio_sm_config c = dma_registers_program_get_default_config(offset);
 
     // init all the pins i'll be using as output
-    for (int i = 0; i <= REG_PIN_LAST; i++) {
-        uint pin = BD0_PIN + i;
+    for (int pin = REG_PIN_FIRST; pin <= REG_PIN_LAST; pin++) {
         gpio_set_drive_strength(pin, GPIO_DRIVE_STRENGTH_12MA);
         gpio_disable_pulls(pin);
         pio_gpio_init(pio, pin);
         gpio_pull_down(pin);
         pio_sm_set_pins_with_mask(pio, sm, 0u, 1u << pin); // preload latch low
-       // printf("pio_gpio_init %d\n", pin);
+        printf("pio_gpio_init %d\n", pin);
     }
-    pio_sm_set_consecutive_pindirs(pio, sm, BD0_PIN, REG_PIN_LAST + 1, false);  
+    uint pincount = REG_PIN_LAST - REG_PIN_FIRST + 1;
+    pio_sm_set_consecutive_pindirs(pio, sm, BD0_PIN, pincount, false);
 
     sm_config_set_in_pins(&c, BD0_PIN);
     sm_config_set_in_pin_count(&c, ADDRESS_BUS_SIZE);
-    sm_config_set_out_pins(&c, BD0_PIN, DATA_SIZE);
+    
     sm_config_set_jmp_pin(&c, RD_PIN); // RD pin is the pin we check for write vs read cycle
 
-    //TODO: REMOVE AFTER DEBUGGING
-    pio_gpio_init(pio, DEBUG_PIN);
-    sm_config_set_sideset_pins(&c, DEBUG_PIN);
+    //TODO: REMOVE DEBUG PIN AFTER DEBUGGING
+    pio_gpio_init(pio, TEMP_DEBUG_PIN);
+    sm_config_set_sideset_pins(&c, TEMP_DEBUG_PIN);
     sm_config_set_sideset(&c, 1, false, false);
-    pio_sm_set_consecutive_pindirs(pio, sm, DEBUG_PIN, 1, true);
-    printf("DEBUG_PIN Pin %d func: %d, dir: %d\n", DEBUG_PIN, gpio_get_function(DEBUG_PIN), gpio_get_dir(DEBUG_PIN));
-   
+    pio_sm_set_consecutive_pindirs(pio, sm, TEMP_DEBUG_PIN, 1, true);
+    printf("TEMP_DEBUG_PIN Pin %d func: %d, dir: %d\n", 
+           TEMP_DEBUG_PIN, gpio_get_function(TEMP_DEBUG_PIN), gpio_get_dir(TEMP_DEBUG_PIN));
+    
     sm_config_set_out_shift(&c, true, false, DATA_SIZE);
     sm_config_set_in_shift(&c, true, false, ADDRESS_BUS_SIZE);
     printf("Config execctrl before init: 0x%08x pinhi:0x%08x pinctrl:0x%08x\n",
             (uint32_t)c.execctrl, (uint32_t)c.pinhi, (uint32_t)c.pinctrl);
-
+    sm_config_set_out_pins(&c, BD0_PIN, DATA_SIZE);
     sm_config_set_clkdiv(&c, 1.0f);  
 
     pio_sm_clear_fifos(pio, sm);

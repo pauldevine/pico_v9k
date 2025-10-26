@@ -10,8 +10,8 @@
 .program test_hold_hlda
 .side_set 1 opt pindirs  ; One side-set pin for HOLD direction control, optional
 
-.define public HOLD_PIN  25
-.define public HLDA_PIN  28
+.define public HOLD_PIN  26
+.define public HLDA_PIN  29
 
     ; Assert HOLD by enabling output direction (will drive low since pin value is 0)
     nop         side 1      ; Side-set pindir=1 (output enabled), pulls HOLD low

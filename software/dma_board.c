@@ -21,29 +21,6 @@
 
 extern queue_t log_queue;
 
-static void free_up_pin(uint pin) {
-    // Make SIO benign first (SIO.OUT=0, SIO.OE=0)
-    gpio_set_function(0, GPIO_FUNC_SIO); 
-    gpio_init(pin);
-    gpio_put(pin, 0);
-    gpio_set_dir(pin, false);             // input (OE=0 from SIO perspective)
-
-    // Detach from ALL peripherals
-    gpio_set_function(pin, GPIO_FUNC_NULL);
-
-    // No internal bias
-    gpio_disable_pulls(pin);              // PUE=0, PDE=0
-
-    // Make sure the input sampler can’t see anything (optional, but stops “PAD=1” noise)
-    gpio_set_input_enabled(pin, false);   // IE=0
-
-    // **Strong guarantees**: even if something accidentally sets SIO/func later,
-    // these overrides prevent the pad from ever driving and make reads come back 0
-    gpio_set_oeover(pin,  GPIO_OVERRIDE_LOW);   // force OE=0 (tri-state)
-    gpio_set_outover(pin, GPIO_OVERRIDE_NORMAL);
-    gpio_set_inover(pin,  GPIO_OVERRIDE_LOW);   // force sampled input = 0
-}
-
 
 void initialize_uart() {
     // Initialize UART for TX only
@@ -55,12 +32,15 @@ void initialize_uart() {
     uart_set_fifo_enabled(UART_ID, false);
     stdio_uart_init_full(UART_ID, BAUD_RATE, UART_TX_PIN, -1);
 
+    //clear BD0_PIN (GPIO1) - ensure it's not claimed by stdio/UART and ready for PIO
+    gpio_disable_pulls(BD0_PIN);                     // clear PUE/PDE (kills bus-keep)
+    gpio_set_dir(BD0_PIN, false);                    // input
+    gpio_set_function(BD0_PIN, GPIO_FUNC_NULL);      // release back to NULL or PIO later
     return;
 }
 
 
-
- int main() {
+int main() {
     set_sys_clock_khz(200000, true);
     stdio_init_all();
     initialize_uart();    
@@ -92,7 +72,7 @@ void initialize_uart() {
     gpio_disable_pulls(DEBUG_PIN);  // Disable all pulls
     gpio_set_dir(DEBUG_PIN, GPIO_OUT);  // Set as output
 
-    // Test toggles with delays to see on logic analyzer
+    // Test toggles with delays to see restart on logic analyzer
     gpio_put(DEBUG_PIN, 0);
     sleep_ms(1);
     gpio_put(DEBUG_PIN, 1);
@@ -121,27 +101,25 @@ void initialize_uart() {
 
     systick_hw->csr = 0x5; // Enable, use processor clock, no interrupt
     systick_hw->rvr = 0x00FFFFFF; // Max reload value (24-bit)
-
-    printf("back to main loop\n");
-    printf("HOLD_PIN=%d\n", HOLD_PIN);
-    printf("Pin %d func: %d, dir: %d\n", HOLD_PIN, gpio_get_function(HOLD_PIN), gpio_get_dir(HOLD_PIN));
     
 
     // configure the two pio state machines for DMA reading and writing, the same code is used for both reading and writing
-    // the init controls which mode the program runs in, ends up with 2 state machines with different
-    // configs running the same code, saving on PIO space
+    // the payload controls whether it's a read or write operation
     // Keep DMA on the other PIO instance (PIO0). We'll switch GPIO mux
     // between PIO1 (registers) and PIO0 (DMA) around DMA operations.
     PIO dma_pio = PIO_DMA;
     int dma_read_write_program_offset = pio_add_program(dma_pio, &dma_read_write_program);
     int dma_sm = pio_claim_unused_sm(dma_pio, true);  // Only need one SM for unified read/write
-    dma_read_write_program_init(dma_pio, dma_sm, dma_read_write_program_offset, BD0_PIN);
-    dma_set_unified_sm(dma_pio, dma_sm);
-    // Keep DMA SM disabled until a DMA transfer is requested
-    pio_sm_set_enabled(dma_pio, dma_sm, false);
+    //dma_read_write_program_init(dma_pio, dma_sm, dma_read_write_program_offset, BD0_PIN);
+    // dma_set_unified_sm(dma_pio, dma_sm);
+    // // Keep DMA SM disabled until a DMA transfer is requested
+    // pio_sm_set_enabled(dma_pio, dma_sm, false);
 
     // After initializing the DMA PIO, return bus ownership to the register PIO (PIO1)
-    setup_pio_instance(PIO_REGISTERS, register_sm);
+    // setup_pio_instance(PIO_REGISTERS, register_sm);
+
+    //make our debug pin outpout for pio
+    //pio_sm_set_pindirs_with_mask(PIO_REGISTERS, register_sm, 1u << TEMP_DEBUG_PIN, 1u << TEMP_DEBUG_PIN);
 
     printf("pio: %d dma_sm: %d dma_read_write_program_offset: %d pin: %d\n", dma_pio, dma_sm, dma_read_write_program_offset, BD0_PIN);
 
@@ -154,8 +132,8 @@ void initialize_uart() {
            pio_sm_is_claimed(register_pio, register_sm),
            pio_sm_is_exec_stalled(register_pio, register_sm),
            pio_sm_get_pc(register_pio, register_sm));
-
-    dma_device_reset(dma_get_registers());
+     
+   // dma_device_reset(dma_get_registers());
     printf("waiting for DMA register access...\n");
     uint64_t iterations = INT64_MAX;
     for (uint64_t i = 0; i<INT64_MAX; i++) {

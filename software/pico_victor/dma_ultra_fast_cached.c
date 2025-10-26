@@ -277,7 +277,7 @@ void __time_critical_func(registers_irq_handler_cached_asm)() {
             uint8_t data_now = cached->values[masked_offset];
             trace_data = data_now;
             //PIO_REGISTERS->txf[REGISTERS_SM] = (0xFF00 | (uint32_t)data_now); //TODO: return the real data when I'm done debugging
-            PIO_REGISTERS->txf[REGISTERS_SM] = (uint32_t)0xFFFFFFA5; 
+            PIO_REGISTERS->txf[REGISTERS_SM] = (uint32_t)0xFFFFFFFF; 
             data = data_now;
             break;
         }

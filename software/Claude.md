@@ -58,7 +58,7 @@ make
 
 1. The project uses CMake with the Pico SDK
 2. PIO programs are automatically compiled to headers during build
-3. UART output uses `uart0` with TX on GPIO 46 at 115200 baud; RX is not connected and GPIO 45 is repurposed for logic-analyzer triggers
+3. UART output uses `uart0` with TX on GPIO 0 at 115200 baud; RX is not connected and GPIO 45 is repurposed for debugging/logic-analyzer triggers
 4. The system includes timing-critical interrupt handlers marked with `__time_critical_func`
 
 ## Key Libraries Used
@@ -87,7 +87,19 @@ The main test runs in `test/register_test.c` and:
 - The 8088 uses a multiplexed address/data bus where AD0-AD7 carry address bits during T1 (when ALE is high) and data during T2-T3
 - Pin direction management is handled directly through PIO `pindirs` instructions without external buffer control
 
-## Current Status (2025-oct-21)
+## Current Status (2025-oct-25)
+### GPIO Pin Migration - BD0 moved from GPIO0 to GPIO1
+- **Hardware change**: After weeks of debugging GPIO0 misbehavior, the hardware was rewired to move the 8088 data bus (BD0-BD7) from GPIO0-7 to GPIO1-8
+- **Root cause**: GPIO0 has special handling in the Pico SDK for default UART functionality, causing persistent conflicts with PIO control even after UART reconfiguration
+- **Migration impact**: All pin definitions in `dma.h` updated to reflect BD0_PIN=1 (was 0), with all other pins shifted accordingly
+- **Code fixes applied**:
+  - Fixed `board_registers.pio` line 85: removed double-addition bug (`BD0_PIN + i` → `i`)
+  - Fixed `dma.h` line 98: corrected `setup_pio_instance()` to start at `BD0_PIN` instead of `BD0_PIN + 1` (was skipping GPIO1)
+  - Updated `dma_board.c` line 35: corrected comment to reflect BD0_PIN is now GPIO1
+- **Status**: Pin initialization now correctly includes GPIO1 (BD0), side-set functionality should be restored
+- **UART configuration**: UART TX remains on GPIO0, properly released before PIO initialization to avoid bus contention
+
+## Previous Status (2025-oct-21)
 - Python `fifo_trace_analyzer.py` now decodes the cached FIFO logs, flags out-of-range addresses, and correlates PREFETCH/COMMIT mismatches. Latest traces confirm the Pico occasionally commits register reads with an address outside the 0xEF300 window, matching logic-analyzer evidence that the register SM slips during T3.
 - The logic analyzer shows ALE decode is stable but the read T3 window is erratic: data is sometimes driven too early/late, causing the Victor to sample the address byte (0x80/0xA0) instead of the programmed register contents. When the slip occurs once, subsequent cycles stay misaligned, explaining the persistent failures in `dmatest`.
 - A 10 ns blip on BD0-BD7 during reads traced back to the default stdio UART still owning GPIO 0/1 (BD0/BD1). We need to disable the auto-UART (`pico_enable_stdio_uart(... 0)`, link `pico_stdio_uart` manually, and override `PICO_DEFAULT_UART_*` before `pico_sdk_init()` so stdio stays on TX=46 and stops fighting the PIO.

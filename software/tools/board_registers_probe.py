@@ -35,10 +35,10 @@ except RuntimeError as exc:  # pragma: no cover - runtime guard on Pi only
 
 # GPIO wiring configuration (BCM numbering on the Raspberry Pi)
 BUS_PINS: List[int] = [5, 6, 13, 19]  # Shared data/address bus, LSB -> MSB
-ALE_PIN = 16                         # Connected to Pico GPIO 23
-RD_PIN = 20                          # Connected to Pico GPIO 20 (active low)
-CLK5_PIN = 26                        # Connected to Pico GPIO 29
-READY_PIN = 12                       # Connected to Pico GPIO 27
+ALE_PIN = 16                         # Connected to Pico GPIO 24
+RD_PIN = 20                          # Connected to Pico GPIO 21 (active low)
+CLK5_PIN = 26                        # Connected to Pico GPIO 30
+READY_PIN = 12                       # Connected to Pico GPIO 28
 
 # Default register address nibble to place on the bus during ALE high.
 REGISTER_ADDRESS = 0x0
@@ -83,7 +83,7 @@ class BoardRegisterProbe:
         GPIO.setup(self.ale_pin, GPIO.OUT, initial=GPIO.LOW)
         GPIO.setup(self.rd_pin, GPIO.OUT, initial=GPIO.HIGH)   # RD# idle high
         GPIO.setup(self.clk5_pin, GPIO.OUT, initial=GPIO.HIGH)  # CLK idle high
-        GPIO.setup(self.ready_pin, GPIO.OUT, initial=GPIO.LOW)  # hold the PIO
+        GPIO.setup(self.ready_pin, GPIO.OUT, initial=GPIO.HIGH)  # READY idles high
 
         # Start with bus as outputs (address/data driving)
         self._set_bus_direction(GPIO.OUT, pull=None)
@@ -130,12 +130,11 @@ class BoardRegisterProbe:
             parts.append(f"READY={ready}")
         print("  ".join(parts))
 
-    def _begin_cycle(self) -> None:
-        """Bring CLK5 low and issue ALE low->high to start a bus cycle."""
-        self._log_state("T0: CLK5 low -> wait")
+    def _begin_cycle(self, *, is_read: bool, ready_asserted: bool) -> None:
+        """Drive CLK5/ALE through T0/T1 and prime control signals for T2."""
+        self._log_state("T0: CLK5 falling edge")
         GPIO.output(self.clk5_pin, GPIO.HIGH)
         time.sleep(self.t_setup)
-        GPIO.output(self.ready_pin, GPIO.LOW)  # hold until we deliberately release
         GPIO.output(self.ale_pin, GPIO.LOW)
         GPIO.output(self.clk5_pin, GPIO.LOW)
         time.sleep(self.t_setup)
@@ -145,11 +144,14 @@ class BoardRegisterProbe:
         GPIO.output(self.ale_pin, GPIO.HIGH)
         time.sleep(self.t_hold)
         GPIO.output(self.ale_pin, GPIO.LOW)
+        GPIO.output(self.ready_pin, GPIO.HIGH if ready_asserted else GPIO.LOW)
+        GPIO.output(self.rd_pin, GPIO.LOW if is_read else GPIO.HIGH)
         time.sleep(self.t_setup)
 
     def _complete_cycle(self) -> None:
         """Return the control signals to their idle state."""
-        GPIO.output(self.ready_pin, GPIO.LOW)  # prepare for next cycle
+        GPIO.output(self.ready_pin, GPIO.HIGH)
+        GPIO.output(self.rd_pin, GPIO.HIGH)
         GPIO.output(self.clk5_pin, GPIO.HIGH)
         time.sleep(self.t_setup)
 
@@ -158,10 +160,8 @@ class BoardRegisterProbe:
         """Emulate an 8088 write (RD# held high)."""
         nibble = value & 0xF
         print(f"\n[WRITE] Driving nibble 0x{nibble:X}")
-        GPIO.output(self.rd_pin, GPIO.HIGH)
-
-        self._begin_cycle()
-        self._log_state("T2/T3: drive data", rd="HIGH", ready="LOW")
+        self._begin_cycle(is_read=False, ready_asserted=False)
+        self._log_state("T2: drive data (READY low)", rd="HIGH", ready="LOW")
         self._drive_bus(nibble)
         time.sleep(self.t_data)
 
@@ -169,27 +169,23 @@ class BoardRegisterProbe:
         self._log_state("T3: READY asserted", rd="HIGH", ready="HIGH")
         time.sleep(self.t_hold)
 
-        GPIO.output(self.ready_pin, GPIO.LOW)
         self._complete_cycle()
 
     def read_cycle(self) -> None:
         """Emulate an 8088 read (RD# asserted low during T3)."""
         print("\n[READ] Expect Pico to drive data")
-        GPIO.output(self.rd_pin, GPIO.HIGH)
-        self._begin_cycle()
+        self._begin_cycle(is_read=True, ready_asserted=True)
 
-        # Release the bus before dropping RD# low
+        self._log_state("T2: RD# asserted", rd="LOW", ready="HIGH")
         self._set_bus_direction(GPIO.IN, pull=GPIO.PUD_DOWN)
         time.sleep(self.t_setup)
 
-        GPIO.output(self.rd_pin, GPIO.LOW)
-        self._log_state("T3: RD# asserted", rd="LOW", ready="LOW")
-
+        self._log_state("T3: sample data", rd="LOW", ready="HIGH")
         value = self._sample_bus()
         print(f"  Sampled nibble: 0x{value:X} (bits: {value:04b})")
 
         GPIO.output(self.rd_pin, GPIO.HIGH)  # finish the read
-        self._log_state("T4: RD# released", rd="HIGH", ready="LOW")
+        self._log_state("T4: RD# released", rd="HIGH", ready="HIGH")
         time.sleep(self.t_hold)
 
         self._complete_cycle()
@@ -256,4 +252,3 @@ def main(argv: List[str]) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
-

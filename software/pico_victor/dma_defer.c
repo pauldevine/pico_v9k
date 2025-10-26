@@ -310,7 +310,7 @@ void defer_worker_main(void) {
 
         // Small delay to avoid burning CPU when queue is empty
         // This is a balance between latency and CPU usage
-        busy_wait_us(1);
+        busy_wait_us(1);         //TODO: tune this value after we have the system working. Saw some stalls currently likely due to this being too high
     }
 }
 
