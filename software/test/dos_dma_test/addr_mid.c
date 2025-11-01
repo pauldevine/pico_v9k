@@ -26,17 +26,26 @@
 
 static void write_and_read(unsigned char far *reg, unsigned char value) {
     unsigned char read_back;
+    unsigned int offset = FP_OFF(reg);
+    unsigned int segment = FP_SEG(reg);
+    unsigned long physical = ((unsigned long)segment << 4) + offset;
 
-    if (FP_OFF(reg) == REG_ADDR_M) {
-        printf("Testing DMA_ADDR_MID (0x%02X):\n", REG_ADDR_M);
-    } else if (FP_OFF(reg) == REG_ADDR_L) {
-        printf("Testing DMA_ADDR_LOW (0x%02X):\n", REG_ADDR_L);
-    } else if (FP_OFF(reg) == REG_ADDR_H) {
-        printf("Testing DMA_ADDR_HIGH (0x%02X):\n", REG_ADDR_H);
+    switch (offset) {
+        case OFFSET(REG_ADDR_L):
+            printf("Testing DMA_ADDR_LOW (0x%02X):\n", REG_ADDR_L);
+            break;
+        case OFFSET(REG_ADDR_M):
+            printf("Testing DMA_ADDR_MID (0x%02X):\n", REG_ADDR_M);
+            break;
+        case OFFSET(REG_ADDR_H):
+            printf("Testing DMA_ADDR_HIGH (0x%02X):\n", REG_ADDR_H);
+            break;
     }
+
+    printf("Pointer = %04X:%04X, Physical = 0x%05lX\n", segment, offset, physical);
     printf("Writing 0x%02X to register...\n", value);
     *reg = value;
-
+    
     read_back = *reg;
     printf("Read back: 0x%02X %s\n\n", read_back,
            (read_back == value) ? "[MATCH]" : "[MISMATCH]");
