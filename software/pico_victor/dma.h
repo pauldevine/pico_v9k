@@ -102,6 +102,7 @@ static void setup_pio_instance(PIO pio, int sm) {
         gpio_set_function(pin, function);
         pio_gpio_init(pio, pin);
         gpio_pull_down(pin);
+        gpio_set_drive_strength(pin, GPIO_DRIVE_STRENGTH_12MA);
         pio_sm_set_pins_with_mask(pio, sm, 0u, 1u << pin); // preload latch low
         pio_sm_set_pindirs_with_mask(pio, sm, 0u, 1u << pin); // input
 
