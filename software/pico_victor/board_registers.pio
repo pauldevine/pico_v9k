@@ -37,21 +37,21 @@ T1:
     mov osr, isr side 0                      ; use OSR to store full 20-bit address for later
     in null, 20 side 0                       ; move the address into the lower 12 bits of the register, dropping 8 LSB to compare against 12 MSB
     mov x, isr side 0                        ; X = 12 MSB address bits
-    ;jmp x!=y, T0 side 0                      ; if we're not at 0xEF300, restart T0 to try again
-    mov isr, osr side 0                      ; restore full 20-bit address into ISR
-    set x, FIFO_PREFETCH_ADDRESS side 0      ; signal to arm prefetch address payload
+    jmp x!=y, T0 side 0                      ; if we're not at 0xEF300, restart T0 to try again
+    mov isr, osr side 1                      ; restore full 20-bit address into ISR
+    set x, FIFO_PREFETCH_ADDRESS side 1      ; signal to arm prefetch address payload
     in x, 2 side 0                           ; move the prefetch flag into ISR as MSBs // ISR has 00[address]
 
 T2:
     push side 0                              ; Push the current ISR address + read signal onto RX FIFO
     mov isr, osr side 0                      ; restore full 20-bit address into ISR
     pull block side 0                        ; Pull data to send to 8088 from TX FIFO
-    ;jmp pin T3_WRITE side 0                  ; if RD pin is high 8088 is writing, if low 8088 is reading
+    jmp pin T3_WRITE side 1                  ; if RD pin is high 8088 is writing, if low 8088 is reading
 
 T3_READ:                               ; 8088 read cycle // pico's writing
     out pins, DATA_SIZE side 1               ; drive BD0-BD7 with data for 8088 to read
     out pindirs, DATA_SIZE side 1            ; set BD0-BD7 as outputs
-    wait 1 GPIO RD_PIN side 0                ; wait for RD to go high (end of read cycle)
+    wait 1 GPIO RD_PIN side 1                ; wait for RD to go high (end of read cycle)
     set x, FIFO_READ_COMMIT [12] side 0      ; signal to arm commit earlier read // wait for 12 cycles to allow for data hold time
     in x, 2 side 0                           ; move the read commit flag into ISR as MSBs // ISR has 01[address]
 T4:
