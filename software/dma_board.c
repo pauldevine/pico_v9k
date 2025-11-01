@@ -110,16 +110,16 @@ int main() {
     PIO dma_pio = PIO_DMA;
     int dma_read_write_program_offset = pio_add_program(dma_pio, &dma_read_write_program);
     int dma_sm = pio_claim_unused_sm(dma_pio, true);  // Only need one SM for unified read/write
-    //dma_read_write_program_init(dma_pio, dma_sm, dma_read_write_program_offset, BD0_PIN);
-    // dma_set_unified_sm(dma_pio, dma_sm);
-    // // Keep DMA SM disabled until a DMA transfer is requested
-    // pio_sm_set_enabled(dma_pio, dma_sm, false);
+    dma_read_write_program_init(dma_pio, dma_sm, dma_read_write_program_offset, BD0_PIN);
+    dma_set_unified_sm(dma_pio, dma_sm);
+    // Keep DMA SM disabled until a DMA transfer is requested
+    pio_sm_set_enabled(dma_pio, dma_sm, false);
 
     // After initializing the DMA PIO, return bus ownership to the register PIO (PIO1)
-    // setup_pio_instance(PIO_REGISTERS, register_sm);
+    setup_pio_instance(PIO_REGISTERS, register_sm);
 
-    //make our debug pin outpout for pio
-    //pio_sm_set_pindirs_with_mask(PIO_REGISTERS, register_sm, 1u << TEMP_DEBUG_PIN, 1u << TEMP_DEBUG_PIN);
+    //make our debug pin outpout for pio TODO: remove after debugging
+    pio_sm_set_pindirs_with_mask(PIO_REGISTERS, register_sm, 1u << TEMP_DEBUG_PIN, 1u << TEMP_DEBUG_PIN);
 
     printf("pio: %d dma_sm: %d dma_read_write_program_offset: %d pin: %d\n", dma_pio, dma_sm, dma_read_write_program_offset, BD0_PIN);
 
@@ -133,7 +133,11 @@ int main() {
            pio_sm_is_exec_stalled(register_pio, register_sm),
            pio_sm_get_pc(register_pio, register_sm));
      
-   // dma_device_reset(dma_get_registers());
+    dma_device_reset(dma_get_registers());
+    printf("DMA device reset complete\n");
+    pio_debug_state();
+    debug_dump_pin(BD0_PIN);
+    
     printf("waiting for DMA register access...\n");
     uint64_t iterations = INT64_MAX;
     for (uint64_t i = 0; i<INT64_MAX; i++) {
