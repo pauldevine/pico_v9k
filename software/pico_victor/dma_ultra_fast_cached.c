@@ -276,9 +276,8 @@ void __time_critical_func(registers_irq_handler_cached_asm)() {
             fifo_pending_prefetch++;
             uint8_t data_now = cached->values[masked_offset];
             trace_data = data_now;
-            //PIO_REGISTERS->txf[REGISTERS_SM] = (0xFF00 | (uint32_t)data_now); //TODO: return the real data when I'm done debugging
-            PIO_REGISTERS->txf[REGISTERS_SM] = (uint32_t)0xFFFFFFFF; 
-            fast_log("PREFETCH BD0 func=%d\n", gpio_get_function(BD0_PIN));
+            PIO_REGISTERS->txf[REGISTERS_SM] = (0xFF00 | (uint32_t)data_now); 
+            //fast_log("PREFETCH BD0 func=%d\n", gpio_get_function(BD0_PIN));
             data = data_now;
             break;
         }
