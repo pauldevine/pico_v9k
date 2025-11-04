@@ -165,7 +165,7 @@ static inline void dma_read_write_program_init(PIO pio, uint sm, uint offset, ui
     for (int i = pin; i <= CLOCK_15B_PIN; i++) {
         gpio_set_drive_strength(i, GPIO_DRIVE_STRENGTH_12MA);
         gpio_disable_pulls(i);
-        pio_gpio_init(pio, i);
+        //pio_gpio_init(pio, i); TODO: REMOVED TO TEST FIX GLITCHING ON INPUT PINS
         gpio_pull_down(i);
         pio_sm_set_pins_with_mask(pio, sm, 0u, 1u << i); // preload latch low
         printf("dma gpio_init %d  ", i);

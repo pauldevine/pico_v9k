@@ -91,7 +91,7 @@ void core1_main_cached() {
         cached->values[REG_CONTROL] = 0;
 
         printf("Pre-warming IRQ handler cache...\n");
-
+        setup_pio_instance(register_pio, register_sm);
         // Temporarily disable IRQ while we warm up
         irq_set_enabled(PIO1_IRQ_0, false);
 
@@ -131,6 +131,7 @@ void core1_main_cached() {
                     pio_sm_is_exec_stalled(register_pio, register_sm));
 
     // Enable the IRQ
+    setup_pio_instance(register_pio, register_sm);
     pio_set_irq0_source_enabled(register_pio, fifo_sources[register_sm], true);
     irq_set_enabled(PIO1_IRQ_0, true);
 

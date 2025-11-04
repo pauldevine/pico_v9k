@@ -10,6 +10,7 @@
 #include "hardware/clocks.h"
 #include "board_registers.pio.h"
 #include "dma_read_write.pio.h"
+#include "extio_helper.pio.h"
 #include "pico_victor/dma.h"
 #include "pico_victor/debug_queue.h"
 #include "pico_fujinet/spi.h"
@@ -88,10 +89,21 @@ int main() {
     int register_sm = REGISTERS_SM;
     pio_sm_claim (register_pio, REGISTERS_SM);
     int outcome = pio_set_gpio_base(register_pio, LOWER_PIN_BASE);
-    printf("pio_set_gpio_base outcome: %d PICO_PIO_USE_GPIO_BASE %d\n", outcome, PICO_PIO_USE_GPIO_BASE);
+    printf("register_pio pio_set_gpio_base outcome: %d PICO_PIO_USE_GPIO_BASE %d\n", outcome, PICO_PIO_USE_GPIO_BASE);
     int dma_registers_program_offset = pio_add_program(register_pio, &dma_registers_program);
     dma_registers_program_init(register_pio, register_sm, dma_registers_program_offset);
     multicore_launch_core1(core1_main);
+
+    //configure the EXTIO helper PIO state machine to manage the EXTIO/ pin during register accesses
+    PIO extio_pio = PIO_EXTIO;
+    int extio_sm = EXTIO_SM;
+    outcome = pio_set_gpio_base(extio_pio, UPPER_PIN_BASE);
+    printf("extio pio_set_gpio_base outcome: %d PICO_PIO_USE_GPIO_BASE %d\n", outcome, PICO_PIO_USE_GPIO_BASE);
+    pio_sm_claim (extio_pio, extio_sm);
+    int extio_program_offset = pio_add_program(extio_pio, &extio_helper_program);
+    extio_helper_program_init(extio_pio, extio_sm, extio_program_offset);
+    pio_sm_set_enabled(extio_pio, extio_sm, true);
+    printf("EXTIO PIO initialized\n");
 
     printf("pio: %d register_sm: %d dma_registers_program_offset: %d pin: %d\n", register_pio, register_sm, dma_registers_program_offset, BD0_PIN);
     printf("about to iniitialize dma_registers with offfset %X \n", DMA_REGISTER_BITMASK);

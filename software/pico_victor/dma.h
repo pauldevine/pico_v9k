@@ -10,6 +10,9 @@
 #define PIO_DMA pio0
 #define PIO_REGISTERS pio1
 
+#define PIO_EXTIO pio2
+#define EXTIO_SM 0
+
 #define ADDR_START_PIN 1 // DMA address output
 #define LOWER_PIN_BASE 0
 #define UPPER_PIN_BASE 16
@@ -100,12 +103,6 @@ static void setup_pio_instance(PIO pio, int sm) {
     for (int pin = BD0_PIN; pin <= CLOCK_15B_PIN; ++pin) {
         uint function = GPIO_FUNC_PIO0 + pio_get_index(pio);
         gpio_set_function(pin, function);
-        pio_gpio_init(pio, pin);
-        gpio_pull_down(pin);
-        gpio_set_drive_strength(pin, GPIO_DRIVE_STRENGTH_12MA);
-        pio_sm_set_pins_with_mask(pio, sm, 0u, 1u << pin); // preload latch low
-        pio_sm_set_pindirs_with_mask(pio, sm, 0u, 1u << pin); // input
-
         printf("dma gpio_init %d  ", pin);
         printf("GPIO%d_CTRL = 0x%08x\n", pin, io_bank0_hw->io[pin].ctrl);
     }
