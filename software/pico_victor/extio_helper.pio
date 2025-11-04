@@ -4,7 +4,8 @@
 
 .wrap_target
     wait 1 irq 0        ; wake up when the board_registers SM asserts IRQ0
-    set pindirs, 1 [30] ; drive the pin, give time for RD to go low
+    set pindirs, 1 [31] ; drive the pin, give time for RD to go low
+    nop [10]
     wait 1 gpio RD_PIN  ; hang here until RD/ releases
     nop [7]            ; small delay to ensure stable release
     set pindirs, 0      ; tri-state EXTIO/ again
