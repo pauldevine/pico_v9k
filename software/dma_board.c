@@ -130,8 +130,6 @@ int main() {
     // After initializing the DMA PIO, return bus ownership to the register PIO (PIO1)
     setup_pio_instance(PIO_REGISTERS, register_sm);
 
-    //make our debug pin outpout for pio TODO: remove after debugging
-    pio_sm_set_pindirs_with_mask(PIO_REGISTERS, register_sm, 1u << TEMP_DEBUG_PIN, 1u << TEMP_DEBUG_PIN);
 
     printf("pio: %d dma_sm: %d dma_read_write_program_offset: %d pin: %d\n", dma_pio, dma_sm, dma_read_write_program_offset, BD0_PIN);
 

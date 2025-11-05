@@ -44,7 +44,6 @@
 #define CSEN_PIN 38
 #define PHASE_2_PIN 39
 
-#define TEMP_DEBUG_PIN HOLD_PIN
 #define DEBUG_PIN 45 //TODO: After debugging completes move back to pin 45.
 
 #define ADDRESS_DIR_PINCNT 2
