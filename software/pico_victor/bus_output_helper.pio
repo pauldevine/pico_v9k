@@ -1,0 +1,55 @@
+.pio_version 1
+.define RD_PIN 21
+.define ALE_PIN 24 
+.program bus_output_helper
+
+.wrap_target
+START:
+    pull block            ; wait for data in FIFO
+    jmp pin OUT_ADDRESS   ; if HLDA pin is high, we're doing DMA and need full address and/or data
+
+OUT_BYTE:
+    out pins, 8         ; HLDA low, we're outputing byte on BD0-BD7, 8088 driving A8-A19
+    
+END:
+    mov pindirs, ~null  ; drive address pins ; 
+    wait 1 IRQ 2        ; wait for DMA read_write SM to signal cycle complete
+    set pindirs, 0      ; tri-state address pins
+.wrap
+
+OUT_ADDRESS:
+    out pins, 20        ; output address + data on bus, we're driving A0-A19
+    jmp END             ; wait for cycle complete
+
+% c-sdk {
+#include <stdio.h>
+#include "hardware/pio.h"
+#include "hardware/gpio.h"
+#include "pico_victor/dma.h"
+
+static inline void bus_output_helper_program_init(PIO pio, uint sm, uint offset) {
+    uint extio_offset = EXTIO_PIN - 16; // PIO pins start at GPIO16 for this base
+    printf("Configuring PIO for EXTIO helper SM\n");
+    pio_sm_config c = bus_output_helper_program_get_default_config(offset);
+
+    sm_config_set_set_pins(&c, EXTIO_PIN, 1);
+    pio_gpio_init(pio, EXTIO_PIN);
+    gpio_set_drive_strength(EXTIO_PIN, GPIO_DRIVE_STRENGTH_2MA);
+    gpio_set_slew_rate(EXTIO_PIN, GPIO_SLEW_RATE_SLOW);
+    gpio_disable_pulls(EXTIO_PIN);
+
+    pio_gpio_init(pio, RD_PIN);
+    pio_gpio_init(pio, ALE_PIN);
+
+    // preload latch low, will use pindirs to toggle open-drain low as needed
+    pio_sm_set_pins_with_mask(pio, sm, 0u, 1u << extio_offset); 
+    pio_sm_set_consecutive_pindirs(pio, sm, extio_offset, 1, false);
+    irq_clear(0);
+    sm_config_set_clkdiv(&c, 1.0f);  
+
+    // Load our configuration, and jump to the start of the program
+    int init_rc = pio_sm_init(pio, sm, offset, &c);
+    printf("pio_sm_init rc=%d, SM%d execctrl after init=0x%08x\n", init_rc, sm, pio->sm[sm].execctrl);
+}
+
+%}
