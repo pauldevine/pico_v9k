@@ -1,13 +1,15 @@
 .pio_version 1
 .define RD_PIN 21
+.define ALE_PIN 24 
 .program extio_helper
 
 .wrap_target
     wait 1 irq 0        ; wake up when the board_registers SM asserts IRQ0
-    set pindirs, 1 [31] ; drive the pin, give time for RD to go low
-    nop [10]
-    wait 1 gpio RD_PIN  ; hang here until RD/ releases
-    nop [7]            ; small delay to ensure stable release
+    set pindirs, 1      ; drive the pin, give time for ALE to go low
+    wait 0 GPIO ALE_PIN 
+    nop [31]
+    nop [31]
+    wait 1 GPIO ALE_PIN ; wait for ALE to go high = end of my T cycle
     set pindirs, 0      ; tri-state EXTIO/ again
 .wrap
 
@@ -24,10 +26,12 @@ static inline void extio_helper_program_init(PIO pio, uint sm, uint offset) {
 
     sm_config_set_set_pins(&c, EXTIO_PIN, 1);
     pio_gpio_init(pio, EXTIO_PIN);
-    gpio_set_drive_strength(EXTIO_PIN, GPIO_DRIVE_STRENGTH_12MA);
+    gpio_set_drive_strength(EXTIO_PIN, GPIO_DRIVE_STRENGTH_2MA);
+    gpio_set_slew_rate(EXTIO_PIN, GPIO_SLEW_RATE_SLOW);
     gpio_disable_pulls(EXTIO_PIN);
 
     pio_gpio_init(pio, RD_PIN);
+    pio_gpio_init(pio, ALE_PIN);
 
     // preload latch low, will use pindirs to toggle open-drain low as needed
     pio_sm_set_pins_with_mask(pio, sm, 0u, 1u << extio_offset); 
