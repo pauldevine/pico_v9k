@@ -59,6 +59,7 @@ pico_set_binary_type(dma_board default)
 # Generate PIO headers
 pico_generate_pio_header(dma_board ${CMAKE_CURRENT_LIST_DIR}/pico_victor/board_registers.pio)
 pico_generate_pio_header(dma_board ${CMAKE_CURRENT_LIST_DIR}/pico_victor/dma_read_write.pio)
+pico_generate_pio_header(dma_board ${CMAKE_CURRENT_LIST_DIR}/pico_victor/extio_helper.pio)
 
 # Modify the below lines to enable/disable output over UART/USB
 pico_enable_stdio_uart(dma_board 0)
@@ -158,6 +159,7 @@ target_include_directories(dma_board_tests PRIVATE
 
 target_link_libraries(dma_board_tests
     pico_stdlib
+    pico_stdio_uart
     pico_multicore
     pico_util
     hardware_pio
@@ -190,6 +192,7 @@ target_include_directories(benchmark_irq PRIVATE
 
 target_link_libraries(benchmark_irq
     pico_stdlib
+    pico_stdio_uart
     hardware_pio
     hardware_dma
 )
@@ -197,5 +200,3 @@ target_link_libraries(benchmark_irq
 pico_add_extra_outputs(benchmark_irq)
 
 add_subdirectory(test)
-
-
