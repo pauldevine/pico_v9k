@@ -3,23 +3,51 @@
 .define ALE_PIN 24 
 .program bus_output_helper
 
+
+; --- Pre-amble ---
+; This code runs once at the start for each state machine initialization
+; we need the pindirs for the address (input)/data (output) 0xFFF00 pins to be set for DMA read cycles
+pull block          ; Pull pindirs for RD cycle from FIFO
+mov y, osr          ; Store pindirs for RD cycle in Y
+
 .wrap_target
 START:
-    pull block            ; wait for data in FIFO
-    jmp pin OUT_ADDRESS   ; if HLDA pin is high, we're doing DMA and need full address and/or data
+    pull block          ; wait for data in FIFO [A19-BD0]
+    wait 1 IRQ 1        ; wait for dma_read_write SM to signal new cycle
+    jmp pin DMA_CYCLE   ; if HLDA pin is high, we're doing DMA and need full address and/or data
 
-OUT_BYTE:
+REGISTER_READ_CYCLE:
     out pins, 8         ; HLDA low, we're outputing byte on BD0-BD7, 8088 driving A8-A19
-    
-END:
-    mov pindirs, ~null  ; drive address pins ; 
-    wait 1 IRQ 2        ; wait for DMA read_write SM to signal cycle complete
-    set pindirs, 0      ; tri-state address pins
+    out pindirs, 8      ; set BD0-BD7 as outputs
+
+T4_END:
+    wait 1 irq 4        ; wait for DMA read_write SM to signal cycle complete
+    mov pindirs, null   ; drive address pins low to tri-state bus
 .wrap
 
-OUT_ADDRESS:
-    out pins, 20        ; output address + data on bus, we're driving A0-A19
-    jmp END             ; wait for cycle complete
+DMA_CYCLE:
+    mov isr, osr        ; store 20-bit address for 8088 RD case to notify ARM data to update
+DMA_T1:
+    out pins, 20        ; output address on bus, we're driving A0-A19 for ALE in T1
+    mov pindirs, ~null  ; drive address pins output
+    pull block          ; new payload WR: [A19-A8] [data BD7-BD0] [W/R bit = 1] from FIFO for WR T2
+                        ; new payload RD: [A19-A8] [data=0x00 for BD7-BD0] [W/R bit = 0] from FIFO for RD T2
+DMA_T2:
+    out x, 1            ; get W/R bit from LSB (1=Write, 0=Read)
+    wait 1 irq 2        ; wait for DMA read_write SM to signal move from address to data phase
+    out pins, 20        ; output data byte plus MSB of address on BD0-BD7 and A8-A19
+    jmp !x DMA_T2_READ  ; if x=0 (read), jump to DMA_T2_READ
+    ; Fall through for write (x=1)
+DMA_T2_WRITE:
+    mov pindirs, ~null  ; drive [A19-A8] [data BD7-BD0] as outputs for DMA WR
+    jmp T4_END          ; wait for cycle complete
+DMA_T2_READ:
+    mov pindirs, y      ; set [A19-A8] outputs, [BD7-BD0] inputs,  for DMA RD
+    wait 1 irq 3        ; wait for DMA read_write SM to signal read capture
+    in pins, DATA_SIZE  ; RD case, read data from bus
+    push                ; push data to FIFO for ARM to read
+    jmp T4_END          ; wait for cycle complete
+
 
 % c-sdk {
 #include <stdio.h>
@@ -28,6 +56,7 @@ OUT_ADDRESS:
 #include "pico_victor/dma.h"
 
 static inline void bus_output_helper_program_init(PIO pio, uint sm, uint offset) {
+    //TODO clean this up for bus_output_helper, minimum get JMP pin assigned
     uint extio_offset = EXTIO_PIN - 16; // PIO pins start at GPIO16 for this base
     printf("Configuring PIO for EXTIO helper SM\n");
     pio_sm_config c = bus_output_helper_program_get_default_config(offset);

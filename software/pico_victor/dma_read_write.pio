@@ -53,31 +53,29 @@
 T0:                                ; Address Setup Phase (Put Address on Bus)
     pull block                     ; Block if FIFO empty (HOLD stays released!)
     out x, 1                       ; Get W/R bit from LSB (1=Write, 0=Read)
-    out pins, ADDRESS_BUS_SIZE     ; Output A0-A19 on bus, pindirs still input
-    pull block                     ; Pull next word from FIFO (data byte + MSB address or 0x00 for read)
     set pins, 0b11111 side SIDE_HOLD_ASSERT_IO_INPUT ; Assert HOLD/, keep IO/M/ input during request
     wait 1 gpio HLDA_PIN           ; wait for HLDA to go high
 T1:
-    mov pindirs, ~null side SIDE_HOLD_ASSERT_IO_OUTPUT  ; Drive address pins, keep HOLD/ asserted, IO/M/ output
+    irq next nowait 1              ; Signal to bus_output_helper to put address on the bus
     set pindirs, 0b11111           ; Set control pins to output DEN=1, ALE=1, DT/R=1, WR/=1, RD=1 //ALE high to latch address
     wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
     wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go low
 T2:
     set pins, 0b00111              ; Write: set control pins DEN=0, ALE=0, DT/R=1, WR=1, RD=1 // Pull ALE/DEN low to prepare for read or write
     wait 1 GPIO CLOCK_15B_PIN      ; Wait for CLK15B to go high
+    irq next nowait 2              ; tell bus_output_helper SM to move to T2 data phase
     jmp !x T2_READ                 ; If x=0 (read), jump to T2_READ
     ; Fall through for write (x=1)
 T2_WRITE_INLINE:
-    out pins, ADDRESS_BUS_SIZE     ; Output data on BD0-BD7, A8-A19 continues to hold MSB of address
     set pins, 0b00101              ; Write: set control pins DEN=0, ALE=0, DT/R=1, WR=0, RD=1 // WR/ low to write data    
 T2_CONTINUE:
     wait 1 GPIO READY_PIN          ; Wait for READY to go high
 T3:
     wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
     wait 0 GPIO CLOCK_5_PIN side SIDE_HOLD_RELEASE_IO_OUTPUT ; Wait for CLK5 to go low, release HOLD/, keep IO/M/ output
-    jmp !x T3_READ_DATA            ; If x=0 (read), jump to read data
-    jmp T4                         ; x=1 (write), skip to T4
-T3_READ_DATA:
+    jmp x-- T4                     ; If x=1 (write), jump to T4
+T3_READ_INLINE:
+    ; Fall through for 8088 write cycle data (x=0)
     in pins, DATA_SIZE             ; Read data from bus
 T4:
     wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go low
@@ -88,13 +86,11 @@ T4:
     set pins, 0b10111              ; Set control pins to T4 close, DEN=1, ALE=0, DT/R=1, WR=1, RD=1  // DEN high to end cycle
     wait 0 gpio HLDA_PIN side SIDE_HOLD_RELEASE_IO_OUTPUT ; wait for HLDA to go low, keep HOLD released
     set pindirs, 0b00000 side SIDE_HOLD_RELEASE_IO_INPUT ; Set control pins' direction to input / release IO/M and HOLD
-    mov pindirs, NULL              ; Tri-state all address outputs (Release Bus)
-
+    irq next nowait 3             ; Tri-state all address outputs (Release Bus)
 .wrap
 
 T2_READ:
-    set pins, 0b00010              ; Read: set control pins for RD control DEN=0, ALE=0, DT/R=0, WR=1, RD=0 // RD/ low to read data
-    out pindirs, ADDRESS_BUS_SIZE  ; set BD0-BD7 pins to input for RD cycle
+    set pins, 0b00010              ; Read: set control pins for RD control DEN=0, ALE=0, DT/R=0, WR=1, RD=0 // RD/ low to read data 
     jmp T2_CONTINUE                
 
 % c-sdk {

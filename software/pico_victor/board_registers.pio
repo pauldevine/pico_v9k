@@ -25,42 +25,39 @@ out y, 12         ; Store bitmask in Y register for 12 MSB address comparison la
 
 .wrap_target
 T0:
-    mov isr, null                    ; clear ISR
-    mov pindirs, null                 ; set bus control pins to input
+    mov isr, null                     ; clear ISR
     wait 0 GPIO CLOCK_5_PIN           ; Wait for CLK5 to go low
     
 T1:   
-    wait 0 GPIO ALE_PIN              ; wait for ALE to go low = T0 start & wait for address to stabilize
-    wait 1 GPIO ALE_PIN [9]              ; wait for ALE to go high = T1 start & wait for address to stabilize
+    wait 0 GPIO ALE_PIN               ; wait for ALE to go low = T0 start & wait for address to stabilize
+    wait 1 GPIO ALE_PIN [9]           ; wait for ALE to go high = T1 start & wait for address to stabilize
     in pins, ADDRESS_BUS_SIZE         ; shift 12 bits of address into ISR
     mov osr, isr                      ; use OSR to store full 20-bit address for later
     in null, 20                       ; move the address into the lower 12 bits of the register, dropping 8 LSB to compare against 12 MSB
     mov x, isr                        ; X = 12 MSB address bits
     jmp x!=y, T0                      ; if we're not at 0xEF300, restart T0 to try again
-    irq next nowait 0                 ; we're at the DMA Board Registers, trigger IRQ0 to wake extio_helper SM
     mov isr, osr                      ; restore full 20-bit address into ISR
     set x, FIFO_PREFETCH_ADDRESS      ; signal to arm prefetch address payload
     in x, 2                           ; move the prefetch flag into ISR as MSBs // ISR has 00[address]
 
 T2:
     push                              ; Push the current ISR address + read signal onto RX FIFO
+    irq next nowait 0                 ; we're at the DMA Board Registers, trigger IRQ0 to wake extio_helper SM
     mov isr, osr                      ; restore full 20-bit address into ISR
-    pull block                        ; Pull data to send to 8088 from TX FIFO
     jmp pin T3_WRITE                  ; if RD pin is high 8088 is writing, if low 8088 is reading
 
 T3_READ:                                     ; 8088 read cycle // pico's writing
-    out pins, DATA_SIZE [10]              ; drive BD0-BD7 with data for 8088 to read
-    out pindirs, DATA_SIZE [15]       ; set BD0-BD7 as outputs
+    irq next nowait 1                 ; signal to output data on bus
     wait 1 GPIO RD_PIN                ; wait for RD to go high (end of read cycle)
     set x, FIFO_READ_COMMIT           ; signal to arm commit earlier read // wait for 12 cycles to allow for data hold time
     in x, 2                           ; move the read commit flag into ISR as MSBs // ISR has 01[address]
 T4:
     push                              ; send commit signal to arm
-    jmp T0                            ; jump to T4 for the next clock cycle
+    irq next nowait 3                 ; Tri-state all address outputs (Release Bus)
 .wrap
 
-T3_WRITE:                              ; 8088 write cycle // pico's reading
-    wait 1 GPIO READY_PIN           ; Wait for CLK5 to go high to allow data to stabilize
+T3_WRITE:                             ; 8088 write cycle // pico's reading
+    wait 1 GPIO READY_PIN             ; Wait for CLK5 to go high to allow data to stabilize
     set x, FIFO_WRITE_VALUE           ; signal to arm write value payload
     in pins, DATA_SIZE                ; read data the 8088 is writing max 0xFF
     in x, 2                           ; move the WRITE prefetch flag into ISR as MSBs //ISR has 10[data][address]
