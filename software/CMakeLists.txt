@@ -113,6 +113,7 @@ pico_set_binary_type(dma_board_cached default)
 pico_generate_pio_header(dma_board_cached ${CMAKE_CURRENT_LIST_DIR}/pico_victor/board_registers.pio)
 pico_generate_pio_header(dma_board_cached ${CMAKE_CURRENT_LIST_DIR}/pico_victor/dma_read_write.pio)
 pico_generate_pio_header(dma_board_cached ${CMAKE_CURRENT_LIST_DIR}/pico_victor/extio_helper.pio)
+pico_generate_pio_header(dma_board_cached ${CMAKE_CURRENT_LIST_DIR}/pico_victor/bus_output_helper.pio)
 
 pico_enable_stdio_uart(dma_board_cached 1)
 pico_enable_stdio_usb(dma_board_cached 0)
