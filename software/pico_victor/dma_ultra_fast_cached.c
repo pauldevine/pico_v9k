@@ -170,8 +170,10 @@ void __time_critical_func(registers_irq_handler_cached)() {
             trace_data = data;
 
             #ifndef BENCHMARK_MODE
-            uint32_t response = (0xFF00 | (uint32_t)data);
-            pio_sm_put_blocking(PIO_REGISTERS, REGISTERS_SM, response);
+            // Push data byte to bus_output_helper (not board_registers!)
+            PIO helper_pio = dma_get_bus_helper_pio();
+            int helper_sm = dma_get_bus_helper_sm();
+            pio_sm_put_blocking(helper_pio, helper_sm, (uint32_t)(data & 0xFFu));
             #endif
 
             if (masked_offset == 0x80 || masked_offset == 0xA0 || masked_offset == 0xC0) {
@@ -276,7 +278,10 @@ void __time_critical_func(registers_irq_handler_cached_asm)() {
             fifo_pending_prefetch++;
             uint8_t data_now = cached->values[masked_offset];
             trace_data = data_now;
-            PIO_REGISTERS->txf[REGISTERS_SM] = (0xFF00 | (uint32_t)data_now); 
+            // Push data byte to bus_output_helper (not board_registers!)
+            PIO helper_pio = dma_get_bus_helper_pio();
+            int helper_sm = dma_get_bus_helper_sm();
+            pio_sm_put_blocking(helper_pio, helper_sm, (uint32_t)(data_now & 0xFFu));
             //fast_log("PREFETCH BD0 func=%d\n", gpio_get_function(BD0_PIN));
             data = data_now;
             break;
