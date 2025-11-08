@@ -9,6 +9,8 @@
 
 #define PIO_DMA pio0
 #define PIO_REGISTERS pio1
+#define PIO_BUS_HELPER pio0
+#define BUS_HELPER_SM 1
 
 #define PIO_EXTIO pio2
 #define EXTIO_SM 0
@@ -236,7 +238,7 @@ typedef enum {
     SASI_ACK_BIT = 0x40
 } sasi_status_bits_t;
 
-void debug_dump_pin(uint pin); 
+void debug_dump_pin(uint pin);
 void pio_debug_state();
 void core1_main();
 void setup_bus_control();
@@ -245,6 +247,10 @@ dma_registers_t* dma_get_registers();
 void dma_set_unified_sm(PIO pio, int sm);
 int dma_get_unified_sm();
 PIO dma_get_unified_pio();
+// bus_output_helper SM management
+void dma_set_bus_helper_sm(PIO pio, int sm);
+int dma_get_bus_helper_sm();
+PIO dma_get_bus_helper_pio();
 void dma_write_to_victor_ram(PIO write_pio, int write_sm, uint8_t *data, size_t length, uint32_t start_address);
 void dma_read_from_victor_ram(PIO read_pio, int read_sm, uint8_t *data, size_t length, uint32_t start_address);
 void registers_irq_handler();

@@ -316,8 +316,11 @@ void __time_critical_func(registers_irq_handler_ultra)() {
                 value = register_memory[masked_offset];
             }
     #ifndef BENCHMARK_MODE
-            uint32_t response = (0xFF00u | (uint32_t)(value & 0xFFu));
-            pio_sm_put_blocking(PIO_REGISTERS, REGISTERS_SM, response);
+            // Push data byte to bus_output_helper (not board_registers!)
+            // bus_output_helper will output this on BD0-BD7 when it receives IRQ 1
+            PIO helper_pio = dma_get_bus_helper_pio();
+            int helper_sm = dma_get_bus_helper_sm();
+            pio_sm_put_blocking(helper_pio, helper_sm, (uint32_t)(value & 0xFFu));
     #endif
             break;
         }
@@ -411,8 +414,10 @@ void __time_critical_func(registers_irq_handler_ultra_asm)() {
             }
 
             #ifndef BENCHMARK_MODE
-            uint32_t response = (0xFF00u | (uint32_t)data);
-            pio_sm_put_blocking(PIO_REGISTERS, REGISTERS_SM, response);
+            // Push data byte to bus_output_helper (not board_registers!)
+            PIO helper_pio = dma_get_bus_helper_pio();
+            int helper_sm = dma_get_bus_helper_sm();
+            pio_sm_put_blocking(helper_pio, helper_sm, (uint32_t)data);
             #endif
             break;
         }

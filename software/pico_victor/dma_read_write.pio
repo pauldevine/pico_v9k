@@ -75,8 +75,8 @@ T3:
     wait 0 GPIO CLOCK_5_PIN side SIDE_HOLD_RELEASE_IO_OUTPUT ; Wait for CLK5 to go low, release HOLD/, keep IO/M/ output
     jmp x-- T4                     ; If x=1 (write), jump to T4
 T3_READ_INLINE:
-    ; Fall through for 8088 write cycle data (x=0)
-    in pins, DATA_SIZE             ; Read data from bus
+    ; Fall through for DMA read (x=0) - signal bus_output_helper to capture data
+    irq next nowait 3              ; Signal bus_output_helper to read data from BD0-BD7
 T4:
     wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go low
     wait 1 GPIO CLOCK_15B_PIN      ; Wait for CLK15B to go high
@@ -86,7 +86,7 @@ T4:
     set pins, 0b10111              ; Set control pins to T4 close, DEN=1, ALE=0, DT/R=1, WR=1, RD=1  // DEN high to end cycle
     wait 0 gpio HLDA_PIN side SIDE_HOLD_RELEASE_IO_OUTPUT ; wait for HLDA to go low, keep HOLD released
     set pindirs, 0b00000 side SIDE_HOLD_RELEASE_IO_INPUT ; Set control pins' direction to input / release IO/M and HOLD
-    irq next nowait 3             ; Tri-state all address outputs (Release Bus)
+    irq next nowait 4             ; Signal bus_output_helper to tri-state all address outputs (Release Bus)
 .wrap
 
 T2_READ:

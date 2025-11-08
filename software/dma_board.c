@@ -10,6 +10,7 @@
 #include "hardware/clocks.h"
 #include "board_registers.pio.h"
 #include "dma_read_write.pio.h"
+#include "bus_output_helper.pio.h"
 #include "extio_helper.pio.h"
 #include "pico_victor/dma.h"
 #include "pico_victor/debug_queue.h"
@@ -104,6 +105,22 @@ int main() {
     extio_helper_program_init(extio_pio, extio_sm, extio_program_offset);
     pio_sm_set_enabled(extio_pio, extio_sm, true);
     printf("EXTIO PIO initialized\n");
+
+    //configure the bus_output_helper PIO state machine to manage BD0-A19 outputs
+    PIO bus_helper_pio = PIO_BUS_HELPER;
+    int bus_helper_sm = BUS_HELPER_SM;
+    pio_sm_claim(bus_helper_pio, bus_helper_sm);
+    int bus_helper_offset = pio_add_program(bus_helper_pio, &bus_output_helper_program);
+    bus_output_helper_program_init(bus_helper_pio, bus_helper_sm, bus_helper_offset);
+
+    // CRITICAL: Preload pindirs value for DMA read cycles (0xFFF00)
+    // This satisfies the preamble in bus_output_helper.pio lines 12-13
+    pio_sm_put_blocking(bus_helper_pio, bus_helper_sm, 0xFFF00);
+
+    // Store the bus_helper SM info for IRQ handlers to use
+    dma_set_bus_helper_sm(bus_helper_pio, bus_helper_sm);
+    printf("bus_output_helper initialized on PIO%d SM%d\n",
+           pio_get_index(bus_helper_pio), bus_helper_sm);
 
     printf("pio: %d register_sm: %d dma_registers_program_offset: %d pin: %d\n", register_pio, register_sm, dma_registers_program_offset, BD0_PIN);
     printf("about to iniitialize dma_registers with offfset %X \n", DMA_REGISTER_BITMASK);
