@@ -154,6 +154,23 @@ PIO dma_get_unified_pio() {
     return unified_dma_pio ? unified_dma_pio : PIO_DMA;
 }
 
+// bus_output_helper SM storage and accessors
+static PIO bus_helper_pio = NULL;
+static int bus_helper_sm = -1;
+
+void dma_set_bus_helper_sm(PIO pio, int sm) {
+    bus_helper_pio = pio;
+    bus_helper_sm = sm;
+}
+
+int dma_get_bus_helper_sm() {
+    return bus_helper_sm;
+}
+
+PIO dma_get_bus_helper_pio() {
+    return bus_helper_pio ? bus_helper_pio : PIO_BUS_HELPER;
+}
+
 #ifdef CACHED_MODE
 // Forward declaration for cached version
 void core1_main_cached(void);
@@ -640,10 +657,13 @@ uint8_t dma_read_register(dma_registers_t *dma, dma_reg_offsets_t offset) {
             }
 
             uint8_t data = dma_read_register(registers_ptr, masked_offset);
-            uint32_t pindirs_and_data = (0xFFu << 8) | (data & 0xFFu);
 
             #ifndef BENCHMARK_MODE
-            pio_sm_put_blocking(pio, sm, pindirs_and_data); //send the data back to the 8088
+            // Push data byte to bus_output_helper (not board_registers!)
+            // bus_output_helper will output this on BD0-BD7 when it receives IRQ 1
+            PIO helper_pio = dma_get_bus_helper_pio();
+            int helper_sm = dma_get_bus_helper_sm();
+            pio_sm_put_blocking(helper_pio, helper_sm, (uint32_t)(data & 0xFFu));
             #endif
             fast_log("[IRQ#%d] PREFETCH addr=%05X offset=%02X data=0x%02X\n", irq_count, address, masked_offset, data);
             break;
