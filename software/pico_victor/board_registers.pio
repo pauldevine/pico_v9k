@@ -47,13 +47,14 @@ T2:
     jmp pin T3_WRITE                  ; if RD pin is high 8088 is writing, if low 8088 is reading
 
 T3_READ:                                     ; 8088 read cycle // pico's writing
-    irq next nowait 1                 ; signal to output data on bus
+    wait 1 GPIO READY_PIN             ; Wait for READY - gives ARM 800ns window to push data to bus_output_helper
+    irq next nowait 1                 ; signal to bus_output_helper to output data on bus
     wait 1 GPIO RD_PIN                ; wait for RD to go high (end of read cycle)
-    set x, FIFO_READ_COMMIT           ; signal to arm commit earlier read // wait for 12 cycles to allow for data hold time
+    set x, FIFO_READ_COMMIT           ; signal to arm commit earlier read
     in x, 2                           ; move the read commit flag into ISR as MSBs // ISR has 01[address]
 T4:
     push                              ; send commit signal to arm
-    irq next nowait 3                 ; Tri-state all address outputs (Release Bus)
+    irq next nowait 4                 ; Signal bus_output_helper to tri-state bus
 .wrap
 
 T3_WRITE:                             ; 8088 write cycle // pico's reading

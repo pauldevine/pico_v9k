@@ -1,6 +1,8 @@
 .pio_version 1
 .define RD_PIN 21
-.define ALE_PIN 24 
+.define ALE_PIN 24
+.define HLDA_PIN 29
+.define DATA_SIZE 8
 .program bus_output_helper
 
 
@@ -21,8 +23,8 @@ REGISTER_READ_CYCLE:
     out pindirs, 8      ; set BD0-BD7 as outputs
 
 T4_END:
-    wait 1 irq 4        ; wait for DMA read_write SM to signal cycle complete
-    mov pindirs, null   ; drive address pins low to tri-state bus
+    wait 1 irq 4        ; wait for source SM (board_registers or dma_read_write) to signal cycle complete
+    mov pindirs, null   ; tri-state bus (BD0-BD7 for registers, BD0-A19 for DMA)
 .wrap
 
 DMA_CYCLE:
@@ -56,29 +58,38 @@ DMA_T2_READ:
 #include "pico_victor/dma.h"
 
 static inline void bus_output_helper_program_init(PIO pio, uint sm, uint offset) {
-    //TODO clean this up for bus_output_helper, minimum get JMP pin assigned
-    uint extio_offset = EXTIO_PIN - 16; // PIO pins start at GPIO16 for this base
-    printf("Configuring PIO for EXTIO helper SM\n");
+    printf("Configuring PIO for bus_output_helper SM\n");
     pio_sm_config c = bus_output_helper_program_get_default_config(offset);
 
-    sm_config_set_set_pins(&c, EXTIO_PIN, 1);
-    pio_gpio_init(pio, EXTIO_PIN);
-    gpio_set_drive_strength(EXTIO_PIN, GPIO_DRIVE_STRENGTH_2MA);
-    gpio_set_slew_rate(EXTIO_PIN, GPIO_SLEW_RATE_SLOW);
-    gpio_disable_pulls(EXTIO_PIN);
+    // Configure OUT pins for BD0-A19 (20 pins starting at BD0_PIN)
+    sm_config_set_out_pins(&c, BD0_PIN, 20);
 
-    pio_gpio_init(pio, RD_PIN);
-    pio_gpio_init(pio, ALE_PIN);
+    // Configure JMP pin for HLDA (to distinguish DMA vs register cycles)
+    sm_config_set_jmp_pin(&c, HLDA_PIN);
 
-    // preload latch low, will use pindirs to toggle open-drain low as needed
-    pio_sm_set_pins_with_mask(pio, sm, 0u, 1u << extio_offset); 
-    pio_sm_set_consecutive_pindirs(pio, sm, extio_offset, 1, false);
-    irq_clear(0);
-    sm_config_set_clkdiv(&c, 1.0f);  
+    // Initialize GPIO pins for bus control
+    for (int i = BD0_PIN; i < BD0_PIN + 20; i++) {
+        pio_gpio_init(pio, i);
+        gpio_set_drive_strength(i, GPIO_DRIVE_STRENGTH_2MA);
+        gpio_set_slew_rate(i, GPIO_SLEW_RATE_SLOW);
+        gpio_disable_pulls(i);
+        pio_sm_set_pins_with_mask(pio, sm, 0u, 1u << i); // preload low
+    }
+
+    // Set all bus pins as inputs initially (will be controlled by pindirs instructions)
+    pio_sm_set_consecutive_pindirs(pio, sm, BD0_PIN, 20, false);
+
+    sm_config_set_clkdiv(&c, 1.0f);
 
     // Load our configuration, and jump to the start of the program
     int init_rc = pio_sm_init(pio, sm, offset, &c);
     printf("pio_sm_init rc=%d, SM%d execctrl after init=0x%08x\n", init_rc, sm, pio->sm[sm].execctrl);
+
+    if (init_rc == PICO_OK) {
+        pio_sm_set_enabled(pio, sm, true);
+    } else {
+        printf("WARNING: pio_sm_init failed; SM%d not enabled\n", sm);
+    }
 }
 
 %}
