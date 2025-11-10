@@ -3,6 +3,13 @@
 .define ALE_PIN 24
 .define HLDA_PIN 29
 .define DATA_SIZE 8
+
+.define FIFO_PREFETCH_ADDRESS 0x00
+.define FIFO_READ_COMMIT 0x01
+.define FIFO_WRITE_VALUE 0x02
+.define FIFO_DMA_READ    0x03
+
+
 .program bus_output_helper
 
 
@@ -47,7 +54,9 @@ DMA_T2_READ:
     mov pindirs, y      ; set [A19-A8] outputs, [BD7-BD0] inputs,  for DMA RD
     wait 1 irq 3        ; wait for DMA read_write SM to signal read capture
     in pins, DATA_SIZE  ; RD case, read data from bus
-    push                ; push data to FIFO for ARM to read
+    set x, FIFO_DMA_READ ; signal to arm DMA read data payload
+    in x, 2             ; move the DMA read flag into ISR as MSBs // ISR has 11[data]
+    push                ; push data to FIFO for ARM to read push payload RD: [payload type=3 /2bits][data BD7-BD0 /8bits][address A19-A0 /20bits]
     jmp T4_END          ; wait for cycle complete
 
 

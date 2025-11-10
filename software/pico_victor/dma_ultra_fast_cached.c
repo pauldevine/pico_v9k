@@ -173,7 +173,15 @@ void __time_critical_func(registers_irq_handler_cached)() {
             // Push data byte to bus_output_helper (not board_registers!)
             PIO helper_pio = dma_get_bus_helper_pio();
             int helper_sm = dma_get_bus_helper_sm();
+
+            // Debug: Check FIFO state before push
+            uint32_t tx_level_before = pio_sm_get_tx_fifo_level(helper_pio, helper_sm);
             pio_sm_put_blocking(helper_pio, helper_sm, (uint32_t)(data & 0xFFu));
+            uint32_t tx_level_after = pio_sm_get_tx_fifo_level(helper_pio, helper_sm);
+
+            // Log the push attempt
+            fast_log("BUS_HELPER_PUSH: data=0x%02x, TX before=%d, after=%d, pio=%p, sm=%d\n",
+                     data, tx_level_before, tx_level_after, helper_pio, helper_sm);
             #endif
 
             if (masked_offset == 0x80 || masked_offset == 0xA0 || masked_offset == 0xC0) {
@@ -251,7 +259,6 @@ void __time_critical_func(registers_irq_handler_cached_asm)() {
     uint8_t data;
     uint8_t trace_flags = 0;
     uint8_t pending_before = (uint8_t)fifo_pending_prefetch;
-    uint8_t trace_data = 0;
 
     // Set debug pin high
     *(volatile uint32_t *)SIO_GPIO_OUT_SET_REG = DEBUG_PIN_MASK;
@@ -259,8 +266,8 @@ void __time_critical_func(registers_irq_handler_cached_asm)() {
     // Get value from PIO FIFO - this is the critical timing point
     raw_value = PIO_REGISTERS->rxf[REGISTERS_SM];
 
-    //extract 2-bit payload type flag
-    uint32_t payload_type = (raw_value >> 30) & 0x03;
+    //extract 2-bit payload type flag (using the corrected function)
+    uint32_t payload_type = dma_fifo_payload_type(raw_value);
 
     // Get cached registers pointer
     cached_registers_t *cached = &cached_regs;
@@ -276,14 +283,23 @@ void __time_critical_func(registers_irq_handler_cached_asm)() {
             masked_offset &= 0xFF;
 
             fifo_pending_prefetch++;
-            uint8_t data_now = cached->values[masked_offset];
-            trace_data = data_now;
+            uint8_t data = cached->values[masked_offset];
+
+            // Debug: Check if PIO_BUS_HELPER and BUS_HELPER_SM are correct
+            fast_log("ASM_PUSH: offset=0x%02x data=0x%02x pio=%p sm=%d\n",
+                     masked_offset, data, PIO_BUS_HELPER, BUS_HELPER_SM);
+
+            // Check TX FIFO level before pushing
+            uint32_t tx_before = pio_sm_get_tx_fifo_level(PIO_BUS_HELPER, BUS_HELPER_SM);
+
             // Push data byte to bus_output_helper (not board_registers!)
-            PIO helper_pio = dma_get_bus_helper_pio();
-            int helper_sm = dma_get_bus_helper_sm();
-            pio_sm_put_blocking(helper_pio, helper_sm, (uint32_t)(data_now & 0xFFu));
+            pio_sm_put_blocking(PIO_BUS_HELPER, BUS_HELPER_SM, (uint32_t)(data & 0xFFu));
+
+            // Check TX FIFO level after pushing
+            uint32_t tx_after = pio_sm_get_tx_fifo_level(PIO_BUS_HELPER, BUS_HELPER_SM);
+            fast_log("ASM_PUSH_RESULT: tx_before=%d tx_after=%d\n", tx_before, tx_after);
+
             //fast_log("PREFETCH BD0 func=%d\n", gpio_get_function(BD0_PIN));
-            data = data_now;
             break;
         }
         case FIFO_READ_COMMIT:
@@ -292,6 +308,8 @@ void __time_critical_func(registers_irq_handler_cached_asm)() {
                 fast_log("FIFO WARN: Commit without prefetch raw=0x%08x\n", raw_value);
             } else {
                 fifo_pending_prefetch--;
+                // Debug: Log when we get a commit (which means board_registers reached T3_READ)
+                fast_log("ASM_COMMIT: Received read commit, pending=%d\n", fifo_pending_prefetch);
             }
             enque_result = true;
             break;
@@ -311,7 +329,6 @@ void __time_critical_func(registers_irq_handler_cached_asm)() {
             if (masked_offset == REG_STATUS) {
                 cached->values[0x30] = data;
             }
-            trace_data = data;
             if (fifo_pending_prefetch > 0) {
                 fifo_pending_prefetch--;
             }
@@ -325,7 +342,7 @@ void __time_critical_func(registers_irq_handler_cached_asm)() {
     }
 
     uint8_t pending_after = (uint8_t)fifo_pending_prefetch;
-    fifo_trace_record(raw_value, payload_type, pending_before, pending_after, trace_flags, trace_data);
+    fifo_trace_record(raw_value, payload_type, pending_before, pending_after, trace_flags, data);
 
     //fast_log("CACHED ASM before queue: raw_value=0x%08x\n", raw_value);
     if (enque_result) {

@@ -13,12 +13,12 @@
 #define CLOCK_5_PIN  29
 #define CLOCK_15B_PIN 30
 #define DEN_PIN 25      // First side-set pin (must be consecutive for PIO)
-#define IO_M_PIN 26     // Second side-set pin
+#define EXTIO_PIN 27     // Second side-set pin
 
 #define UART_ID uart0   // Changed back to uart0 like working programs
 #define BAUD_RATE 115200
-#define UART_TX_PIN 46   // Using same pins as main project
-#define UART_RX_PIN 45
+#define UART_TX_PIN 0   // Using same pins as main project
+#define UART_RX_PIN -1
 
 // LED for status indication - PGA2350 has LED on pin 25
 // Using a different pin for status LED to avoid conflict
@@ -41,7 +41,7 @@ void print_pin_states(void) {
            gpio_get(CLOCK_5_PIN),
            gpio_get(CLOCK_15B_PIN),
            gpio_get(DEN_PIN),
-           gpio_get(IO_M_PIN));
+           gpio_get(EXTIO_PIN));
 }
 
 void setup_clock_simulation(void) {
@@ -88,7 +88,7 @@ int main() {
     printf("This test verifies:\n");
     printf("1. CLOCK_5 wait functionality (pin %d)\n", CLOCK_5_PIN);
     printf("2. CLOCK_15B wait functionality (pin %d)\n", CLOCK_15B_PIN);
-    printf("3. Side-set output on DEN (pin %d) and IO_M (pin %d)\n", DEN_PIN, IO_M_PIN);
+    printf("3. Side-set output on DEN (pin %d) and IO_M (pin %d)\n", DEN_PIN, EXTIO_PIN);
     printf("\n");
 
     // Initialize LED for status
@@ -98,11 +98,11 @@ int main() {
 
     // Initialize monitoring pins (to read their state)
     gpio_init(DEN_PIN);
-    gpio_init(IO_M_PIN);
+    gpio_init(EXTIO_PIN);
 
     // Before PIO takes over, set them as inputs to read initial state
     gpio_set_dir(DEN_PIN, GPIO_IN);
-    gpio_set_dir(IO_M_PIN, GPIO_IN);
+    gpio_set_dir(EXTIO_PIN, GPIO_IN);
 
     printf("Initial pin states:\n");
     print_pin_states();
@@ -136,7 +136,7 @@ int main() {
     while (true) {
         // Read current pin states
         uint32_t den_state = gpio_get(DEN_PIN);
-        uint32_t iom_state = gpio_get(IO_M_PIN);
+        uint32_t iom_state = gpio_get(EXTIO_PIN);
 
         // Print when side-set pins change
         if (den_state != last_den || iom_state != last_iom) {

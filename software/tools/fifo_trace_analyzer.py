@@ -129,25 +129,25 @@ def parse_trace_lines(lines: Iterable[str]) -> Iterable[TraceEntry]:
         decoded_data: Optional[int] = None
         in_range = False
 
-        if tag == 0:
-            address = (raw >> 10) & 0xFFFFF
+        if tag == 0:  # PREFETCH
+            address = raw & 0xFFFFF  # Read prefetch: address in bits 19-0
             in_range = DMA_REGISTER_BASE <= address < DMA_REGISTER_BASE + 0x100
             offset = (address - DMA_REGISTER_BASE) & 0xFFFFF
             if in_range:
                 masked_offset = dma_mask_offset(offset)
-        elif tag == 1:
-            address = (raw >> 10) & 0xFFFFF
+        elif tag == 1:  # COMMIT
+            address = raw & 0xFFFFF  # Read commit: address in bits 19-0
             in_range = DMA_REGISTER_BASE <= address < DMA_REGISTER_BASE + 0x100
             offset = (address - DMA_REGISTER_BASE) & 0xFFFFF
             if in_range:
                 masked_offset = dma_mask_offset(offset)
-        elif tag == 2:
-            address = (raw >> 2) & 0xFFFFF
+        elif tag == 2:  # WRITE
+            address = (raw >> 2) & 0xFFFFF  # Write: address in bits 21-2
             in_range = DMA_REGISTER_BASE <= address < DMA_REGISTER_BASE + 0x100
             offset = (address - DMA_REGISTER_BASE) & 0xFFFFF
             if in_range:
                 masked_offset = dma_mask_offset(offset)
-            decoded_data = (raw >> 22) & 0xFF
+            decoded_data = (raw >> 22) & 0xFF  # Write: data in bits 29-22
 
         if masked_offset is not None:
             masked_offset &= 0xFF

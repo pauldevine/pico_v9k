@@ -1,5 +1,5 @@
 .pio_version 1
-.define IO_M_PIN 27
+.define IO_M_PIN 34
 .define HLDA_PIN 29
 .program iom_helper
 .side_set 1 pindirs;
@@ -22,7 +22,8 @@ static inline void iom_helper_program_init(PIO pio, uint sm, uint offset) {
     printf("Configuring PIO for IOM helper SM\n");
     pio_sm_config c = iom_helper_program_get_default_config(offset);
 
-    sm_config_set_sideset_pins(&c, IO_M_PIN, 1);
+    sm_config_set_sideset(&c, 1, false, true);
+    sm_config_set_sideset_pin_base(&c, IO_M_PIN);
     pio_gpio_init(pio, IO_M_PIN);
     gpio_set_drive_strength(IO_M_PIN, GPIO_DRIVE_STRENGTH_2MA);
     gpio_set_slew_rate(IO_M_PIN, GPIO_SLEW_RATE_SLOW);

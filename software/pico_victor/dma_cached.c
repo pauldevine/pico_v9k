@@ -93,10 +93,10 @@ void core1_main_cached() {
         printf("Pre-warming IRQ handler cache...\n");
         setup_pio_instance(register_pio, register_sm);
         // Temporarily disable IRQ while we warm up
-        irq_set_enabled(PIO1_IRQ_0, false);
+        irq_set_enabled(PIO0_IRQ_0, false);
 
         // Set the cached handler (use _asm version for maximum speed)
-        irq_set_exclusive_handler(PIO1_IRQ_0, registers_irq_handler_cached_asm);
+        irq_set_exclusive_handler(PIO0_IRQ_0, registers_irq_handler_cached_asm);
 
         // Call handler multiple times with different operations to fully warm caches
         for (int warm_iter = 0; warm_iter < 10; warm_iter++) {
@@ -131,9 +131,9 @@ void core1_main_cached() {
                     pio_sm_is_exec_stalled(register_pio, register_sm));
 
     // Enable the IRQ
-    setup_pio_instance(register_pio, register_sm);
+    // Note: setup_pio_instance already called during cache warming, don't call again
     pio_set_irq0_source_enabled(register_pio, fifo_sources[register_sm], true);
-    irq_set_enabled(PIO1_IRQ_0, true);
+    irq_set_enabled(PIO0_IRQ_0, true);
 
     printf("Core1 started with CACHED handler, PIO: %d SM: %d\n", register_pio, register_sm);
     printf("Testing IRQ setup... FIFO level: %d\n", pio_sm_get_rx_fifo_level(register_pio, register_sm));

@@ -3,17 +3,17 @@
 #include <stdio.h>
 #include "hardware/pio.h"
 
+#define PIO_REGISTERS pio0
 #define REGISTERS_SM  0
-#define PIO_BUS pio0
-#define PIO_ADDRESS pio1
 
-#define PIO_DMA pio0
-#define PIO_REGISTERS pio1
-#define PIO_BUS_HELPER pio0
-#define BUS_HELPER_SM 1
+#define PIO_BUS_HELPER pio1
+#define BUS_HELPER_SM 0
 
-#define PIO_EXTIO pio2
-#define EXTIO_SM 0
+#define PIO_DMA pio2
+#define DMA_SM 0
+
+#define PIO_IOM pio2
+#define IOM_SM 1
 
 #define ADDR_START_PIN 1 // DMA address output
 #define LOWER_PIN_BASE 0
@@ -32,14 +32,14 @@
 #define ALE_PIN 24      
 #define DEN_PIN 25 
 #define HOLD_PIN 26  
-#define IO_M_PIN 27
+#define EXTIO_PIN 27
 #define READY_PIN 28
 #define HLDA_PIN 29
 #define CLOCK_5_PIN 30
 #define CLOCK_15B_PIN 31
 #define IR_4_PIN 32
 #define XACK_PIN 33
-#define EXTIO_PIN 34
+#define IO_M_PIN 34
 #define IR_5_PIN 35
 #define SSO_PIN 36
 #define DLATCH_PIN 37
@@ -56,26 +56,28 @@
 #define FIFO_PREFETCH_ADDRESS 0x00
 #define FIFO_READ_COMMIT 0x01
 #define FIFO_WRITE_VALUE 0x02
-#define FIFO_UNUSED 0x03
+#define FIFO_DMA_READ    0x03
+#define FIFO_UNUSED      0x04
 
 static inline uint32_t dma_fifo_payload_type(uint32_t raw_value) {
-    return (raw_value >> 30) & 0x03u;
+    // PIO encoding varies by operation type:
+    return (raw_value >> 30) & 0x03u;  // Write: type in bits 31-30
 }
 
 static inline uint32_t dma_fifo_prefetch_address(uint32_t raw_value) {
-    return (raw_value >> 10) & 0xFFFFFu;
+    return raw_value & 0xFFFFFu;  // Address is in bits 0-19
 }
 
 static inline uint32_t dma_fifo_commit_address(uint32_t raw_value) {
-    return (raw_value >> 10) & 0xFFFFFu;
+    return raw_value & 0xFFFFFu;  // Address is in bits 0-19
 }
 
 static inline uint32_t dma_fifo_write_address(uint32_t raw_value) {
-    return (raw_value >> 2) & 0xFFFFFu;
+    return (raw_value >> 2) & 0xFFFFFu;  // Write address is in bits 21-2
 }
 
 static inline uint8_t dma_fifo_write_data(uint32_t raw_value) {
-    return (raw_value >> 22) & 0xFFu;
+    return (raw_value >> 22) & 0xFFu;  // Write data is in bits 29-22
 }
 
 static inline uint32_t dma_mask_offset(uint32_t offset) {
