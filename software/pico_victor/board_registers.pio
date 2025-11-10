@@ -63,6 +63,7 @@ T4:
 T3_WRITE:                             ; 8088 write cycle // pico's reading
     wait 1 GPIO READY_PIN side 0             ; Wait for CLK5 to go high to allow data to stabilize
     set x, FIFO_WRITE_VALUE side 0 [15]          ; signal to arm write value payload
+    mov isr, osr side 0                     ; restore full 20-bit address into ISR
     in pins, DATA_SIZE side 0              ; read data the 8088 is writing max 0xFF
     in x, 2 side 0                           ; move the WRITE prefetch flag into ISR as MSBs //ISR has 10[data][address]
     jmp T4 side 0                            ; jump to T4 for the next clock cycle
