@@ -65,11 +65,11 @@ static inline uint32_t dma_fifo_payload_type(uint32_t raw_value) {
 }
 
 static inline uint32_t dma_fifo_prefetch_address(uint32_t raw_value) {
-    return raw_value & 0xFFFFFu;  // Address is in bits 0-19
+    return (raw_value >> 10) & 0xFFFFFu;  // Address is in bits 29-10 (board_registers uses right-shift ISR)
 }
 
 static inline uint32_t dma_fifo_commit_address(uint32_t raw_value) {
-    return raw_value & 0xFFFFFu;  // Address is in bits 0-19
+    return (raw_value >> 10) & 0xFFFFFu;  // Address is in bits 29-10 (board_registers uses right-shift ISR)
 }
 
 static inline uint32_t dma_fifo_write_address(uint32_t raw_value) {
