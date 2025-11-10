@@ -73,7 +73,7 @@ static inline uint32_t dma_fifo_commit_address(uint32_t raw_value) {
 }
 
 static inline uint32_t dma_fifo_write_address(uint32_t raw_value) {
-    return raw_value & 0xFFFFFu;  // Write address is in bits 19-0 (after ISR right-shifts by 10 total)
+    return (raw_value >> 2) & 0xFFFFFu;  // Write address is in bits 21-2 (ISR restored at line 66, then shifts by 10)
 }
 
 static inline uint8_t dma_fifo_write_data(uint32_t raw_value) {
@@ -96,7 +96,7 @@ static inline uint32_t dma_fifo_encode_commit(uint32_t address) {
 }
 
 static inline uint32_t dma_fifo_encode_write(uint32_t address, uint8_t data) {
-    return (address & 0xFFFFFu) |              // Address in bits 19-0
+    return ((address & 0xFFFFFu) << 2) |       // Address in bits 21-2
            (((uint32_t)data & 0xFFu) << 22) |  // Data in bits 29-22
            ((uint32_t)FIFO_WRITE_VALUE << 30); // Type in bits 31-30
 }
