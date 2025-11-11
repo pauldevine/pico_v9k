@@ -225,9 +225,6 @@ void __time_critical_func(registers_irq_handler_cached)() {
                 cached->values[0x30] = write_data;
             }
             trace_data = write_data;
-            if (fifo_pending_prefetch > 0) {
-                fifo_pending_prefetch--;
-            }
             trace_flags |= FIFO_TRACE_FLAG_WRITE;
 
             if (masked_offset == 0x80 || masked_offset == 0xA0 || masked_offset == 0xC0) {
@@ -328,9 +325,6 @@ void __time_critical_func(registers_irq_handler_cached_asm)() {
             cached->values[masked_offset] = data;
             if (masked_offset == REG_STATUS) {
                 cached->values[0x30] = data;
-            }
-            if (fifo_pending_prefetch > 0) {
-                fifo_pending_prefetch--;
             }
             trace_flags |= FIFO_TRACE_FLAG_WRITE;
             break;
