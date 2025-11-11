@@ -51,7 +51,7 @@
 
 .wrap_target
 T0:                                ; Address Setup Phase (Put Address on Bus)
-    pull block                     ; Block if FIFO empty (HOLD stays released!)
+    wait 1 irq 0                   ; Block if FIFO empty (HOLD stays released!)
     out x, 1                       ; Get W/R bit from LSB (1=Write, 0=Read)
     set pins, 0b11111 side SIDE_HOLD_ASSERT_IO_INPUT ; Assert HOLD/, keep IO/M/ input during request
     wait 1 gpio HLDA_PIN           ; wait for HLDA to go high
