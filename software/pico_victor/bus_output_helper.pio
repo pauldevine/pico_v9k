@@ -39,7 +39,7 @@ T3_READ_REG:                             ; 8088 read cycle // pico's writing
     pull block side 1                    ; Pull data byte to output from FIFO for 8088 to read 
     out pins, 8 side 1                   ; we're outputing byte on BD0-BD7, 8088 is driving A8-A19
     out pindirs, 8 side 1                ; set BD0-BD7 as outputs
-
+ 
 T4_END:
     wait 1 irq 4 side 1       ; wait for source SM (board_registers or dma_read_write) to signal cycle complete
     mov pindirs, null side 0  ; tri-state bus (BD0-BD7 for registers, BD0-A19 for DMA)

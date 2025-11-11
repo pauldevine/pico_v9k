@@ -17,7 +17,7 @@
 
 
 .program board_registers
-.side_set 1
+.side_set 1 
 
 ; --- Pre-amble ---
 ; This code runs once at the start for each state machine initialization

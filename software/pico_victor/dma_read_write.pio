@@ -13,7 +13,7 @@
 .define ADDR_CONTROL_SIZE 27
 .define CONTROL_PINCOUNT 12
 .define DATA_SIZE 8
-
+ 
 .program dma_read_write
 .side_set 2 opt pindirs; 
 
