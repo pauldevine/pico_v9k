@@ -22,17 +22,10 @@ void registers_irq_handler_cached_asm(void);
 void registers_irq_handler_cached_init(void);
 
 static inline void warmup_read_sequence(PIO pio, int sm, uint32_t address) {
+    // bus_output_helper pushes PREFETCH when handling reads
     if (pio_sm_is_tx_fifo_empty(pio, sm)) {
         pio_sm_put(pio, sm, dma_fifo_encode_prefetch(address));
-        registers_irq_handler_cached_asm();
-        if (!pio_sm_is_rx_fifo_empty(pio, sm)) {
-            pio_sm_get(pio, sm);
-        }
-    }
-
-    if (pio_sm_is_tx_fifo_empty(pio, sm)) {
-        pio_sm_put(pio, sm, dma_fifo_encode_commit(address));
-        registers_irq_handler_cached_asm();
+        bus_output_helper_irq_handler_cached_asm();
         if (!pio_sm_is_rx_fifo_empty(pio, sm)) {
             pio_sm_get(pio, sm);
         }
@@ -40,17 +33,10 @@ static inline void warmup_read_sequence(PIO pio, int sm, uint32_t address) {
 }
 
 static inline void warmup_write_sequence(PIO pio, int sm, uint32_t address, uint8_t value) {
-    if (pio_sm_is_tx_fifo_empty(pio, sm)) {
-        pio_sm_put(pio, sm, dma_fifo_encode_prefetch(address));
-        registers_irq_handler_cached_asm();
-        if (!pio_sm_is_rx_fifo_empty(pio, sm)) {
-            pio_sm_get(pio, sm);
-        }
-    }
-
+    // board_registers pushes WRITE_VALUE when handling writes
     if (pio_sm_is_tx_fifo_empty(pio, sm)) {
         pio_sm_put(pio, sm, dma_fifo_encode_write(address, value));
-        registers_irq_handler_cached_asm();
+        board_registers_irq_handler_cached_asm();
         if (!pio_sm_is_rx_fifo_empty(pio, sm)) {
             pio_sm_get(pio, sm);
         }
@@ -64,9 +50,12 @@ void core1_main_cached() {
 
     PIO register_pio = PIO_REGISTERS;
     int register_sm = REGISTERS_SM;
+    PIO bus_helper_pio = PIO_BUS_HELPER;
+    int bus_helper_sm = BUS_HELPER_SM;
 
-    printf("Setting up CACHED IRQ for PIO%d SM%d\n", pio_get_index(register_pio), register_sm);
-    printf("FIFO source: %d\n", fifo_sources[register_sm]);
+    printf("Setting up CACHED IRQ handlers\n");
+    printf("  board_registers: PIO%d SM%d\n", pio_get_index(register_pio), register_sm);
+    printf("  bus_output_helper: PIO%d SM%d\n", pio_get_index(bus_helper_pio), bus_helper_sm);
 
     // Initialize the cached/deferred system
     printf("Initializing cached/deferred processing system...\n");
@@ -90,26 +79,35 @@ void core1_main_cached() {
         cached->values[REG_DATA] = 0xFF;
         cached->values[REG_CONTROL] = 0;
 
-        printf("Pre-warming IRQ handler cache...\n");
-        setup_pio_instance(register_pio, register_sm);
-        // Temporarily disable IRQ while we warm up
+        printf("Pre-warming IRQ handler caches...\n");
+
+        // Temporarily disable IRQs while we warm up
         irq_set_enabled(PIO0_IRQ_0, false);
+        irq_set_enabled(PIO1_IRQ_0, false);
 
-        // Set the cached handler (use _asm version for maximum speed)
-        irq_set_exclusive_handler(PIO0_IRQ_0, registers_irq_handler_cached_asm);
+        // Set the IRQ handlers for both PIOs
+        irq_set_exclusive_handler(PIO0_IRQ_0, board_registers_irq_handler_cached_asm);
+        irq_set_exclusive_handler(PIO1_IRQ_0, bus_output_helper_irq_handler_cached_asm);
 
-        // Call handler multiple times with different operations to fully warm caches
+        // Warm up board_registers handler (handles writes only)
+        setup_pio_instance(register_pio, register_sm);
         for (int warm_iter = 0; warm_iter < 10; warm_iter++) {
             warmup_write_sequence(register_pio, register_sm, DMA_REGISTER_BASE + REG_CONTROL, 0x00);
-            warmup_read_sequence(register_pio, register_sm, DMA_REGISTER_BASE + REG_DATA);
-            warmup_read_sequence(register_pio, register_sm, DMA_REGISTER_BASE + REG_STATUS);
             warmup_write_sequence(register_pio, register_sm, DMA_REGISTER_BASE + REG_ADDR_L, 0x00);
-            warmup_read_sequence(register_pio, register_sm, DMA_REGISTER_BASE + REG_ADDR_L);
             warmup_write_sequence(register_pio, register_sm, DMA_REGISTER_BASE + REG_ADDR_M, 0x00);
             warmup_write_sequence(register_pio, register_sm, DMA_REGISTER_BASE + REG_ADDR_H, 0x00);
         }
 
-        printf("Cache pre-warming complete (70 handler calls)\n");
+        // Warm up bus_output_helper handler (handles reads and DMA reads)
+        // Note: bus_output_helper actually processes reads, not board_registers
+        setup_pio_instance(bus_helper_pio, bus_helper_sm);
+        for (int warm_iter = 0; warm_iter < 10; warm_iter++) {
+            warmup_read_sequence(bus_helper_pio, bus_helper_sm, DMA_REGISTER_BASE + REG_DATA);
+            warmup_read_sequence(bus_helper_pio, bus_helper_sm, DMA_REGISTER_BASE + REG_STATUS);
+            warmup_read_sequence(bus_helper_pio, bus_helper_sm, DMA_REGISTER_BASE + REG_ADDR_L);
+        }
+
+        printf("Cache pre-warming complete\n");
 
         // Small delay to let caches settle
         busy_wait_us(100);
@@ -120,23 +118,36 @@ void core1_main_cached() {
         }
     }
 
-    //clear the FIFOs so cache timing doesn't interfere with normal operation
-    pio_sm_set_enabled(register_pio, register_sm, false);   
-    pio_sm_clear_fifos(register_pio, register_sm);          
-    pio_sm_set_enabled(register_pio, register_sm, true);   
-    printf("\nPIO check: FIFO RX level=%d, TX level=%d, PC=0x%x, stalled=%d\n", 
+    // Clear the FIFOs so cache timing doesn't interfere with normal operation
+    pio_sm_set_enabled(register_pio, register_sm, false);
+    pio_sm_clear_fifos(register_pio, register_sm);
+    pio_sm_set_enabled(register_pio, register_sm, true);
+
+    pio_sm_set_enabled(bus_helper_pio, bus_helper_sm, false);
+    pio_sm_clear_fifos(bus_helper_pio, bus_helper_sm);
+    pio_sm_set_enabled(bus_helper_pio, bus_helper_sm, true);
+
+    printf("\nPIO check board_registers: FIFO RX level=%d, TX level=%d, PC=0x%x, stalled=%d\n",
                     pio_sm_get_rx_fifo_level(register_pio, register_sm),
                     pio_sm_get_tx_fifo_level(register_pio, register_sm),
                     pio_sm_get_pc(register_pio, register_sm),
                     pio_sm_is_exec_stalled(register_pio, register_sm));
 
-    // Enable the IRQ
-    // Note: setup_pio_instance already called during cache warming, don't call again
-    pio_set_irq0_source_enabled(register_pio, fifo_sources[register_sm], true);
-    irq_set_enabled(PIO0_IRQ_0, true);
+    printf("PIO check bus_output_helper: FIFO RX level=%d, TX level=%d, PC=0x%x, stalled=%d\n",
+                    pio_sm_get_rx_fifo_level(bus_helper_pio, bus_helper_sm),
+                    pio_sm_get_tx_fifo_level(bus_helper_pio, bus_helper_sm),
+                    pio_sm_get_pc(bus_helper_pio, bus_helper_sm),
+                    pio_sm_is_exec_stalled(bus_helper_pio, bus_helper_sm));
 
-    printf("Core1 started with CACHED handler, PIO: %d SM: %d\n", register_pio, register_sm);
-    printf("Testing IRQ setup... FIFO level: %d\n", pio_sm_get_rx_fifo_level(register_pio, register_sm));
+    // Enable the IRQs for both PIOs
+    pio_set_irq0_source_enabled(register_pio, fifo_sources[register_sm], true);
+    pio_set_irq0_source_enabled(bus_helper_pio, fifo_sources[bus_helper_sm], true);
+    irq_set_enabled(PIO0_IRQ_0, true);
+    irq_set_enabled(PIO1_IRQ_0, true);
+
+    printf("Core1 started with separate CACHED handlers\n");
+    printf("  board_registers handler on PIO0_IRQ_0\n");
+    printf("  bus_output_helper handler on PIO1_IRQ_0\n");
 
     // Initialize systick for timing measurements
     systick_hw->csr = 0x5; // Enable, use processor clock, no interrupt

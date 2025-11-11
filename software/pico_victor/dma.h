@@ -262,6 +262,8 @@ void dma_process_deferred_events(void);
 #ifdef CACHED_MODE
 void registers_irq_handler_cached(void);
 void registers_irq_handler_cached_asm(void);
+void board_registers_irq_handler_cached_asm(void);
+void bus_output_helper_irq_handler_cached_asm(void);
 void registers_irq_handler_cached_init(void);
 void dma_process_deferred_events_cached(void);
 #endif
