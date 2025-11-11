@@ -16,7 +16,7 @@
 .define FIFO_DMA_READ    0x03
 
 
-.program dma_registers
+.program board_registers
 .side_set 1
 
 ; --- Pre-amble ---
@@ -38,7 +38,7 @@ T1:
     in null, 20 side 0                      ; move the address into the lower 12 bits of the register, dropping 8 LSB to compare against 12 MSB
     mov x, isr side 0                       ; X = 12 MSB address bits
     jmp x!=y, T0 side 0                     ; if we're not at 0xEF300, restart T0 to try again
-    mov isr, osr side 0                     ; restore full 20-bit address into ISR
+    mov isr, osr side 0                    ; restore full 20-bit address into ISR
     set x, FIFO_PREFETCH_ADDRESS side 0     ; signal to arm prefetch address payload
     in x, 2 side 0 [10]                     ; move the prefetch flag into ISR as MSBs // ISR has 00[address]
 
@@ -48,15 +48,9 @@ T2:
     jmp pin T3_WRITE side 0                  ; if RD pin is high 8088 is writing, if low 8088 is reading
 
 T3_READ:                                     ; 8088 read cycle // pico's writing
-    push noblock side 1                     ; Push the current ISR address + read signal onto RX FIFO
-    mov isr, osr side 1                     ; restore full 20-bit address into ISR
-    irq next nowait 1 side 1                 ; signal to bus_output_helper to output data on bus
     wait 1 GPIO READY_PIN side 1             ; Wait for READY - gives ARM 800ns window to push data to bus_output_helper
     wait 1 GPIO RD_PIN side 1                ; wait for RD to go high (end of read cycle)
-    set x, FIFO_READ_COMMIT side 1           ; signal to arm commit earlier read
-    in x, 2 side 1                           ; move the read commit flag into ISR as MSBs // ISR has 01[address]
 T4:
-    push side 1                              ; send commit signal or data to write to arm
     irq next nowait 4 side 1                 ; Signal bus_output_helper to tri-state bus
 .wrap
 
@@ -66,6 +60,7 @@ T3_WRITE:                             ; 8088 write cycle // pico's reading
     mov isr, osr side 0                     ; restore full 20-bit address into ISR
     in pins, DATA_SIZE side 0              ; read data the 8088 is writing max 0xFF
     in x, 2 side 0                           ; move the WRITE prefetch flag into ISR as MSBs //ISR has 10[data][address]
+    push side 1                              ; send commit signal or data to write to arm
     jmp T4 side 0                            ; jump to T4 for the next clock cycle
 
 % c-sdk {
@@ -77,11 +72,11 @@ T3_WRITE:                             ; 8088 write cycle // pico's reading
 #define REG_PIN_LAST CLOCK_15B_PIN
 #define TEMP_DEBUG_PIN HOLD_PIN
 
-static inline void dma_registers_program_init(PIO pio, uint sm, uint offset) {
+static inline void board_registers_program_init(PIO pio, uint sm, uint offset) {
     pio_debug_state();
     debug_dump_pin(BD0_PIN);
-    printf("starting to configure dma_registers_program_init\n");
-    pio_sm_config c = dma_registers_program_get_default_config(offset);
+    printf("starting to configure board_registers_program_init\n");
+    pio_sm_config c = board_registers_program_get_default_config(offset);
 
     // init all the pins i'll be using as output
     for (int pin = REG_PIN_FIRST; pin <= REG_PIN_LAST; pin++) {
@@ -136,7 +131,7 @@ static inline void dma_registers_program_init(PIO pio, uint sm, uint offset) {
         printf("WARNING: pio_sm_init failed; SM%d not enabled\n", sm);
     }
 
-    printf("finished configuring dma_registers_program_init\n");
+    printf("finished configuring board_registers_program_init\n");
     printf("HOLD_PIN Pin %d func: %d, dir: %d\n", HOLD_PIN, gpio_get_function(HOLD_PIN), gpio_get_dir(HOLD_PIN));
     printf("RD_PIN Pin %d func: %d, dir: %d\n", RD_PIN, gpio_get_function(RD_PIN), gpio_get_dir(RD_PIN));
     printf("WR_PIN Pin %d func: %d, dir: %d\n", WR_PIN, gpio_get_function(WR_PIN), gpio_get_dir(WR_PIN));

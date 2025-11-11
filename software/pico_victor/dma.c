@@ -737,8 +737,8 @@ void dma_write_to_victor_ram(PIO write_pio, int write_sm, uint8_t *data, size_t 
         print_segment_offset(addr);
 
         // Send two FIFO words per the PIO protocol
-        // Word 1: address shifted left with write flag in LSB
-        pio_sm_put_blocking(write_pio, write_sm, (addr << 1) | 1);
+        // Word 1: address shifted left with write 2-bit flag in LSB
+        pio_sm_put_blocking(write_pio, write_sm, (addr << 2) | 3);
         // Word 2: address MSB (A8-A19) in upper bits, data byte in lower bits
         pio_sm_put_blocking(write_pio, write_sm, (addr & 0xFFF00) | byte);
     }
@@ -765,8 +765,8 @@ void dma_read_from_victor_ram(PIO read_pio, int read_sm, uint8_t *data, size_t l
         uint32_t addr = (start_address + i) & 0xFFFFF;  // 20-bit address
 
         // Send two FIFO words per the PIO protocol
-        // Word 1: address shifted left with read flag (0) in LSB
-        pio_sm_put_blocking(read_pio, read_sm, (addr << 1) | 0);
+        // Word 1: address shifted left with read 2-bit flag (0) in LSB
+        pio_sm_put_blocking(read_pio, read_sm, (addr << 2) | 0);
         // Word 2: pindirs value to set BD0-BD7 as inputs, A8-A19 as outputs
         pio_sm_put_blocking(read_pio, read_sm, 0xFFF00);
 
