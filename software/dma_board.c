@@ -165,7 +165,17 @@ int main() {
     printf("DMA device reset complete\n");
     pio_debug_state();
     debug_dump_pin(BD0_PIN);
-    
+
+    //todo: remove after debugging
+    uint hold_function = GPIO_FUNC_PIO0 + pio_get_index(PIO_BUS_HELPER);
+    gpio_set_function(HOLD_PIN, hold_function);
+
+    // Enable cross-PIO IRQ synchronization (PIO0 → PIO1)
+    // Required for board_registers "irq next" to signal bus_output_helper
+    PIO_CTRL_NEXTPREV_CLKDIV_RESTART_BITS;
+
+    printf("PIO0 CTRL: 0x%08x (cross-PIO IRQ enabled)\n", pio0->ctrl);
+
     printf("waiting for DMA register access...\n");
     uint64_t iterations = INT64_MAX;
     for (uint64_t i = 0; i<INT64_MAX; i++) {

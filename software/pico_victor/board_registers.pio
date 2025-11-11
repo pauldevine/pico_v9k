@@ -45,18 +45,18 @@ T1:
 T2:
     nop side 0 [15]                          ; delay for 1 cycle
     nop side 0 [15]                          ; delay for 1 cycle
-    jmp pin T3_WRITE side 1                  ; if RD pin is high 8088 is writing, if low 8088 is reading
+    jmp pin T3_WRITE side 0                  ; if RD pin is high 8088 is writing, if low 8088 is reading
 
 T3_READ:                                     ; 8088 read cycle // pico's writing
     push noblock side 1                     ; Push the current ISR address + read signal onto RX FIFO
-    mov isr, osr side 0                     ; restore full 20-bit address into ISR
+    mov isr, osr side 1                     ; restore full 20-bit address into ISR
     irq next nowait 1 side 1                 ; signal to bus_output_helper to output data on bus
-    wait 1 GPIO READY_PIN side 0             ; Wait for READY - gives ARM 800ns window to push data to bus_output_helper
+    wait 1 GPIO READY_PIN side 1             ; Wait for READY - gives ARM 800ns window to push data to bus_output_helper
     wait 1 GPIO RD_PIN side 1                ; wait for RD to go high (end of read cycle)
-    set x, FIFO_READ_COMMIT side 0           ; signal to arm commit earlier read
-    in x, 2 side 0                           ; move the read commit flag into ISR as MSBs // ISR has 01[address]
+    set x, FIFO_READ_COMMIT side 1           ; signal to arm commit earlier read
+    in x, 2 side 1                           ; move the read commit flag into ISR as MSBs // ISR has 01[address]
 T4:
-    push side 0                              ; send commit signal to arm
+    push side 1                              ; send commit signal or data to write to arm
     irq next nowait 4 side 1                 ; Signal bus_output_helper to tri-state bus
 .wrap
 
@@ -101,14 +101,22 @@ static inline void dma_registers_program_init(PIO pio, uint sm, uint offset) {
     
     sm_config_set_jmp_pin(&c, RD_PIN); // RD pin is the pin we check for write vs read cycle
 
-    //TODO: remove TEMP_DEBUG_PIN usage once verified
-    pio_gpio_init(pio, TEMP_DEBUG_PIN);
-    sm_config_set_sideset_pins(&c, TEMP_DEBUG_PIN);
-    sm_config_set_sideset(&c, 1, false, false);
-    pio_sm_set_consecutive_pindirs(pio, sm, TEMP_DEBUG_PIN, 1, true);
-    printf("TEMP_DEBUG_PIN Pin %d func: %d, dir: %d\n", 
-           TEMP_DEBUG_PIN, gpio_get_function(TEMP_DEBUG_PIN), gpio_get_dir(TEMP_DEBUG_PIN));
-    pio_sm_set_pindirs_with_mask(pio, sm, 1u << TEMP_DEBUG_PIN, 1u << TEMP_DEBUG_PIN);
+    //setup EXTIO as side-set to handle 8088 RD case
+    //we need to assert EXTIO low when we want to send data to the 8088 processor
+    //it takes the buffers for the 6522's out of the circuit so we don't loose the electrical battle
+    //this isn't needed for writing to RAM in the DMA case
+    pio_gpio_init(pio, EXTIO_PIN);
+    sm_config_set_sideset_pins(&c, EXTIO_PIN);
+    //set as pindirs as EXTIO is open drain, will only be pulling to 0
+    sm_config_set_sideset(&c,
+        1,     // bit_count: 1 pin for side-set
+        false, // optional: side-set is mandatory on every instruction
+        true   // pindirs: use side-set to control pin direction (for open-drain)
+    );
+    pio_sm_set_consecutive_pindirs(pio, sm, EXTIO_PIN, 1, true);
+    printf("EXTIO_PIN Pin %d func: %d, dir: %d\n", 
+           EXTIO_PIN, gpio_get_function(EXTIO_PIN), gpio_get_dir(EXTIO_PIN));
+    pio_sm_set_pindirs_with_mask(pio, sm, 0, 1u << EXTIO_PIN); // preload value low
     
     sm_config_set_out_shift(&c, true, false, DATA_SIZE);
     sm_config_set_in_shift(&c, true, false, ADDRESS_BUS_SIZE);
