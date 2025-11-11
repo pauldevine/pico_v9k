@@ -102,7 +102,7 @@ static inline uint32_t dma_fifo_encode_write(uint32_t address, uint8_t data) {
 }
 
 static void setup_pio_instance(PIO pio, int sm) {
-
+    printf("remove this CALLLLLLLL to setup_pio_instance(pio: %d, sm: %d)\n", pio_get_index(pio), sm);
     for (int pin = BD0_PIN; pin <= CLOCK_15B_PIN; ++pin) {
         uint function = GPIO_FUNC_PIO0 + pio_get_index(pio);
         gpio_set_function(pin, function);
