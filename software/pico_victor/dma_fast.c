@@ -239,7 +239,7 @@ void __time_critical_func(registers_irq_handler_fast)() {
 
     switch (payload_type) {
         case FIFO_PREFETCH_ADDRESS: {
-            uint32_t address = dma_fifo_prefetch_address(raw_value);
+            uint32_t address = board_fifo_read_address(raw_value);
             if (address < DMA_REGISTER_BASE || address >= (DMA_REGISTER_BASE + DMA_REGISTER_SPACE_SIZE)) {
                 break;
             }

@@ -54,7 +54,7 @@ typedef struct {
 static fifo_trace_entry_t fifo_trace[FIFO_TRACE_SIZE];
 static volatile uint32_t fifo_trace_head = 0;
 static volatile uint32_t fifo_trace_tail = 0;
-static volatile uint32_t fifo_pending_prefetch = 0;
+static volatile uint32_t fifo_read_count = 0;
 
 static inline void fifo_trace_record(uint32_t raw_value,
                                      uint32_t tag,
@@ -147,13 +147,13 @@ void __time_critical_func(registers_irq_handler_cached)() {
 
     uint32_t payload_type = dma_fifo_payload_type(raw_value);
     cached_registers_t *cached = defer_get_cached_registers();
-    uint8_t pending_before = (uint8_t)fifo_pending_prefetch;
+    uint8_t pending_before = (uint8_t)fifo_read_count;
     uint8_t trace_flags = 0;
-    uint8_t trace_data = 0;
+    uint8_t data = 0;
 
     switch (payload_type) {
-        case FIFO_PREFETCH_ADDRESS: {
-            uint32_t address = dma_fifo_prefetch_address(raw_value);
+        case FIFO_REG_READ: {
+            uint32_t address = board_fifo_read_address(raw_value);
             uint32_t offset = address - DMA_REGISTER_BASE;
             if (offset >= 0x100) {
                 trace_flags |= FIFO_TRACE_FLAG_ERROR;
@@ -165,9 +165,8 @@ void __time_critical_func(registers_irq_handler_cached)() {
                 masked_offset = REG_STATUS;
             }
 
-            fifo_pending_prefetch++;
-            uint8_t data = cached->values[masked_offset];
-            trace_data = data;
+            fifo_read_count++;
+            data = cached->values[masked_offset];
 
             #ifndef BENCHMARK_MODE
             // Push data byte to bus_output_helper (not board_registers!)
@@ -187,16 +186,6 @@ void __time_critical_func(registers_irq_handler_cached)() {
             if (masked_offset == 0x80 || masked_offset == 0xA0 || masked_offset == 0xC0) {
                 fast_log("CACHED_READ: offset=0x%02x, data=0x%02x (cached)\n", masked_offset, data);
             }
-            break;
-        }
-
-        case FIFO_READ_COMMIT: {
-            if (fifo_pending_prefetch == 0) {
-                trace_flags |= FIFO_TRACE_FLAG_ERROR;
-                fast_log("FIFO WARN: Commit without prefetch raw=0x%08x\n", raw_value);
-            } else {
-                fifo_pending_prefetch--;
-            }
             defer_queue_t *queue = defer_get_queue();
             defer_enqueue_fast(queue, raw_value);
             break;
@@ -215,20 +204,19 @@ void __time_critical_func(registers_irq_handler_cached)() {
                 masked_offset = REG_STATUS;
             }
 
-            uint8_t write_data = dma_fifo_write_data(raw_value);
+            data = dma_fifo_write_data(raw_value);
             if (masked_offset == REG_ADDR_H) {
-                write_data &= 0x0F;
+                data &= 0x0F;
             }
 
-            cached->values[masked_offset] = write_data;
+            cached->values[masked_offset] = data;
             if (masked_offset == REG_STATUS) {
-                cached->values[0x30] = write_data;
+                cached->values[0x30] = data;
             }
-            trace_data = write_data;
             trace_flags |= FIFO_TRACE_FLAG_WRITE;
 
             if (masked_offset == 0x80 || masked_offset == 0xA0 || masked_offset == 0xC0) {
-                fast_log("CACHED_WRITE: offset=0x%02x, data=0x%02x\n", masked_offset, write_data);
+                fast_log("CACHED_WRITE: offset=0x%02x, data=0x%02x\n", masked_offset, data);
             }
 
             defer_queue_t *queue = defer_get_queue();
@@ -242,8 +230,8 @@ void __time_critical_func(registers_irq_handler_cached)() {
             break;
     }
 
-    uint8_t pending_after = (uint8_t)fifo_pending_prefetch;
-    fifo_trace_record(raw_value, payload_type, pending_before, pending_after, trace_flags, trace_data);
+    uint8_t pending_after = (uint8_t)fifo_read_count;
+    fifo_trace_record(raw_value, payload_type, pending_before, pending_after, trace_flags, data);
 
     // Clear debug pin
     *(volatile uint32_t *)SIO_GPIO_OUT_CLR_REG = DEBUG_PIN_MASK;
@@ -255,10 +243,7 @@ void __time_critical_func(board_registers_irq_handler_cached_asm)() {
     static uint32_t masked_offset;
     uint8_t data;
     uint8_t trace_flags = 0;
-    uint8_t pending_before = (uint8_t)fifo_pending_prefetch;
-
-    // Set debug pin high
-    *(volatile uint32_t *)SIO_GPIO_OUT_SET_REG = DEBUG_PIN_MASK;
+    uint8_t pending_before = (uint8_t)fifo_read_count;
 
     // Get value from board_registers PIO FIFO
     raw_value = PIO_REGISTERS->rxf[REGISTERS_SM];
@@ -271,6 +256,7 @@ void __time_critical_func(board_registers_irq_handler_cached_asm)() {
 
     // board_registers only pushes WRITE_VALUE payloads
     if (payload_type == FIFO_WRITE_VALUE) {
+        //case 8088 is writing to a pico register
         uint32_t address = dma_fifo_write_address(raw_value);
         masked_offset = dma_mask_offset(address - DMA_REGISTER_BASE);
         masked_offset &= 0xFF;
@@ -302,11 +288,8 @@ void __time_critical_func(board_registers_irq_handler_cached_asm)() {
         data = 0;
     }
 
-    uint8_t pending_after = (uint8_t)fifo_pending_prefetch;
+    uint8_t pending_after = (uint8_t)fifo_read_count;
     fifo_trace_record(raw_value, payload_type, pending_before, pending_after, trace_flags, data);
-
-    // Clear debug pin
-    *(volatile uint32_t *)SIO_GPIO_OUT_CLR_REG = DEBUG_PIN_MASK;
 }
 
 // IRQ handler for bus_output_helper PIO (handles PREFETCH and DMA_READ)
@@ -315,7 +298,7 @@ void __time_critical_func(bus_output_helper_irq_handler_cached_asm)() {
     static uint32_t masked_offset;
     uint8_t data = 0;
     uint8_t trace_flags = 0;
-    uint8_t pending_before = (uint8_t)fifo_pending_prefetch;
+    uint8_t pending_before = (uint8_t)fifo_read_count;
 
     // Set debug pin high
     *(volatile uint32_t *)SIO_GPIO_OUT_SET_REG = DEBUG_PIN_MASK;
@@ -333,14 +316,17 @@ void __time_critical_func(bus_output_helper_irq_handler_cached_asm)() {
 
     // Handle different payload types
     switch(payload_type) {
-        case FIFO_PREFETCH_ADDRESS:
+        case FIFO_REG_READ:
         {
-            // bus_output_helper pushes PREFETCH when 8088 reads a register
-            uint32_t address = dma_fifo_prefetch_address(raw_value);
+            //case 8088 is reading a pico register
+            // bus_output_helper pushes REG_READ when 8088 reads a register, some side effects can handled later
+            uint32_t address = board_fifo_read_address(raw_value);
             masked_offset = dma_mask_offset(address - DMA_REGISTER_BASE);
             masked_offset &= 0xFF;
 
-            fifo_pending_prefetch++;
+            enque_result = true;
+
+            fifo_read_count++;
             data = cached->values[masked_offset];
 
             // Debug: Check if PIO_BUS_HELPER and BUS_HELPER_SM are correct
@@ -360,6 +346,7 @@ void __time_critical_func(bus_output_helper_irq_handler_cached_asm)() {
         }
         case FIFO_DMA_READ:
         {
+            //case pico is doing a DMA read from the bus
             // bus_output_helper pushes DMA_READ data after capturing from bus
             enque_result = true;
             // Extract the data from the payload (bits 22-29 contain the data byte)
@@ -376,7 +363,7 @@ void __time_critical_func(bus_output_helper_irq_handler_cached_asm)() {
             break;
     }
 
-    uint8_t pending_after = (uint8_t)fifo_pending_prefetch;
+    uint8_t pending_after = (uint8_t)fifo_read_count;
     fifo_trace_record(raw_value, payload_type, pending_before, pending_after, trace_flags, data);
 
     if (enque_result) {

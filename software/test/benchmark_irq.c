@@ -80,7 +80,7 @@ static void benchmark_handler(irq_handler_t handler, const char *name, test_case
             simulated_fifo_value = dma_fifo_encode_prefetch(test->address);
             break;
         case FIFO_READ_COMMIT:
-            simulated_fifo_value = dma_fifo_encode_commit(test->address);
+            simulated_fifo_value = board_fifo_encode_read(test->address);
             break;
         case FIFO_WRITE_VALUE:
             simulated_fifo_value = dma_fifo_encode_write(test->address, test->data);

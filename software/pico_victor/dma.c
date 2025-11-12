@@ -231,13 +231,7 @@ void core1_main() {
             uint32_t addr_m = DMA_REGISTER_BASE + REG_ADDR_M;
             uint32_t addr_h = DMA_REGISTER_BASE + REG_ADDR_H;
 
-            if (pio_sm_is_tx_fifo_empty(register_pio, register_sm)) {
-                pio_sm_put(register_pio, register_sm, dma_fifo_encode_prefetch(control_addr));
-                registers_irq_handler_ultra();
-                if (!pio_sm_is_rx_fifo_empty(register_pio, register_sm)) {
-                    pio_sm_get(register_pio, register_sm);
-                }
-            }
+
             if (pio_sm_is_tx_fifo_empty(register_pio, register_sm)) {
                 pio_sm_put(register_pio, register_sm, dma_fifo_encode_write(control_addr, 0x00));
                 registers_irq_handler_ultra();
@@ -247,14 +241,7 @@ void core1_main() {
             }
 
             if (pio_sm_is_tx_fifo_empty(register_pio, register_sm)) {
-                pio_sm_put(register_pio, register_sm, dma_fifo_encode_prefetch(data_addr));
-                registers_irq_handler_ultra();
-                if (!pio_sm_is_rx_fifo_empty(register_pio, register_sm)) {
-                    pio_sm_get(register_pio, register_sm);
-                }
-            }
-            if (pio_sm_is_tx_fifo_empty(register_pio, register_sm)) {
-                pio_sm_put(register_pio, register_sm, dma_fifo_encode_commit(data_addr));
+                pio_sm_put(register_pio, register_sm, board_fifo_encode_read(data_addr));
                 registers_irq_handler_ultra();
                 if (!pio_sm_is_rx_fifo_empty(register_pio, register_sm)) {
                     pio_sm_get(register_pio, register_sm);
@@ -262,27 +249,13 @@ void core1_main() {
             }
 
             if (pio_sm_is_tx_fifo_empty(register_pio, register_sm)) {
-                pio_sm_put(register_pio, register_sm, dma_fifo_encode_prefetch(status_addr));
-                registers_irq_handler_ultra();
-                if (!pio_sm_is_rx_fifo_empty(register_pio, register_sm)) {
-                    pio_sm_get(register_pio, register_sm);
-                }
-            }
-            if (pio_sm_is_tx_fifo_empty(register_pio, register_sm)) {
-                pio_sm_put(register_pio, register_sm, dma_fifo_encode_commit(status_addr));
+                pio_sm_put(register_pio, register_sm, board_fifo_encode_read(status_addr));
                 registers_irq_handler_ultra();
                 if (!pio_sm_is_rx_fifo_empty(register_pio, register_sm)) {
                     pio_sm_get(register_pio, register_sm);
                 }
             }
 
-            if (pio_sm_is_tx_fifo_empty(register_pio, register_sm)) {
-                pio_sm_put(register_pio, register_sm, dma_fifo_encode_prefetch(addr_l));
-                registers_irq_handler_ultra();
-                if (!pio_sm_is_rx_fifo_empty(register_pio, register_sm)) {
-                    pio_sm_get(register_pio, register_sm);
-                }
-            }
             if (pio_sm_is_tx_fifo_empty(register_pio, register_sm)) {
                 pio_sm_put(register_pio, register_sm, dma_fifo_encode_write(addr_l, 0x00));
                 registers_irq_handler_ultra();
@@ -292,27 +265,13 @@ void core1_main() {
             }
 
             if (pio_sm_is_tx_fifo_empty(register_pio, register_sm)) {
-                pio_sm_put(register_pio, register_sm, dma_fifo_encode_prefetch(addr_l));
-                registers_irq_handler_ultra();
-                if (!pio_sm_is_rx_fifo_empty(register_pio, register_sm)) {
-                    pio_sm_get(register_pio, register_sm);
-                }
-            }
-            if (pio_sm_is_tx_fifo_empty(register_pio, register_sm)) {
-                pio_sm_put(register_pio, register_sm, dma_fifo_encode_commit(addr_l));
+                pio_sm_put(register_pio, register_sm, board_fifo_encode_read(addr_l));
                 registers_irq_handler_ultra();
                 if (!pio_sm_is_rx_fifo_empty(register_pio, register_sm)) {
                     pio_sm_get(register_pio, register_sm);
                 }
             }
 
-            if (pio_sm_is_tx_fifo_empty(register_pio, register_sm)) {
-                pio_sm_put(register_pio, register_sm, dma_fifo_encode_prefetch(addr_m));
-                registers_irq_handler_ultra();
-                if (!pio_sm_is_rx_fifo_empty(register_pio, register_sm)) {
-                    pio_sm_get(register_pio, register_sm);
-                }
-            }
             if (pio_sm_is_tx_fifo_empty(register_pio, register_sm)) {
                 pio_sm_put(register_pio, register_sm, dma_fifo_encode_write(addr_m, 0x00));
                 registers_irq_handler_ultra();
@@ -321,13 +280,6 @@ void core1_main() {
                 }
             }
 
-            if (pio_sm_is_tx_fifo_empty(register_pio, register_sm)) {
-                pio_sm_put(register_pio, register_sm, dma_fifo_encode_prefetch(addr_h));
-                registers_irq_handler_ultra();
-                if (!pio_sm_is_rx_fifo_empty(register_pio, register_sm)) {
-                    pio_sm_get(register_pio, register_sm);
-                }
-            }
             if (pio_sm_is_tx_fifo_empty(register_pio, register_sm)) {
                 pio_sm_put(register_pio, register_sm, dma_fifo_encode_write(addr_h, 0x00));
                 registers_irq_handler_ultra();
@@ -345,7 +297,7 @@ void core1_main() {
         // One more round of warming after the delay
         for (int i = 0; i < 5; i++) {
             if (pio_sm_is_tx_fifo_empty(register_pio, register_sm)) {
-                pio_sm_put(register_pio, register_sm, dma_fifo_encode_prefetch(DMA_REGISTER_BASE + REG_ADDR_L));
+                pio_sm_put(register_pio, register_sm, board_fifo_encode_read(DMA_REGISTER_BASE + REG_ADDR_L));
                 registers_irq_handler_ultra();
                 if (!pio_sm_is_rx_fifo_empty(register_pio, register_sm)) {
                     pio_sm_get(register_pio, register_sm);
@@ -648,8 +600,8 @@ uint8_t dma_read_register(dma_registers_t *dma, dma_reg_offsets_t offset) {
     }
 
     switch (payload_type) {
-        case FIFO_PREFETCH_ADDRESS: {
-            uint32_t address = dma_fifo_prefetch_address(raw_value);
+        case FIFO_REG_READ: {
+            uint32_t address = board_fifo_read_address(raw_value);
             dma_reg_offsets_t offset = address - DMA_REGISTER_BASE;
             uint32_t masked_offset = dma_mask_offset(offset);
             if (masked_offset == 0x30) {
@@ -665,20 +617,7 @@ uint8_t dma_read_register(dma_registers_t *dma, dma_reg_offsets_t offset) {
             int helper_sm = dma_get_bus_helper_sm();
             pio_sm_put_blocking(helper_pio, helper_sm, (uint32_t)(data & 0xFFu));
             #endif
-            fast_log("[IRQ#%d] PREFETCH addr=%05X offset=%02X data=0x%02X\n", irq_count, address, masked_offset, data);
-            break;
-        }
-
-        case FIFO_READ_COMMIT: {
-            uint32_t address = dma_fifo_commit_address(raw_value);
-            dma_reg_offsets_t offset = address - DMA_REGISTER_BASE;
-            uint32_t masked_offset = dma_mask_offset(offset);
-            if (masked_offset == 0x30) {
-                masked_offset = REG_STATUS;
-            }
-
-            fast_log("[IRQ#%d] READ_COMMIT addr=%05X offset=%02X\n", irq_count, address, masked_offset);
-            // Side effects already applied during prefetch read
+            fast_log("[IRQ#%d] REG_READ addr=%05X offset=%02X data=0x%02X\n", irq_count, address, masked_offset, data);
             break;
         }
 

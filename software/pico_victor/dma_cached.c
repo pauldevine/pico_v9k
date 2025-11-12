@@ -24,7 +24,7 @@ void registers_irq_handler_cached_init(void);
 static inline void warmup_read_sequence(PIO pio, int sm, uint32_t address) {
     // bus_output_helper pushes PREFETCH when handling reads
     if (pio_sm_is_tx_fifo_empty(pio, sm)) {
-        pio_sm_put(pio, sm, dma_fifo_encode_prefetch(address));
+        pio_sm_put(pio, sm, board_fifo_encode_read(address));
         bus_output_helper_irq_handler_cached_asm();
         if (!pio_sm_is_rx_fifo_empty(pio, sm)) {
             pio_sm_get(pio, sm);

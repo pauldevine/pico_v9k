@@ -4,10 +4,9 @@
 .define HLDA_PIN 29
 .define DATA_SIZE 8
 
-.define FIFO_PREFETCH_ADDRESS 0x00
-.define FIFO_READ_COMMIT 0x01
-.define FIFO_WRITE_VALUE 0x02
-.define FIFO_DMA_READ    0x03
+.define FIFO_REG_READ    0x00
+.define FIFO_WRITE_VALUE 0x01
+.define FIFO_DMA_READ    0x02
 
 .define DMA_REGISTER_BITMASK 0x00000EF3
 .define DMA_MASK_SIZE 12
@@ -34,7 +33,7 @@ T1:
     jmp !OSRE DMA_T1 side 1            ; if FIFO has data, we're doing DMA and need to output address and then data
 
 T3_READ_REG:                             ; 8088 read cycle // pico's writing
-    in null, 2 side 0                    ; add ISR 0x00 for payload type 0 = PREFETCH
+    in null, 2 side 0                    ; add ISR 0x00 for payload type 0 = register read
     push noblock side 1                  ; Push the current ISR address for ARM to know what address is being read
     pull block side 1                    ; Pull data byte to output from FIFO for 8088 to read 
     out pins, 8 side 1                   ; we're outputing byte on BD0-BD7, 8088 is driving A8-A19

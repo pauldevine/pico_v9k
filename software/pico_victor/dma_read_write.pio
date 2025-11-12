@@ -182,7 +182,7 @@ static inline void dma_read_write_program_init(PIO pio, uint sm, uint offset, ui
 
     // Just ensure HOLD and IO/M pin VALUES start at 0
     // (HOLD will be controlled via pindirs - output=assert, input=release)
-    pio_sm_set_pins_with_mask(pio, sm, 0, (1u << IO_M_PIN) | (1u << HOLD_PIN));
+    pio_sm_set_pins_with_mask(pio, sm, 0, (1u << HOLD_PIN));
 
     // Debug: Check the actual SM configuration
     uint32_t pinctrl = pio->sm[sm].pinctrl;

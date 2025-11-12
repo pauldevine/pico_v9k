@@ -269,14 +269,7 @@ void defer_process_entry(dma_registers_t *dma, const defer_entry_t *entry) {
     uint32_t offset;
 
     switch (payload_type) {
-        case FIFO_PREFETCH_ADDRESS:
-            //Prefetch address operation should have been handled by fast path
-            //FIFO has 00[address]
-            address = dma_fifo_prefetch_address(raw_value);
-            offset = address - DMA_REGISTER_BASE;
-            fast_log("DEFER_PREFETCH_ADDRESS: should not have arrived offset=0x%02x\n", offset);
-            break;
-        case FIFO_READ_COMMIT:
+        case FIFO_REG_READ:
             // Read operation - process side effects only
             defer_process_read(dma, raw_value);
             break;
