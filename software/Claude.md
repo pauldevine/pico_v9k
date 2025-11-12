@@ -87,9 +87,20 @@ The main test runs in `test/register_test.c` and:
 - The 8088 uses a multiplexed address/data bus where AD0-AD7 carry address bits during T1 (when ALE is high) and data during T2-T3
 - Pin direction management is handled directly through PIO `pindirs` instructions without external buffer control
 
-## Current Status (2025-nov-03)
+## Current Status (2025-nov-12)
+### PIO Program Restructure and Payload Fixes
+- **Major restructuring**: Separated IRQ handlers for individual PIO programs to improve modularity and reduce coupling between state machines
+- **Payload consistency**: Fixed remaining payload flag inconsistencies across board_registers.pio and helper programs (commits c4b240e, 57cf119)
+- **board_registers.pio improvements**:
+  - Removed unnecessary push instructions from T3_READ path (d8412a1)
+  - Cleaned up program identifiers and structure
+- **dma_read_write.pio synchronization**: Changed from pull block to IRQ-based waiting for better coordination with helper programs (1b38e43)
+- **bus_output_helper.pio rework**: Major refactoring of the bus output helper to work with the new IRQ-based coordination model (4fd47b6)
+- **Project status**: PIO program structure is now cleaner with better separation of concerns. The IRQ-based coordination between programs provides more reliable timing control. Ready to resume testing with the restructured architecture.
+
+## Previous Status (2025-nov-03)
 ### EXTIO line isolation fix for register reads
-- **Root cause**: Read cycles were failing because the Victor CPU board never released BD0–BD7. The Pico wasn’t asserting `EXTIO/`, so the host’s 74LS245/373 buffers stayed enabled and overrode our register responses.
+- **Root cause**: Read cycles were failing because the Victor CPU board never released BD0–BD7. The Pico wasn't asserting `EXTIO/`, so the host's 74LS245/373 buffers stayed enabled and overrode our register responses.
 - **Fix**: Added a dedicated PIO helper (`pico_victor/extio_helper.pio`) running on PIO3 with a shifted GPIO base. The register listener SM now raises an IRQ on EF3xx hits, and the helper asserts `EXTIO/` through the whole T2/T3 read window, releasing it after `RD/` returns high. This finally let the Pico drive data back to the 8088.
 - **Result**: Logic-analyzer traces now show the expected bidirectional hand‑off; the system reliably services read requests from the DMA register block.
 - **Project status**: With register readback working, focus shifts to polishing DMA transfers and integrating the FujiNet path. Remaining tasks include validating CSEN timing for edge cases and resuming firmware clean‑up paused during the EXTIO chase.
