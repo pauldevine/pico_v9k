@@ -38,8 +38,8 @@ T1:
     mov x, isr side 0                       ; X = 12 MSB address bits
     jmp x!=y, T0 side 0                     ; if we're not at 0xEF300, restart T0 to try again
     mov isr, osr side 0                    ; restore full 20-bit address into ISR
-    set x, FIFO_REG_READ side 0            ; signal to arm prefetch address payload
-    in x, 2 side 0 [10]                     ; move the prefetch flag into ISR as MSBs // ISR has 00[address]
+    set x, FIFO_REG_READ side 0            ; signal to arm register read payload
+    in x, 2 side 0 [10]                     ; move the REG_READ flag into ISR as MSBs // ISR has 00[address]
 
 T2:
     nop side 0 [15]                          ; delay for 1 cycle
@@ -58,7 +58,7 @@ T3_WRITE:                             ; 8088 write cycle // pico's reading
     set x, FIFO_WRITE_VALUE side 0 [15]          ; signal to arm write value payload
     mov isr, osr side 0                     ; restore full 20-bit address into ISR
     in pins, DATA_SIZE side 0              ; read data the 8088 is writing max 0xFF
-    in x, 2 side 0                           ; move the WRITE prefetch flag into ISR as MSBs //ISR has 10[data][address]
+    in x, 2 side 0                           ; move the WRITE_VALUE flag into ISR as MSBs //ISR has 01[data][address]
     push side 1                              ; send data to write to arm [payload flag 2 bits][data 8 bits][address 20 bits]
     jmp T4 side 0                            ; jump to T4 for the next clock cycle
 

@@ -330,7 +330,7 @@ void __time_critical_func(bus_output_helper_irq_handler_cached_asm)() {
             data = cached->values[masked_offset];
 
             // Debug: Check if PIO_BUS_HELPER and BUS_HELPER_SM are correct
-            fast_log("BUS_HELPER_PREFETCH: offset=0x%02x data=0x%02x pio=%p sm=%d\n",
+            fast_log("BUS_HELPER_REG_READ: offset=0x%02x data=0x%02x pio=%p sm=%d\n",
                      masked_offset, data, PIO_BUS_HELPER, BUS_HELPER_SM);
 
             // Check TX FIFO level before pushing

@@ -66,10 +66,6 @@ static inline uint32_t board_fifo_read_address(uint32_t raw_value) {
     return (raw_value >> 10) & 0xFFFFFu;  // Address is in bits 29-10 (board_registers uses right-shift ISR)
 }
 
-static inline uint32_t dma_fifo_commit_address(uint32_t raw_value) {
-    return (raw_value >> 10) & 0xFFFFFu;  // Address is in bits 29-10 (board_registers uses right-shift ISR)
-}
-
 static inline uint32_t dma_fifo_write_address(uint32_t raw_value) {
     return (raw_value >> 2) & 0xFFFFFu;  // Write address is in bits 21-2 (ISR restored at line 66, then shifts by 10)
 }
@@ -86,7 +82,7 @@ static inline uint32_t dma_mask_offset(uint32_t offset) {
 }
 
 static inline uint32_t board_fifo_encode_read(uint32_t address) {
-    return ((address & 0xFFFFFu) << 10) | ((uint32_t)FIFO_DMA_READ << 30);
+    return ((address & 0xFFFFFu) << 10) | ((uint32_t)FIFO_REG_READ << 30);
 }
 
 static inline uint32_t dma_fifo_encode_write(uint32_t address, uint8_t data) {

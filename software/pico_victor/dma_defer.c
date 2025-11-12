@@ -64,9 +64,9 @@ bool defer_dequeue(defer_queue_t *queue, defer_entry_t *entry) {
 // We only need to process side effects here, not update cache values
 // The cache was already read and returned by the fast handler
 void defer_process_read(dma_registers_t *dma, uint32_t raw_value) {
-    // Extract address FIFO has 01[address]
+    // Extract address FIFO has 00[address] - REG_READ payload
     fast_log("RAW=0x%08x\n", raw_value);
-    uint32_t address = dma_fifo_commit_address(raw_value);
+    uint32_t address = board_fifo_read_address(raw_value);
     uint32_t offset = address - DMA_REGISTER_BASE;
     uint32_t masked_offset = dma_mask_offset(offset);
 
