@@ -13,7 +13,7 @@
 .define ADDR_CONTROL_SIZE 27
 .define CONTROL_PINCOUNT 12
 .define DATA_SIZE 8
-
+ 
 .program dma_read_write
 .side_set 2 opt pindirs; 
 
@@ -51,7 +51,7 @@
 
 .wrap_target
 T0:                                ; Address Setup Phase (Put Address on Bus)
-    pull block                     ; Block if FIFO empty (HOLD stays released!)
+    wait 1 irq 0                   ; Block if FIFO empty (HOLD stays released!)
     out x, 1                       ; Get W/R bit from LSB (1=Write, 0=Read)
     set pins, 0b11111 side SIDE_HOLD_ASSERT_IO_INPUT ; Assert HOLD/, keep IO/M/ input during request
     wait 1 gpio HLDA_PIN           ; wait for HLDA to go high
@@ -182,7 +182,7 @@ static inline void dma_read_write_program_init(PIO pio, uint sm, uint offset, ui
 
     // Just ensure HOLD and IO/M pin VALUES start at 0
     // (HOLD will be controlled via pindirs - output=assert, input=release)
-    pio_sm_set_pins_with_mask(pio, sm, 0, (1u << IO_M_PIN) | (1u << HOLD_PIN));
+    pio_sm_set_pins_with_mask(pio, sm, 0, (1u << HOLD_PIN));
 
     // Debug: Check the actual SM configuration
     uint32_t pinctrl = pio->sm[sm].pinctrl;

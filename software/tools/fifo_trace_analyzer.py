@@ -5,8 +5,8 @@ fifo_trace_analyzer.py
 
 Utility script to decode FIFO trace lines emitted by the cached DMA handlers.
 It ingests the `fast_log` output, reconstructs the address offsets referenced
-by each FIFO word, validates the PREFETCH/COMMIT sequencing, and optionally
-summarises activity for the DMA address registers (0x80/0xA0/0xC0).
+by each FIFO word, and optionally summarises activity for the DMA address
+registers (0x80/0xA0/0xC0).
 
 Example usage:
     python tools/fifo_trace_analyzer.py logs/pico_debug.log --summary
@@ -21,8 +21,8 @@ from __future__ import annotations
 import argparse
 import re
 import sys
-from collections import Counter, deque
-from typing import Deque, Iterable, Optional, Tuple
+from collections import Counter
+from typing import Iterable, Optional, Tuple
 
 
 DMA_REGISTER_BASE = 0xEF300
@@ -78,7 +78,7 @@ class TraceEntry:
         self.in_range = in_range
 
     def describe(self) -> str:
-        tag_name = {0: "PREFETCH", 1: "COMMIT", 2: "WRITE"}.get(self.tag, "UNKNOWN")
+        tag_name = {0: "REG_READ", 1: "WRITE", 2: "DMA_READ"}.get(self.tag, "UNKNOWN")
         parts = [
             f"[{self.index:05d}] {tag_name}",
             f"raw=0x{self.raw:08X}",
@@ -129,25 +129,25 @@ def parse_trace_lines(lines: Iterable[str]) -> Iterable[TraceEntry]:
         decoded_data: Optional[int] = None
         in_range = False
 
-        if tag == 0:  # PREFETCH
-            address = (raw >> 10) & 0xFFFFF  # PREFETCH: address in bits 29-10 (board_registers right-shift ISR)
+        if tag == 0:  # REG_READ
+            address = (raw >> 10) & 0xFFFFF  # REG_READ: address in bits 29-10 (board_registers uses right-shift ISR)
             in_range = DMA_REGISTER_BASE <= address < DMA_REGISTER_BASE + 0x100
             offset = (address - DMA_REGISTER_BASE) & 0xFFFFF
             if in_range:
                 masked_offset = dma_mask_offset(offset)
-        elif tag == 1:  # COMMIT
-            address = (raw >> 10) & 0xFFFFF  # COMMIT: address in bits 29-10 (board_registers right-shift ISR)
+        elif tag == 1:  # WRITE
+            address = (raw >> 2) & 0xFFFFF  # WRITE: address in bits 21-2
             in_range = DMA_REGISTER_BASE <= address < DMA_REGISTER_BASE + 0x100
             offset = (address - DMA_REGISTER_BASE) & 0xFFFFF
             if in_range:
                 masked_offset = dma_mask_offset(offset)
-        elif tag == 2:  # WRITE
-            address = (raw >> 2) & 0xFFFFF  # Write: address in bits 21-2
-            in_range = DMA_REGISTER_BASE <= address < DMA_REGISTER_BASE + 0x100
-            offset = (address - DMA_REGISTER_BASE) & 0xFFFFF
-            if in_range:
-                masked_offset = dma_mask_offset(offset)
-            decoded_data = (raw >> 22) & 0xFF  # Write: data in bits 29-22
+            decoded_data = (raw >> 22) & 0xFF  # WRITE: data in bits 29-22
+        elif tag == 2:  # DMA_READ
+            # DMA_READ: data in bits 29-22, address in bits 21-2
+            address = (raw >> 2) & 0xFFFFF
+            decoded_data = (raw >> 22) & 0xFF
+            in_range = True  # DMA reads can be anywhere in memory
+            offset = None  # Not a register offset
 
         if masked_offset is not None:
             masked_offset &= 0xFF
@@ -178,8 +178,7 @@ def dma_mask_offset(offset: int) -> int:
 def validate_sequence(entries: Iterable[TraceEntry]) -> Tuple[Counter, Counter, int]:
     summary = Counter()
     anomalies = Counter()
-    prefetch_queue: Deque[TraceEntry] = deque()
-    tag_names = {0: "prefetch", 1: "commit", 2: "write"}
+    tag_names = {0: "reg_read", 1: "write", 2: "dma_read"}
     processed = 0
 
     for entry in entries:
@@ -190,35 +189,17 @@ def validate_sequence(entries: Iterable[TraceEntry]) -> Tuple[Counter, Counter, 
         if entry.flags & TRACE_FLAG_ERROR:
             anomalies["explicit-error-flagged"] += 1
 
-        if not entry.in_range:
-            anomalies[f"{tag_name}-out-of-range"] += 1
-            continue
-
-        if entry.tag == 0:  # PREFETCH
-            prefetch_queue.append(entry)
-            summary[("prefetch", entry.masked_offset)] += 1
-            if entry.flags & TRACE_FLAG_ERROR:
-                anomalies["prefetch-flag-error"] += 1
-        elif entry.tag == 1:  # COMMIT
-            summary[("commit", entry.masked_offset)] += 1
-            if entry.flags & TRACE_FLAG_ERROR:
-                anomalies["commit-flag-error"] += 1
-
-            if not prefetch_queue:
-                anomalies["commit-without-prefetch"] += 1
+        if entry.tag == 0:  # REG_READ
+            if not entry.in_range:
+                anomalies[f"{tag_name}-out-of-range"] += 1
                 continue
-
-            pending_entry = prefetch_queue.popleft()
-            if (
-                entry.address is not None
-                and pending_entry.address is not None
-                and entry.address != pending_entry.address
-            ):
-                anomalies["commit-address-mismatch"] += 1
-
-            if entry.masked_offset != pending_entry.masked_offset:
-                anomalies["commit-offset-mismatch"] += 1
-        elif entry.tag == 2:  # WRITE
+            summary[("reg_read", entry.masked_offset)] += 1
+            if entry.flags & TRACE_FLAG_ERROR:
+                anomalies["reg_read-flag-error"] += 1
+        elif entry.tag == 1:  # WRITE
+            if not entry.in_range:
+                anomalies[f"{tag_name}-out-of-range"] += 1
+                continue
             summary[("write", entry.masked_offset)] += 1
             if entry.flags & TRACE_FLAG_ERROR:
                 anomalies["write-flag-error"] += 1
@@ -228,12 +209,19 @@ def validate_sequence(entries: Iterable[TraceEntry]) -> Tuple[Counter, Counter, 
                 and entry.decoded_data != entry.logged_data
             ):
                 anomalies["write-data-mismatch"] += 1
+        elif entry.tag == 2:  # DMA_READ
+            # DMA reads can be anywhere in memory, not just register space
+            summary[("dma_read", entry.address)] += 1
+            if entry.flags & TRACE_FLAG_ERROR:
+                anomalies["dma_read-flag-error"] += 1
+            if (
+                entry.decoded_data is not None
+                and entry.logged_data is not None
+                and entry.decoded_data != entry.logged_data
+            ):
+                anomalies["dma_read-data-mismatch"] += 1
         else:
             anomalies["unknown-tag"] += 1
-
-    # Any outstanding prefetch means the PIO did not emit a matching commit
-    if prefetch_queue:
-        anomalies["prefetch-leftover"] += len(prefetch_queue)
 
     return summary, anomalies, processed
 

@@ -53,22 +53,16 @@
 #define DMA_WRITE 0
 
 // FIFO operation types, defines for the 2-bit pio payload type flag
-#define FIFO_PREFETCH_ADDRESS 0x00
-#define FIFO_READ_COMMIT 0x01
-#define FIFO_WRITE_VALUE 0x02
-#define FIFO_DMA_READ    0x03
-#define FIFO_UNUSED      0x04
+#define FIFO_REG_READ    0x00
+#define FIFO_WRITE_VALUE 0x01
+#define FIFO_DMA_READ    0x02
 
 static inline uint32_t dma_fifo_payload_type(uint32_t raw_value) {
     // PIO encoding varies by operation type:
     return (raw_value >> 30) & 0x03u;  // Write: type in bits 31-30
 }
 
-static inline uint32_t dma_fifo_prefetch_address(uint32_t raw_value) {
-    return (raw_value >> 10) & 0xFFFFFu;  // Address is in bits 29-10 (board_registers uses right-shift ISR)
-}
-
-static inline uint32_t dma_fifo_commit_address(uint32_t raw_value) {
+static inline uint32_t board_fifo_read_address(uint32_t raw_value) {
     return (raw_value >> 10) & 0xFFFFFu;  // Address is in bits 29-10 (board_registers uses right-shift ISR)
 }
 
@@ -87,12 +81,8 @@ static inline uint32_t dma_mask_offset(uint32_t offset) {
     return offset & ~0x0Fu;
 }
 
-static inline uint32_t dma_fifo_encode_prefetch(uint32_t address) {
-    return ((address & 0xFFFFFu) << 10) | ((uint32_t)FIFO_PREFETCH_ADDRESS << 30);
-}
-
-static inline uint32_t dma_fifo_encode_commit(uint32_t address) {
-    return ((address & 0xFFFFFu) << 10) | ((uint32_t)FIFO_READ_COMMIT << 30);
+static inline uint32_t board_fifo_encode_read(uint32_t address) {
+    return ((address & 0xFFFFFu) << 10) | ((uint32_t)FIFO_REG_READ << 30);
 }
 
 static inline uint32_t dma_fifo_encode_write(uint32_t address, uint8_t data) {
@@ -262,6 +252,8 @@ void dma_process_deferred_events(void);
 #ifdef CACHED_MODE
 void registers_irq_handler_cached(void);
 void registers_irq_handler_cached_asm(void);
+void board_registers_irq_handler_cached_asm(void);
+void bus_output_helper_irq_handler_cached_asm(void);
 void registers_irq_handler_cached_init(void);
 void dma_process_deferred_events_cached(void);
 #endif

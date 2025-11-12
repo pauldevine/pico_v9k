@@ -91,8 +91,8 @@ int main() {
     pio_sm_claim (register_pio, REGISTERS_SM);
     int outcome = pio_set_gpio_base(register_pio, LOWER_PIN_BASE);
     printf("register_pio pio_set_gpio_base outcome: %d PICO_PIO_USE_GPIO_BASE %d\n", outcome, PICO_PIO_USE_GPIO_BASE);
-    int dma_registers_program_offset = pio_add_program(register_pio, &dma_registers_program);
-    dma_registers_program_init(register_pio, register_sm, dma_registers_program_offset);
+    int board_registers_program_offset = pio_add_program(register_pio, &board_registers_program);
+    board_registers_program_init(register_pio, register_sm, board_registers_program_offset);
     multicore_launch_core1(core1_main);
 
     //configure the IO/M helper PIO state machine to manage the IO/M pin during register accesses
@@ -124,8 +124,8 @@ int main() {
     printf("bus_output_helper initialized on PIO%d SM%d\n",
            pio_get_index(bus_helper_pio), bus_helper_sm);
 
-    printf("pio: %d register_sm: %d dma_registers_program_offset: %d pin: %d\n", register_pio, register_sm, dma_registers_program_offset, BD0_PIN);
-    printf("about to iniitialize dma_registers with offfset %X \n", DMA_REGISTER_BITMASK);
+    printf("pio: %d register_sm: %d board_registers_program_offset: %d pin: %d\n", register_pio, register_sm, board_registers_program_offset, BD0_PIN);
+    printf("about to iniitialize board_registers with offfset %X \n", DMA_REGISTER_BITMASK);
 
     //initialize state machine dma offset location
     pio_sm_put_blocking(register_pio, register_sm, DMA_REGISTER_BITMASK);  

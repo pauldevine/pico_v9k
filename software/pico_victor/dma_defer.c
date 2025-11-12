@@ -64,9 +64,9 @@ bool defer_dequeue(defer_queue_t *queue, defer_entry_t *entry) {
 // We only need to process side effects here, not update cache values
 // The cache was already read and returned by the fast handler
 void defer_process_read(dma_registers_t *dma, uint32_t raw_value) {
-    // Extract address FIFO has 01[address]
+    // Extract address FIFO has 00[address] - REG_READ payload
     fast_log("RAW=0x%08x\n", raw_value);
-    uint32_t address = dma_fifo_commit_address(raw_value);
+    uint32_t address = board_fifo_read_address(raw_value);
     uint32_t offset = address - DMA_REGISTER_BASE;
     uint32_t masked_offset = dma_mask_offset(offset);
 
@@ -269,14 +269,7 @@ void defer_process_entry(dma_registers_t *dma, const defer_entry_t *entry) {
     uint32_t offset;
 
     switch (payload_type) {
-        case FIFO_PREFETCH_ADDRESS:
-            //Prefetch address operation should have been handled by fast path
-            //FIFO has 00[address]
-            address = dma_fifo_prefetch_address(raw_value);
-            offset = address - DMA_REGISTER_BASE;
-            fast_log("DEFER_PREFETCH_ADDRESS: should not have arrived offset=0x%02x\n", offset);
-            break;
-        case FIFO_READ_COMMIT:
+        case FIFO_REG_READ:
             // Read operation - process side effects only
             defer_process_read(dma, raw_value);
             break;

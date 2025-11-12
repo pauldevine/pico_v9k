@@ -60,7 +60,7 @@ int main() {
     PIO register_pio = PIO_REGISTERS;
 
     int register_sm;
-    int dma_registers_program_offset;
+    int board_registers_program_offset;
     
     int pins_required = 19;
 
@@ -70,11 +70,11 @@ int main() {
     //configure the register PIO, used to read/write the DMA registers for controlling the DMA card behavior
     pio_sm_claim (register_pio, REGISTERS_SM);
     register_sm = REGISTERS_SM;
-    dma_registers_program_offset = pio_add_program(register_pio, &dma_registers_program);
-    dma_registers_program_init(register_pio, register_sm, dma_registers_program_offset);
+    board_registers_program_offset = pio_add_program(register_pio, &board_registers_program);
+    board_registers_program_init(register_pio, register_sm, board_registers_program_offset);
     multicore_launch_core1(core1_main);
 
-    printf("pio: %d register_sm: %d dma_registers_program_offset: %d pin: %d\n", register_pio, register_sm, dma_registers_program_offset, BD0_PIN);
+    printf("pio: %d register_sm: %d board_registers_program_offset: %d pin: %d\n", register_pio, register_sm, board_registers_program_offset, BD0_PIN);
     printf("about to iniitialize dma_registers with offfset %X \n", DMA_REGISTER_BITMASK);
 
     //initialize state machine dma offset location

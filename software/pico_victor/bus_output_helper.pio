@@ -4,11 +4,13 @@
 .define HLDA_PIN 29
 .define DATA_SIZE 8
 
-.define FIFO_PREFETCH_ADDRESS 0x00
-.define FIFO_READ_COMMIT 0x01
-.define FIFO_WRITE_VALUE 0x02
-.define FIFO_DMA_READ    0x03
+.define FIFO_REG_READ    0x00
+.define FIFO_WRITE_VALUE 0x01
+.define FIFO_DMA_READ    0x02
 
+.define DMA_REGISTER_BITMASK 0x00000EF3
+.define DMA_MASK_SIZE 12
+.define ADDRESS_BUS_SIZE 20
 
 .program bus_output_helper
 .side_set 1
@@ -19,43 +21,51 @@
 pull block side 0         ; Pull pindirs for RD cycle from FIFO
 mov y, osr side 0         ; Store pindirs for RD cycle in Y
 
+
 .wrap_target
-START:
-    pull block side 0         ; wait for data in FIFO [A19-BD0]
-    wait 1 IRQ 1 side 1       ; wait for dma_read_write SM to signal new cycle
-    jmp pin DMA_CYCLE side 0  ; if HLDA pin is high, we're doing DMA and need full address and/or data
+T1:   
+    wait 0 GPIO ALE_PIN side 0            ; wait for ALE to go low = T0 start & wait for address to stabilize
+    wait 1 GPIO ALE_PIN [9] side 0        ; wait for ALE to go high = T1 start & wait for address to stabilize
+    in pins, ADDRESS_BUS_SIZE side 0 [15] ; shift 20 bits of address into ISR, wait for other SM to adjust EXTIO
+    nop side 0 [15]                       ; wait for other SM to adjust EXTIO
+    nop side 0 [15]                       ; wait for other SM to adjust EXTIO
+    jmp pin T3_READ_REG side 1            ; if EXTIO_PIN is high, 8088 is reeading our registers, we're writing
+    jmp !OSRE DMA_T1 side 1            ; if FIFO has data, we're doing DMA and need to output address and then data
 
-REGISTER_READ_CYCLE:
-    out pins, 8 side 0        ; HLDA low, we're outputing byte on BD0-BD7, 8088 driving A8-A19
-    out pindirs, 8 side 0      ; set BD0-BD7 as outputs
-
+T3_READ_REG:                             ; 8088 read cycle // pico's writing
+    in null, 2 side 0                    ; add ISR 0x00 for payload type 0 = register read
+    push noblock side 1                  ; Push the current ISR address for ARM to know what address is being read
+    pull block side 1                    ; Pull data byte to output from FIFO for 8088 to read 
+    out pins, 8 side 1                   ; we're outputing byte on BD0-BD7, 8088 is driving A8-A19
+    out pindirs, 8 side 1                ; set BD0-BD7 as outputs
+ 
 T4_END:
     wait 1 irq 4 side 1       ; wait for source SM (board_registers or dma_read_write) to signal cycle complete
     mov pindirs, null side 0  ; tri-state bus (BD0-BD7 for registers, BD0-A19 for DMA)
 .wrap
 
-DMA_CYCLE:
-    mov isr, osr side 0        ; store 20-bit address for 8088 RD case to notify ARM data to update
 DMA_T1:
+    wait 1 GPIO HLDA_PIN side 0    ; wait for HLDA to go high
     out pins, 20 side 0        ; output address on bus, we're driving A0-A19 for ALE in T1
     mov pindirs, ~null side 0  ; drive address pins output
     pull block side 0          ; new payload WR: [A19-A8] [data BD7-BD0] [W/R bit = 1] from FIFO for WR T2
-                              ; new payload RD: [A19-A8] [data=0x00 for BD7-BD0] [W/R bit = 0] from FIFO for RD T2
+                               ; new payload RD: [A19-A8] [data=0x00 for BD7-BD0] [W/R bit = 0] from FIFO for RD T2
 DMA_T2:
-    out x, 1 side 0           ; get W/R bit from LSB (1=Write, 0=Read)
+    out x, 2 side 0            ; get W/R 2-bit flag from LSB (3=Write, 0=Read)
     wait 1 irq 2 side 0        ; wait for DMA read_write SM to signal move from address to data phase
     out pins, 20 side 0        ; output data byte plus MSB of address on BD0-BD7 and A8-A19
     jmp !x DMA_T2_READ side 0  ; if x=0 (read), jump to DMA_T2_READ
     ; Fall through for write (x=1)
+
 DMA_T2_WRITE:
     mov pindirs, ~null side 0  ; drive [A19-A8] [data BD7-BD0] as outputs for DMA WR
     jmp T4_END side 0          ; wait for cycle complete
+
 DMA_T2_READ:
     mov pindirs, y side 0      ; set [A19-A8] outputs, [BD7-BD0] inputs,  for DMA RD
     wait 1 irq 3 side 0        ; wait for DMA read_write SM to signal read capture
     in pins, DATA_SIZE side 0  ; RD case, read data from bus
-    set x, FIFO_DMA_READ side 0 ; signal to arm DMA read data payload
-    in x, 2 side 0             ; move the DMA read flag into ISR as MSBs // ISR has 11[data]
+    in x, 2 side 0             ; move the DMA read flag into ISR as MSBs, came from out at start of DMA_T2
     push side 0                ; push data to FIFO for ARM to read push payload RD: [payload type=3 /2bits][data BD7-BD0 /8bits][address A19-A0 /20bits]
     jmp T4_END side 0          ; wait for cycle complete
 
@@ -73,8 +83,9 @@ static inline void bus_output_helper_program_init(PIO pio, uint sm, uint offset)
     // Configure OUT pins for BD0-A19 (20 pins starting at BD0_PIN)
     sm_config_set_out_pins(&c, BD0_PIN, 20);
 
-    // Configure JMP pin for HLDA (to distinguish DMA vs register cycles)
-    sm_config_set_jmp_pin(&c, HLDA_PIN);
+    // Configure JMP pin for EXTIO (to distinguish register reads from register writes)
+    //using presence of TX FIFO data to identify DMA pending
+    sm_config_set_jmp_pin(&c, EXTIO_PIN);
 
     // Initialize GPIO pins for bus control
     for (int i = BD0_PIN; i < BD0_PIN + 20; i++) {

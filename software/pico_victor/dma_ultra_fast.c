@@ -296,7 +296,7 @@ void __time_critical_func(registers_irq_handler_ultra)() {
 
     switch (payload_type) {
         case FIFO_PREFETCH_ADDRESS: {
-            uint32_t address = dma_fifo_prefetch_address(raw_value);
+            uint32_t address = board_fifo_read_address(raw_value);
             uint32_t offset = address - DMA_REGISTER_BASE;
             if (offset >= 0x100) {
                 break;
@@ -382,7 +382,7 @@ void __time_critical_func(registers_irq_handler_ultra_asm)() {
 
     switch (payload_type) {
         case FIFO_PREFETCH_ADDRESS: {
-            uint32_t address = dma_fifo_prefetch_address(raw_value);
+            uint32_t address = board_fifo_read_address(raw_value);
             offset = address - DMA_REGISTER_BASE;
 
             if (offset >= 0x100) {
