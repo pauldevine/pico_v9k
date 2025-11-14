@@ -83,10 +83,29 @@ static inline void bus_output_helper_program_init(PIO pio, uint sm, uint offset)
     // Configure OUT pins for BD0-A19 (20 pins starting at BD0_PIN)
     sm_config_set_out_pins(&c, BD0_PIN, 20);
 
+    // Configure IN pins for reading address bus (20 pins starting at BD0_PIN)
+    sm_config_set_in_pins(&c, BD0_PIN);
+
     // Configure JMP pin for EXTIO (to distinguish register reads from register writes)
     //using presence of TX FIFO data to identify DMA pending
     sm_config_set_jmp_pin(&c, EXTIO_PIN);
 
+    //todo: remove after debugging
+    // Configure sideset in the sm_config BEFORE calling pio_sm_init
+    sm_config_set_sideset_pins(&c, HOLD_PIN);
+    sm_config_set_sideset(&c,
+        1,     // bit_count: 1 pin for side-set
+        false, // optional: side-set is mandatory on every instruction
+        false  // pindirs: false means sideset controls pin value (not direction)
+    );
+
+    sm_config_set_clkdiv(&c, 1.0f);
+
+    // Load our configuration, and jump to the start of the program
+    int init_rc = pio_sm_init(pio, sm, offset, &c);
+    printf("pio_sm_init rc=%d, SM%d execctrl after init=0x%08x\n", init_rc, sm, pio->sm[sm].execctrl);
+
+    // NOW initialize GPIO pins AFTER pio_sm_init
     // Initialize GPIO pins for bus control
     for (int i = BD0_PIN; i < BD0_PIN + 20; i++) {
         pio_gpio_init(pio, i);
@@ -99,14 +118,8 @@ static inline void bus_output_helper_program_init(PIO pio, uint sm, uint offset)
     // Set all bus pins as inputs initially (will be controlled by pindirs instructions)
     pio_sm_set_consecutive_pindirs(pio, sm, BD0_PIN, 20, false);
 
-    //todo: remove after debugging
+    // Initialize the sideset GPIO pin
     pio_gpio_init(pio, HOLD_PIN);
-    sm_config_set_sideset_pins(&c, HOLD_PIN);
-    sm_config_set_sideset(&c,
-        1,     // bit_count: 1 pin for side-set
-        false, // optional: side-set is mandatory on every instruction
-        false  // pindirs: false means sideset controls pin value (not direction)
-    );
 
     // Set the pin value to 0 initially (important for sideset to work)
     pio_sm_set_pins_with_mask(pio, sm, 0, 1u << HOLD_PIN);
@@ -115,12 +128,6 @@ static inline void bus_output_helper_program_init(PIO pio, uint sm, uint offset)
     pio_sm_set_consecutive_pindirs(pio, sm, HOLD_PIN, 1, true);
     printf("HOLD_PIN Pin %d func: %d, dir: %d\n",
            HOLD_PIN, gpio_get_function(HOLD_PIN), gpio_get_dir(HOLD_PIN));
-    
-    sm_config_set_clkdiv(&c, 1.0f);
-
-    // Load our configuration, and jump to the start of the program
-    int init_rc = pio_sm_init(pio, sm, offset, &c);
-    printf("pio_sm_init rc=%d, SM%d execctrl after init=0x%08x\n", init_rc, sm, pio->sm[sm].execctrl);
 
     if (init_rc == PICO_OK) {
         pio_sm_set_enabled(pio, sm, true);
