@@ -145,7 +145,7 @@ void __time_critical_func(registers_irq_handler_cached)() {
     // Get value from PIO FIFO
     uint32_t raw_value = pio_sm_get(PIO_REGISTERS, REGISTERS_SM);
 
-    uint32_t payload_type = dma_fifo_payload_type(raw_value);
+    uint32_t payload_type = fifo_payload_type(raw_value);
     cached_registers_t *cached = defer_get_cached_registers();
     uint8_t pending_before = (uint8_t)fifo_read_count;
     uint8_t trace_flags = 0;
@@ -249,7 +249,7 @@ void __time_critical_func(board_registers_irq_handler_cached_asm)() {
     raw_value = PIO_REGISTERS->rxf[REGISTERS_SM];
 
     // Extract 2-bit payload type flag
-    uint32_t payload_type = dma_fifo_payload_type(raw_value);
+    uint32_t payload_type = fifo_payload_type(raw_value);
 
     // Get cached registers pointer
     cached_registers_t *cached = &cached_regs;
@@ -307,7 +307,7 @@ void __time_critical_func(bus_output_helper_irq_handler_cached_asm)() {
     raw_value = PIO_BUS_HELPER->rxf[BUS_HELPER_SM];
 
     // Extract 2-bit payload type flag
-    uint32_t payload_type = dma_fifo_payload_type(raw_value);
+    uint32_t payload_type = fifo_payload_type(raw_value);
 
     // Get cached registers pointer
     cached_registers_t *cached = &cached_regs;

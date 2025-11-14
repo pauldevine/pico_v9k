@@ -588,7 +588,7 @@ uint8_t dma_read_register(dma_registers_t *dma, dma_reg_offsets_t offset) {
 
     //printf("getting address\n");
     uint32_t raw_value = pio_sm_get(pio, sm); //retrieve the payload from the FIFO
-    uint32_t payload_type = dma_fifo_payload_type(raw_value);
+    uint32_t payload_type = fifo_payload_type(raw_value);
     uint32_t start_cycles = systick_hw->cvr;
     uint32_t end_cycles;
 

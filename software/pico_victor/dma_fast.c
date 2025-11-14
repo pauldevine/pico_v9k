@@ -222,7 +222,7 @@ void __time_critical_func(registers_irq_handler_fast)() {
     gpio_put(DEBUG_PIN, 1);
     
     uint32_t raw_value = pio_sm_get(PIO_REGISTERS, REGISTERS_SM);
-    uint32_t payload_type = dma_fifo_payload_type(raw_value);
+    uint32_t payload_type = fifo_payload_type(raw_value);
     uint32_t start_cycles = systick_hw->cvr;
 
     dma_registers_t *dma = dma_get_registers();

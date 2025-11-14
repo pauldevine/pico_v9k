@@ -57,8 +57,8 @@
 #define FIFO_WRITE_VALUE 0x01
 #define FIFO_DMA_READ    0x02
 
-static inline uint32_t dma_fifo_payload_type(uint32_t raw_value) {
-    // PIO encoding varies by operation type:
+static inline uint32_t fifo_payload_type(uint32_t raw_value) {
+    // PIO encoding varies by operation type, but payload-type identifier is always in bits 31-30
     return (raw_value >> 30) & 0x03u;  // Write: type in bits 31-30
 }
 

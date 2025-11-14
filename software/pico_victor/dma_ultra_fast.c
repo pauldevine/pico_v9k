@@ -282,7 +282,7 @@ void __time_critical_func(registers_irq_handler_ultra)() {
     gpio_put(DEBUG_PIN, 1);
 
     uint32_t raw_value = pio_sm_get(PIO_REGISTERS, REGISTERS_SM);
-    uint32_t payload_type = dma_fifo_payload_type(raw_value);
+    uint32_t payload_type = fifo_payload_type(raw_value);
 
     dma_registers_t *dma = dma_get_registers();
     if (!dma) {
@@ -373,7 +373,7 @@ void __time_critical_func(registers_irq_handler_ultra_asm)() {
     // Get value from PIO FIFO
     raw_value = pio_sm_get(PIO_REGISTERS, REGISTERS_SM);
 
-    uint32_t payload_type = dma_fifo_payload_type(raw_value);
+    uint32_t payload_type = fifo_payload_type(raw_value);
     dma_registers_t *dma = dma_get_registers();
     if (!dma) {
         *(volatile uint32_t *)SIO_GPIO_OUT_CLR_REG = DEBUG_PIN_MASK;

@@ -169,6 +169,12 @@ int main() {
     //todo: remove after debugging
     uint hold_function = GPIO_FUNC_PIO0 + pio_get_index(PIO_BUS_HELPER);
     gpio_set_function(HOLD_PIN, hold_function);
+    pio_sm_set_consecutive_pindirs(PIO_BUS_HELPER, bus_helper_sm, HOLD_PIN, 1, true);
+
+    printf("HOLD_PIN Pin %d func: %d, sio dir: %d\n",
+           HOLD_PIN, gpio_get_function(HOLD_PIN), gpio_get_dir(HOLD_PIN));
+    
+    printf("HOLD_PIN PIO dir: %d\n", (PIO_BUS_HELPER == pio0 ? pio0 : pio1)->dbg_padoe >> HOLD_PIN & 1);
 
     // Enable cross-PIO IRQ synchronization (PIO0 → PIO1)
     // Required for board_registers "irq next" to signal bus_output_helper
