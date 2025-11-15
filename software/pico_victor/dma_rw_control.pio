@@ -14,7 +14,7 @@
 .define CONTROL_PINCOUNT 12
 .define DATA_SIZE 8
  
-.program dma_read_write
+.program dma_rw_control
 .side_set 2 opt pindirs; 
 
 ; side-set GPIO Pin Mapping (LSB first):
@@ -130,10 +130,10 @@ T2_READ:
  *   - If a pin isn't routed to PIO, wait will hang forever
  *   - Using pio_gpio_init() on input-only pins causes them to glitch when pindirs changes
  */
-static inline void dma_read_write_program_init(PIO pio, uint sm, uint offset, uint pin) {
+static inline void dma_rw_control_program_init(PIO pio, uint sm, uint offset, uint pin) {
     printf("Configuring PIO for DMA READ/WRITE operations (single SM)\n");
-    printf("starting to configure dma_read_write_program_init\n");
-    pio_sm_config c = dma_read_write_program_get_default_config(offset);
+    printf("starting to configure dma_rw_control_program_init\n");
+    pio_sm_config c = dma_rw_control_program_get_default_config(offset);
 
     printf("setting out pin mapping to %d, count %d\n", pin, ADDRESS_BUS_SIZE);
     sm_config_set_out_pins(&c, pin, ADDRESS_BUS_SIZE);

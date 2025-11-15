@@ -3,17 +3,16 @@
 #include <stdio.h>
 #include "hardware/pio.h"
 
-#define PIO_REGISTERS pio0
-#define REGISTERS_SM  0
+#define PIO_REGISTERS   pio0
+#define REG_SM_CONTROL  0   
 
-#define PIO_BUS_HELPER pio1
-#define BUS_HELPER_SM 0
+#define PIO_OUTPUT      pio1
+#define REG_SM_OUTPUT   0
+#define DMA_SM_OUTPUT   1
 
-#define PIO_DMA pio2
-#define DMA_SM 0
-
-#define PIO_IOM pio2
-#define IOM_SM 1
+#define PIO_DMA_CONTROL pio2
+#define DMA_SM_CONTROL  0
+#define IOM_SM          1
 
 #define ADDR_START_PIN 1 // DMA address output
 #define LOWER_PIN_BASE 0
@@ -114,7 +113,7 @@ static void setup_pio_instance(PIO pio, int sm) {
 #define DMA_REGISTER_BITMASK 0x00000EF3  //the top 12 bits for the PIO instance to match address against
 #define DMA_BUS_START_POSITION (0xDF6 & 0xFFF)  // Sets up the BUS CONTROL pins to start DMA transfers
 #define DMA_READ_START_POSITION (0xDF6 & 0xFFF)  // Sets up the BUS CONTROL pins to start DMA transfers
-#define DMA_READ_T2_PINDIRS 0xFFF00 // Sets up the Address pins so 0-7 are inputs and 8-19 are outputs
+#define DMA_READ_T2_PINDIRS 0xFFF00 // Sets up the Address pins so [A19-A8] are outputs FFF, [BD7-BD0] 00 data pins are inputs
 #define DMA_WRITE_T2_PINDIRS 0x07FFFFFF //Sets up the address and DMA control pins so 0-27 are outputs, 28-31 are inputs
 
 // Convert SM number to the corresponding IRQ source
@@ -235,28 +234,11 @@ void pio_debug_state();
 void core1_main();
 void setup_bus_control();
 dma_registers_t* dma_get_registers();
-// Unified DMA SM management (single-SM dma_read_write.pio)
-void dma_set_unified_sm(PIO pio, int sm);
-int dma_get_unified_sm();
-PIO dma_get_unified_pio();
-// bus_output_helper SM management
-void dma_set_bus_helper_sm(PIO pio, int sm);
-int dma_get_bus_helper_sm();
-PIO dma_get_bus_helper_pio();
-void dma_write_to_victor_ram(PIO write_pio, int write_sm, uint8_t *data, size_t length, uint32_t start_address);
-void dma_read_from_victor_ram(PIO read_pio, int read_sm, uint8_t *data, size_t length, uint32_t start_address);
-void registers_irq_handler();
+void dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_address);
+void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_address);
 void dma_process_deferred_events(void);
-
-// Cached/deferred processing functions
-#ifdef CACHED_MODE
-void registers_irq_handler_cached(void);
-void registers_irq_handler_cached_asm(void);
-void board_registers_irq_handler_cached_asm(void);
-void bus_output_helper_irq_handler_cached_asm(void);
-void registers_irq_handler_cached_init(void);
 void dma_process_deferred_events_cached(void);
-#endif
+
 void dma_write_register(dma_registers_t *dma, dma_reg_offsets_t offset, uint8_t value);
 uint8_t dma_read_register(dma_registers_t *dma, dma_reg_offsets_t offset);
 void dma_device_reset(dma_registers_t *dma);
@@ -269,4 +251,4 @@ uint8_t* test_get_victor_ram();
 size_t test_get_victor_ram_size();
 #endif
 
-#endif
+#endif // DMA_VICTOR_H

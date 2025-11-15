@@ -1,15 +1,16 @@
 /*
- * dma_defer.c - Deferred processing implementation for DMA register operations
+ * reg_queue_processor.c - Deferred processing implementation for DMA register operations
  */
 
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
 #include "hardware/structs/systick.h"
 #include <string.h>
-#include "dma_defer.h"
+#include "reg_queue_processor.h"
 #include "dma.h"
 #include "sasi.h"
 #include "logging.h"
+#include "fifo_helpers.h"
 
 // Static instances - place in time_critical section for fast access
 defer_queue_t defer_queue __attribute__((section(".time_critical.defer_queue")));

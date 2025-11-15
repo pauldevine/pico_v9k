@@ -1,12 +1,12 @@
 /*
- * dma_defer.h - Deferred processing system for DMA register operations
+ * reg_queue_processor.h - Deferred processing system for DMA register operations
  *
  * This system separates the fast path (return cached values) from the slow path
  * (process state changes), allowing us to meet the 200ns timing requirement.
  */
 
-#ifndef DMA_DEFER_H
-#define DMA_DEFER_H
+#ifndef REG_QUEUE_PROCESSOR_H
+#define REG_QUEUE_PROCESSOR_H
 
 #include <stdint.h>
 #include <stdbool.h>
@@ -78,9 +78,6 @@ defer_queue_t* defer_get_queue(void);
 
 // Get the cached registers instance
 cached_registers_t* defer_get_cached_registers(void);
-
-// Flush FIFO tag trace buffer to logs (debug helper)
-void dma_fifo_trace_flush(void);
 
 // Update cached register value
 static inline void defer_update_cached(cached_registers_t *cached, uint32_t offset, uint8_t value) {

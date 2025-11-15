@@ -1,0 +1,106 @@
+.pio_version 1
+.define RD_PIN 21
+.define ALE_PIN 24
+.define HLDA_PIN 29
+.define DATA_SIZE 8
+
+.define FIFO_REG_READ    0x00
+.define FIFO_WRITE_VALUE 0x01
+.define FIFO_DMA_READ    0x02
+
+.define DMA_REGISTER_BITMASK 0x00000EF3
+.define DMA_MASK_SIZE 12
+.define ADDRESS_BUS_SIZE 20
+
+.program register_output
+.side_set 1
+
+.wrap_target
+T1:   
+    wait 0 GPIO ALE_PIN side 0            ; wait for ALE to go low = T0 start & wait for address to stabilize
+    wait 1 GPIO ALE_PIN [9] side 0        ; wait for ALE to go high = T1 start & wait for address to stabilize
+    in pins, ADDRESS_BUS_SIZE side 0 [15] ; shift 20 bits of address into ISR, wait for other SM to adjust EXTIO
+    nop side 1 [15]                       ; wait for other SM to adjust EXTIO
+    nop side 1 [15]                       ; wait for other SM to adjust EXTIO           
+    jmp pin T1 side 0                     ; if EXTIO_PIN is high, we're not doing a register read, jump to start of T1 again
+    ; if EXTIO_PIN is low, 8088 is reeading our registers, fall through to T3_READ_REG
+
+T3_READ_REG:                             ; 8088 read cycle // pico's writing
+    in null, 2 side 1                    ; add ISR 0x00 for payload type 0 = register read
+    push noblock side 1                  ; Push the current ISR address for ARM to know what address is being read
+    pull block side 1                    ; Pull data byte to output from FIFO for 8088 to read 
+    out pins, 8 side 1                   ; we're outputing byte on BD0-BD7, 8088 is driving A8-A19
+    out pindirs, 8 side 1                ; set BD0-BD7 as outputs
+
+T4_END:
+    wait 1 irq 4 side 1       ; wait for source SM board_registers to signal cycle complete
+    mov pindirs, null side 0  ; tri-state bus (BD0-BD7 for registers, BD0-A19 for DMA)
+.wrap
+
+% c-sdk {
+#include <stdio.h>
+#include "hardware/pio.h"
+#include "hardware/gpio.h"
+#include "pico_victor/dma.h"
+
+static inline void register_output_program_init(PIO pio, uint sm, uint offset) {
+    printf("Configuring PIO for register_output SM\n");
+    pio_sm_config c = register_output_program_get_default_config(offset);
+
+    // Configure OUT pins for BD0-A19 (20 pins starting at BD0_PIN)
+    sm_config_set_out_pins(&c, BD0_PIN, 20);
+
+    // Configure IN pins for reading address bus (20 pins starting at BD0_PIN)
+    sm_config_set_in_pins(&c, BD0_PIN);
+
+    // Configure JMP pin for EXTIO (to distinguish register reads from register writes)
+    //using presence of TX FIFO data to identify DMA pending
+    sm_config_set_jmp_pin(&c, EXTIO_PIN);
+
+    //todo: remove after debugging
+    // Configure sideset in the sm_config BEFORE calling pio_sm_init
+    sm_config_set_sideset_pins(&c, HOLD_PIN);
+    sm_config_set_sideset(&c,
+        1,     // bit_count: 1 pin for side-set
+        false, // optional: side-set is mandatory on every instruction
+        false  // pindirs: false means sideset controls pin value (not direction)
+    );
+
+    sm_config_set_clkdiv(&c, 1.0f);
+
+    // Load our configuration, and jump to the start of the program
+    int init_rc = pio_sm_init(pio, sm, offset, &c);
+    printf("pio_sm_init rc=%d, SM%d execctrl after init=0x%08x\n", init_rc, sm, pio->sm[sm].execctrl);
+
+    // NOW initialize GPIO pins AFTER pio_sm_init
+    // Initialize GPIO pins for bus control
+    for (int i = BD0_PIN; i < BD0_PIN + 20; i++) {
+        pio_gpio_init(pio, i);
+        gpio_set_drive_strength(i, GPIO_DRIVE_STRENGTH_2MA);
+        gpio_set_slew_rate(i, GPIO_SLEW_RATE_SLOW);
+        gpio_disable_pulls(i);
+        pio_sm_set_pins_with_mask(pio, sm, 0u, 1u << i); // preload low
+    }
+
+    // Set all bus pins as inputs initially (will be controlled by pindirs instructions)
+    pio_sm_set_consecutive_pindirs(pio, sm, BD0_PIN, 20, false);
+
+    // Initialize the sideset GPIO pin
+    pio_gpio_init(pio, HOLD_PIN);
+
+    // Set the pin value to 0 initially (important for sideset to work)
+    pio_sm_set_pins_with_mask(pio, sm, 0, 1u << HOLD_PIN);
+
+    // Set pin as output initially
+    pio_sm_set_consecutive_pindirs(pio, sm, HOLD_PIN, 1, true);
+    printf("HOLD_PIN Pin %d func: %d, dir: %d\n",
+           HOLD_PIN, gpio_get_function(HOLD_PIN), gpio_get_dir(HOLD_PIN));
+
+    if (init_rc == PICO_OK) {
+        pio_sm_set_enabled(pio, sm, true);
+    } else {
+        printf("WARNING: pio_sm_init failed; SM%d not enabled\n", sm);
+    }
+}
+
+%}

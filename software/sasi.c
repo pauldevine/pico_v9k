@@ -139,10 +139,8 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
         read_sector_from_disk(dma, sector + i, sector_data);
         
         // DMA transfer to system RAM
-        dma_write_to_victor_ram(dma_get_unified_pio(), dma_get_unified_sm(),
-                                sector_data, 512,
-                                dma->dma_address.full);
-        
+        dma_write_to_victor_ram(sector_data, 512, dma->dma_address.full);
+
         // Auto-increment DMA address (the missing piece!)
         dma->dma_address.full += 512;
     }
@@ -176,7 +174,7 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
     for (uint16_t i = 0; i < blocks; i++) {
         uint8_t sector_data[512];
         // Read from Victor RAM into local buffer
-        dma_read_from_victor_ram(dma_get_unified_pio(), dma_get_unified_sm(), sector_data, 512, dma->dma_address.full);
+        dma_read_from_victor_ram(sector_data, 512, dma->dma_address.full);
         dma->dma_address.full += 512;
 
         // Write to disk via FujiNet
@@ -210,7 +208,7 @@ void handle_request_sense(dma_registers_t *dma, uint8_t *cmd) {
         dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_CTL_BIT);
         dma->bus_ctrl |= (SASI_BSY_BIT | SASI_INP_BIT);
 
-        dma_write_to_victor_ram(dma_get_unified_pio(), dma_get_unified_sm(), sense, sense_len, dma->dma_address.full);
+        dma_write_to_victor_ram(sense, sense_len, dma->dma_address.full);
         dma->dma_address.full += sense_len;
     }
 
@@ -229,7 +227,7 @@ void handle_mode_select(dma_registers_t *dma, uint8_t *cmd) {
         dma->bus_ctrl &= ~SASI_INP_BIT;
 
         // Read parameter list from Victor RAM (ignore content for now)
-        dma_read_from_victor_ram(dma_get_unified_pio(), dma_get_unified_sm(), params, param_len, dma->dma_address.full);
+        dma_read_from_victor_ram(params, param_len, dma->dma_address.full);
         dma->dma_address.full += param_len;
     }
 

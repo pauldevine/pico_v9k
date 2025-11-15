@@ -8,9 +8,10 @@
 #include "hardware/pio.h"
 #include "hardware/structs/systick.h"
 #include "hardware/clocks.h"
-#include "board_registers.pio.h"
-#include "dma_read_write.pio.h"
-#include "bus_output_helper.pio.h"
+#include "board_registers_control.pio.h"
+#include "board_registers_output.pio.h"
+#include "dma_rw_control.pio.h"
+#include "dma_rw_output.pio.h"
 #include "iom_helper.pio.h"
 #include "pico_victor/dma.h"
 #include "pico_victor/debug_queue.h"
@@ -85,18 +86,71 @@ int main() {
     sleep_ms(1);
     gpio_put(DEBUG_PIN, 0);
     
-    //configure the register PIO, used to read/write the DMA registers for controlling the DMA card behavior
+    // configure the register controller PIO, which controls the board registers timing for both read and write
+    // but only handles data for 8088 write cycles, which means pico is reading from the 8088 bus
+    // ouputting read data is handled by the board_registers_output PIO state machine
     PIO register_pio = PIO_REGISTERS;
-    int register_sm = REGISTERS_SM;
-    pio_sm_claim (register_pio, REGISTERS_SM);
+    int reg_sm_control = REG_SM_CONTROL;
+    pio_sm_claim (register_pio, REG_SM_CONTROL);
     int outcome = pio_set_gpio_base(register_pio, LOWER_PIN_BASE);
     printf("register_pio pio_set_gpio_base outcome: %d PICO_PIO_USE_GPIO_BASE %d\n", outcome, PICO_PIO_USE_GPIO_BASE);
     int board_registers_program_offset = pio_add_program(register_pio, &board_registers_program);
-    board_registers_program_init(register_pio, register_sm, board_registers_program_offset);
+    board_registers_program_init(register_pio, reg_sm_control, board_registers_program_offset);
+    //initialize state machine, it stores a 12-bit bitmask (0x00000EF3) of the registeraddress MSBs to match against for register accesses
+    //we pull in the full 20-bit address and then drop the lower 8 bits in the PIO program to compare against the 12 MSBs to match our register range
+    pio_sm_put_blocking(register_pio, reg_sm_control, DMA_REGISTER_BITMASK);  
+    printf("board_registers initialized on PIO%d SM%d\n",
+           pio_get_index(register_pio), reg_sm_control);
+
+    // configure the board_register_output PIO state machine to manage BD0-A19 outputs
+    // this PIO handles outputting data when the 8088 is reading from pico registers
+    // it's on a separate PIO instance to share output pins without conflict with the DMA output PIO
+    PIO pio_output = PIO_OUTPUT;
+    int reg_sm_output = REG_SM_OUTPUT;
+    pio_sm_claim(pio_output, reg_sm_output);
+    int reg_output_offset = pio_add_program(pio_output, &register_output_program);
+    register_output_program_init(pio_output, reg_sm_output, reg_output_offset);
+    pio_sm_set_enabled(pio_output, reg_sm_output, true);
+    printf("register_output initialized on PIO%d SM%d\n",
+           pio_get_index(pio_output), reg_sm_output);
+    
+    // Launch core 1 to handle DMA operations
     multicore_launch_core1(core1_main);
 
+    systick_hw->csr = 0x5; // Enable, use processor clock, no interrupt
+    systick_hw->rvr = 0x00FFFFFF; // Max reload value (24-bit)
+
+    // configure the two pio state machines for DMA reading and writing
+    // dma_rw_control.pio handles the bus control and timing for both read and write cycles
+    // dma_rw_output.pio handles inputting and outputting addresses and data during DMA read and write cycles
+    //they're on separate PIO instances to share output pins without conflict with board_registers PIO
+    PIO dma_control_pio = PIO_DMA_CONTROL;
+    //configure the PIO state machine to upper GPIOs because we share the pio with iom_helper which uses a pin >32
+    outcome = pio_set_gpio_base(dma_control_pio, UPPER_PIN_BASE);
+    printf("dma_control_pio pio_set_gpio_base outcome: %d PICO_PIO_USE_GPIO_BASE %d\n", outcome, PICO_PIO_USE_GPIO_BASE);
+    int dma_rw_control_program_offset = pio_add_program(dma_control_pio, &dma_rw_control_program);
+    pio_sm_claim(dma_control_pio, DMA_SM_CONTROL); 
+    int dma_sm = DMA_SM_CONTROL;
+    dma_rw_control_program_init(dma_control_pio, dma_sm, dma_rw_control_program_offset, BD0_PIN);
+    pio_sm_set_enabled(dma_control_pio, dma_sm, true);
+    printf("dma_rw_control PIO initialized on PIO%d SM%d\n",
+           pio_get_index(dma_control_pio), dma_sm);
+
+    //configure the dma_rw_output PIO state machine to manage BD0-A19 inputs and outputs
+    PIO dma_output_pio = PIO_OUTPUT;
+    int dma_output_sm = DMA_SM_OUTPUT;
+    pio_sm_claim(dma_output_pio, dma_output_sm);
+    int dma_output_offset = pio_add_program(dma_output_pio, &dma_rw_output_program);
+    dma_rw_output_program_init(dma_output_pio, dma_output_sm, dma_output_offset);
+    pio_sm_set_enabled(dma_output_pio, dma_output_sm, true);
+    printf("dma_rw_output PIO initialized on PIO%d SM%d\n",
+           pio_get_index(dma_output_pio), dma_output_sm);
+
+    // Preload pindirs value for DMA read cycles (0xFFF00), A19-A8 as outputs, data pins as inputs
+    pio_sm_put_blocking(dma_output_pio, dma_output_sm, DMA_READ_T2_PINDIRS);
+
     //configure the IO/M helper PIO state machine to manage the IO/M pin during register accesses
-    PIO iom_pio = PIO_IOM;
+    PIO iom_pio = PIO_DMA_CONTROL;
     int iom_sm = IOM_SM;
     outcome = pio_set_gpio_base(iom_pio, UPPER_PIN_BASE);
     printf("iom pio_set_gpio_base outcome: %d PICO_PIO_USE_GPIO_BASE %d\n", outcome, PICO_PIO_USE_GPIO_BASE);
@@ -106,60 +160,15 @@ int main() {
     pio_sm_set_enabled(iom_pio, iom_sm, true);
     printf("IOM PIO initialized\n");
 
-    //configure the bus_output_helper PIO state machine to manage BD0-A19 outputs
-    PIO bus_helper_pio = PIO_BUS_HELPER;
-    int bus_helper_sm = BUS_HELPER_SM;
-    pio_sm_claim(bus_helper_pio, bus_helper_sm);
-    int bus_helper_offset = pio_add_program(bus_helper_pio, &bus_output_helper_program);
-    bus_output_helper_program_init(bus_helper_pio, bus_helper_sm, bus_helper_offset);
-    pio_sm_set_enabled(bus_helper_pio, bus_helper_sm, true);
-    printf("bus_output_helper PIO initialized\n");
-
-    // CRITICAL: Preload pindirs value for DMA read cycles (0xFFF00)
-    // This satisfies the preamble in bus_output_helper.pio lines 12-13
-    pio_sm_put_blocking(bus_helper_pio, bus_helper_sm, 0xFFF00);
-
-    // Store the bus_helper SM info for IRQ handlers to use
-    dma_set_bus_helper_sm(bus_helper_pio, bus_helper_sm);
-    printf("bus_output_helper initialized on PIO%d SM%d\n",
-           pio_get_index(bus_helper_pio), bus_helper_sm);
-
-    printf("pio: %d register_sm: %d board_registers_program_offset: %d pin: %d\n", register_pio, register_sm, board_registers_program_offset, BD0_PIN);
-    printf("about to iniitialize board_registers with offfset %X \n", DMA_REGISTER_BITMASK);
-
-    //initialize state machine dma offset location
-    pio_sm_put_blocking(register_pio, register_sm, DMA_REGISTER_BITMASK);  
-
-    systick_hw->csr = 0x5; // Enable, use processor clock, no interrupt
-    systick_hw->rvr = 0x00FFFFFF; // Max reload value (24-bit)
-    
-
-    // configure the two pio state machines for DMA reading and writing, the same code is used for both reading and writing
-    PIO dma_pio = PIO_DMA;
-    int dma_read_write_program_offset = pio_add_program(dma_pio, &dma_read_write_program);
-    pio_sm_claim(dma_pio, DMA_SM);  // Only need one SM for unified read/write
-    int dma_sm = DMA_SM;
-    dma_read_write_program_init(dma_pio, dma_sm, dma_read_write_program_offset, BD0_PIN);
-    dma_set_unified_sm(dma_pio, dma_sm);
-    // Keep DMA SM disabled until a DMA transfer is requested
-    pio_sm_set_enabled(dma_pio, dma_sm, false);
-
-    // After initializing the DMA PIO, return bus ownership to the register PIO (PIO0)
-    // This is needed so board_registers can control its side-set pin (HOLD_PIN/pin 26)
-    setup_pio_instance(PIO_REGISTERS, register_sm);
-
-
-    printf("pio: %d dma_sm: %d dma_read_write_program_offset: %d pin: %d\n", dma_pio, dma_sm, dma_read_write_program_offset, BD0_PIN);
-
     // The unified dma_read_write state machine handles both read and write operations
     // It determines the operation type from bit 0 of the FIFO payload
     // The unified SM stays enabled and blocks on FIFO when idle
 
     // Debug PIO state
     printf("PIO state: enabled=%d, stalled=%d, PC=0x%x\n", 
-           pio_sm_is_claimed(register_pio, register_sm),
-           pio_sm_is_exec_stalled(register_pio, register_sm),
-           pio_sm_get_pc(register_pio, register_sm));
+           pio_sm_is_claimed(register_pio, reg_sm_control),
+           pio_sm_is_exec_stalled(register_pio, reg_sm_control),
+           pio_sm_get_pc(register_pio, reg_sm_control));
      
     dma_device_reset(dma_get_registers());
     printf("DMA device reset complete\n");
@@ -167,17 +176,17 @@ int main() {
     debug_dump_pin(BD0_PIN);
 
     //todo: remove after debugging
-    uint hold_function = GPIO_FUNC_PIO0 + pio_get_index(PIO_BUS_HELPER);
+    uint hold_function = GPIO_FUNC_PIO0 + pio_get_index(PIO_OUTPUT);
     gpio_set_function(HOLD_PIN, hold_function);
-    pio_sm_set_consecutive_pindirs(PIO_BUS_HELPER, bus_helper_sm, HOLD_PIN, 1, true);
+    pio_sm_set_consecutive_pindirs(PIO_OUTPUT, reg_sm_output, HOLD_PIN, 1, true);
 
     printf("HOLD_PIN Pin %d func: %d, sio dir: %d\n",
            HOLD_PIN, gpio_get_function(HOLD_PIN), gpio_get_dir(HOLD_PIN));
-    
-    printf("HOLD_PIN PIO dir: %d\n", (PIO_BUS_HELPER == pio0 ? pio0 : pio1)->dbg_padoe >> HOLD_PIN & 1);
+
+    printf("HOLD_PIN PIO dir: %d\n", (PIO_OUTPUT == pio0 ? pio0 : pio1)->dbg_padoe >> HOLD_PIN & 1);
 
     // Enable cross-PIO IRQ synchronization (PIO0 → PIO1)
-    // Required for board_registers "irq next" to signal bus_output_helper
+    // Required for board_registers "irq next" to signal register_output_helper
     PIO_CTRL_NEXTPREV_CLKDIV_RESTART_BITS;
 
     printf("PIO0 CTRL: 0x%08x (cross-PIO IRQ enabled)\n", pio0->ctrl);
@@ -196,11 +205,7 @@ int main() {
             }
         }
 
-#ifdef CACHED_MODE
         dma_process_deferred_events_cached();
-#else
-        dma_process_deferred_events();
-#endif
 
         // Process debug queue entries (non-blocking)
         debug_queue_process();    
@@ -208,19 +213,17 @@ int main() {
         // Every 10M iterations, check PIO state
         if (i % 10000000 == 0) {
             printf("\nPIO check: FIFO RX level=%d, TX level=%d, PC=0x%x, stalled=%d\n",
-                    pio_sm_get_rx_fifo_level(register_pio, register_sm),
-                    pio_sm_get_tx_fifo_level(register_pio, register_sm),
-                    pio_sm_get_pc(register_pio, register_sm),
-                    pio_sm_is_exec_stalled(register_pio, register_sm));
-            bool dma_enabled = !!(PIO_DMA->ctrl & (1u << (PIO_CTRL_SM_ENABLE_LSB + dma_sm)));
-            printf("DMA SM enabled? %d\n", dma_enabled);
+                    pio_sm_get_rx_fifo_level(register_pio, reg_sm_control),
+                    pio_sm_get_tx_fifo_level(register_pio, reg_sm_control),
+                    pio_sm_get_pc(register_pio, reg_sm_control),
+                    pio_sm_is_exec_stalled(register_pio, reg_sm_control));
 
-            // Check bus_output_helper state
-            printf("bus_output_helper: TX FIFO=%d/8, RX FIFO=%d/8, PC=0x%x, stalled=%d\n",
-                    pio_sm_get_tx_fifo_level(bus_helper_pio, bus_helper_sm),
-                    pio_sm_get_rx_fifo_level(bus_helper_pio, bus_helper_sm),
-                    pio_sm_get_pc(bus_helper_pio, bus_helper_sm),
-                    pio_sm_is_exec_stalled(bus_helper_pio, bus_helper_sm));
+            // Check register_output state
+            printf("register_output: TX FIFO=%d/8, RX FIFO=%d/8, PC=0x%x, stalled=%d\n",
+                    pio_sm_get_tx_fifo_level(pio_output, reg_sm_output),
+                    pio_sm_get_rx_fifo_level(pio_output, reg_sm_output),
+                    pio_sm_get_pc(pio_output, reg_sm_output),
+                    pio_sm_is_exec_stalled(pio_output, reg_sm_output));
 
             // Check IRQ status for each IRQ on all PIOs
             for (int pio_idx = 0; pio_idx < 3; pio_idx++) {

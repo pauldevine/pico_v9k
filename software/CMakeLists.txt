@@ -38,46 +38,40 @@ project(dma_board C CXX ASM)
 # Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
 
-# Add executable. Default name is the project name, version 0.1
-
+# Cached/deferred version of dma_board for improved timing
 add_executable(dma_board dma_board.c )
 pico_set_program_name(dma_board "dma_board")
-pico_set_program_version(dma_board "0.1")
+pico_set_program_version(dma_board "0.2")
 
 target_sources(dma_board PRIVATE
     logging.c
     sasi.c
     pico_victor/dma.c
-    pico_victor/dma_fast.c
-    pico_victor/dma_ultra_fast.c
+    pico_victor/register_cache.c
+    pico_victor/reg_queue_processor.c
+    pico_victor/register_irq_handlers.c
+    pico_victor/dma_irq_handler.c
     pico_victor/debug_queue.c
     pico_fujinet/spi.c)
 
-# default means the target is to run from flash
 pico_set_binary_type(dma_board default)
 
-# Generate PIO headers
-pico_generate_pio_header(dma_board ${CMAKE_CURRENT_LIST_DIR}/pico_victor/board_registers.pio)
-pico_generate_pio_header(dma_board ${CMAKE_CURRENT_LIST_DIR}/pico_victor/dma_read_write.pio)
-pico_generate_pio_header(dma_board ${CMAKE_CURRENT_LIST_DIR}/pico_victor/bus_output_helper.pio)
+# Generate PIO headers for cached version
+pico_generate_pio_header(dma_board ${CMAKE_CURRENT_LIST_DIR}/pico_victor/board_registers_control.pio)
+pico_generate_pio_header(dma_board ${CMAKE_CURRENT_LIST_DIR}/pico_victor/board_registers_output.pio)
+pico_generate_pio_header(dma_board ${CMAKE_CURRENT_LIST_DIR}/pico_victor/dma_rw_control.pio)
+pico_generate_pio_header(dma_board ${CMAKE_CURRENT_LIST_DIR}/pico_victor/dma_rw_output.pio)
 pico_generate_pio_header(dma_board ${CMAKE_CURRENT_LIST_DIR}/pico_victor/iom_helper.pio)
 
-# Modify the below lines to enable/disable output over UART/USB
-pico_enable_stdio_uart(dma_board 0)
+pico_enable_stdio_uart(dma_board 1)
 pico_enable_stdio_usb(dma_board 0)
 
-# Add the standard library to the build
-target_link_libraries(dma_board
-        pico_stdlib)
-
-# Add the standard include files to the build
 target_include_directories(dma_board PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}
         ${CMAKE_CURRENT_LIST_DIR}/pico_victor
         ${CMAKE_CURRENT_LIST_DIR}/pico_fujinet
 )
 
-# Add any user requested libraries
 target_link_libraries(dma_board
         pico_stdlib
         pico_stdio_uart
@@ -89,53 +83,6 @@ target_link_libraries(dma_board
         )
 
 pico_add_extra_outputs(dma_board)
-
-# Cached/deferred version of dma_board for improved timing
-add_executable(dma_board_cached dma_board.c )
-pico_set_program_name(dma_board_cached "dma_board_cached")
-pico_set_program_version(dma_board_cached "0.1")
-
-target_sources(dma_board_cached PRIVATE
-    logging.c
-    sasi.c
-    pico_victor/dma.c
-    pico_victor/dma_cached.c
-    pico_victor/dma_defer.c
-    pico_victor/dma_ultra_fast_cached.c
-    pico_victor/debug_queue.c
-    pico_fujinet/spi.c)
-
-# Define CACHED_MODE to use the cached handler
-target_compile_definitions(dma_board_cached PRIVATE CACHED_MODE=1)
-
-pico_set_binary_type(dma_board_cached default)
-
-# Generate PIO headers for cached version
-pico_generate_pio_header(dma_board_cached ${CMAKE_CURRENT_LIST_DIR}/pico_victor/board_registers.pio)
-pico_generate_pio_header(dma_board_cached ${CMAKE_CURRENT_LIST_DIR}/pico_victor/dma_read_write.pio)
-pico_generate_pio_header(dma_board_cached ${CMAKE_CURRENT_LIST_DIR}/pico_victor/bus_output_helper.pio)
-pico_generate_pio_header(dma_board_cached ${CMAKE_CURRENT_LIST_DIR}/pico_victor/iom_helper.pio)
-
-pico_enable_stdio_uart(dma_board_cached 1)
-pico_enable_stdio_usb(dma_board_cached 0)
-
-target_include_directories(dma_board_cached PRIVATE
-        ${CMAKE_CURRENT_LIST_DIR}
-        ${CMAKE_CURRENT_LIST_DIR}/pico_victor
-        ${CMAKE_CURRENT_LIST_DIR}/pico_fujinet
-)
-
-target_link_libraries(dma_board_cached
-        pico_stdlib
-        pico_stdio_uart
-        pico_multicore
-        pico_util
-        hardware_pio
-        hardware_spi
-        hardware_dma
-        )
-
-pico_add_extra_outputs(dma_board_cached)
 
 # On-device test executable (UNIT_TEST mode, no PIO bus activity)
 add_executable(dma_board_tests
@@ -175,8 +122,8 @@ pico_add_extra_outputs(dma_board_tests)
 add_executable(benchmark_irq
     test/benchmark_irq.c
     pico_victor/dma.c
-    pico_victor/dma_fast.c
-    pico_victor/dma_ultra_fast.c
+    pico_victor/register_irq_handlers.c
+    pico_victor/dma_irq_handler.c
 )
 
 target_compile_definitions(benchmark_irq PRIVATE BENCHMARK_MODE=1)

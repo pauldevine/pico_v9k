@@ -20,7 +20,7 @@
 
 ; --- Pre-amble ---
 ; This code runs once at the start for each state machine initialization
-; It expects a bitmask of the 12 MSBs of the address bus to be used for the DMA Board Registers
+; It expects a bitmask of the 12 MSBs of the address to target for the board registers
 pull block side 0        ; Pull bitmask for the 0xEF300 MSB that I'll match against later
 out y, 12 side 0        ; Store bitmask in Y register for 12 MSB address comparison later
 
