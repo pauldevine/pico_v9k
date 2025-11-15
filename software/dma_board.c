@@ -201,34 +201,53 @@ int main() {
             
         // Every 10M iterations, check PIO state
         if (i % 10000000 == 0) {
-            printf("\nPIO check: FIFO RX level=%d, TX level=%d, PC=0x%x, stalled=%d\n",
-                    pio_sm_get_rx_fifo_level(register_pio, register_sm),
-                    pio_sm_get_tx_fifo_level(register_pio, register_sm),
-                    pio_sm_get_pc(register_pio, register_sm),
-                    pio_sm_is_exec_stalled(register_pio, register_sm));
-            bool dma_enabled = !!(PIO_DMA->ctrl & (1u << (PIO_CTRL_SM_ENABLE_LSB + dma_sm)));
-            printf("DMA SM enabled? %d\n", dma_enabled);
+            printf("\n=== PIO State Check (iteration %llu) ===\n", i);
 
-            // Check bus_output_helper state
-            printf("bus_output_helper: TX FIFO=%d/8, RX FIFO=%d/8, PC=0x%x, stalled=%d\n",
-                    pio_sm_get_tx_fifo_level(bus_helper_pio, bus_helper_sm),
-                    pio_sm_get_rx_fifo_level(bus_helper_pio, bus_helper_sm),
-                    pio_sm_get_pc(bus_helper_pio, bus_helper_sm),
-                    pio_sm_is_exec_stalled(bus_helper_pio, bus_helper_sm));
+            // Check board_registers state machine (PIO0)
+            printf("board_registers (PIO%d SM%d): PC=0x%02x, stalled=%d, RX=%d/8, TX=%d/8\n",
+                   pio_get_index(register_pio), register_sm,
+                   pio_sm_get_pc(register_pio, register_sm),
+                   pio_sm_is_exec_stalled(register_pio, register_sm),
+                   pio_sm_get_rx_fifo_level(register_pio, register_sm),
+                   pio_sm_get_tx_fifo_level(register_pio, register_sm));
 
-            // Check IRQ status for each IRQ on all PIOs
+            // Check bus_output_helper state machine (PIO1)
+            printf("bus_output_helper (PIO%d SM%d): PC=0x%02x, stalled=%d, RX=%d/8, TX=%d/8\n",
+                   pio_get_index(bus_helper_pio), bus_helper_sm,
+                   pio_sm_get_pc(bus_helper_pio, bus_helper_sm),
+                   pio_sm_is_exec_stalled(bus_helper_pio, bus_helper_sm),
+                   pio_sm_get_rx_fifo_level(bus_helper_pio, bus_helper_sm),
+                   pio_sm_get_tx_fifo_level(bus_helper_pio, bus_helper_sm));
+
+            // Check DMA state machine (PIO2)
+            bool dma_enabled = !!(dma_pio->ctrl & (1u << (PIO_CTRL_SM_ENABLE_LSB + dma_sm)));
+            printf("dma_read_write (PIO%d SM%d): PC=0x%02x, stalled=%d, RX=%d/8, TX=%d/8, enabled=%d\n",
+                   pio_get_index(dma_pio), dma_sm,
+                   pio_sm_get_pc(dma_pio, dma_sm),
+                   pio_sm_is_exec_stalled(dma_pio, dma_sm),
+                   pio_sm_get_rx_fifo_level(dma_pio, dma_sm),
+                   pio_sm_get_tx_fifo_level(dma_pio, dma_sm),
+                   dma_enabled);
+
+            // Check IOM helper state machine (PIO2)
+            printf("iom_helper (PIO%d SM%d): PC=0x%02x, stalled=%d, RX=%d/8, TX=%d/8\n",
+                   pio_get_index(iom_pio), iom_sm,
+                   pio_sm_get_pc(iom_pio, iom_sm),
+                   pio_sm_is_exec_stalled(iom_pio, iom_sm),
+                   pio_sm_get_rx_fifo_level(iom_pio, iom_sm),
+                   pio_sm_get_tx_fifo_level(iom_pio, iom_sm));
+
+            // Check IRQ flags on all PIOs
+            printf("\nIRQ Flags:\n");
             for (int pio_idx = 0; pio_idx < 3; pio_idx++) {
                 PIO pio_inst = (pio_idx == 0) ? pio0 : (pio_idx == 1) ? pio1 : pio2;
-                printf("PIO%d IRQ status: IRQ0=%d, IRQ1=%d, IRQ2=%d, IRQ3=%d, IRQ4=%d, IRQ5=%d, IRQ6=%d, IRQ7=%d\n",
-                        pio_idx,
-                        pio_interrupt_get(pio_inst, 0) ? 1 : 0,
-                        pio_interrupt_get(pio_inst, 1) ? 1 : 0,
-                        pio_interrupt_get(pio_inst, 2) ? 1 : 0,
-                        pio_interrupt_get(pio_inst, 3) ? 1 : 0,
-                        pio_interrupt_get(pio_inst, 4) ? 1 : 0,
-                        pio_interrupt_get(pio_inst, 5) ? 1 : 0,
-                        pio_interrupt_get(pio_inst, 6) ? 1 : 0,
-                        pio_interrupt_get(pio_inst, 7) ? 1 : 0);
+                printf("  PIO%d: ", pio_idx);
+                for (int irq = 0; irq < 8; irq++) {
+                    if (pio_interrupt_get(pio_inst, irq)) {
+                        printf("IRQ%d=1 ", irq);
+                    }
+                }
+                printf("\n");
             }
 
         }
