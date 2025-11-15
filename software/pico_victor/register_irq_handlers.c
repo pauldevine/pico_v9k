@@ -99,7 +99,7 @@ void __time_critical_func(register_read_irq_isr)() {
             data = cached->values[masked_offset];
 
             // Debug: Check if PIO_OUTPUT and REG_SM_OUTPUT are correct
-            fast_log("BUS_HELPER_REG_READ: offset=0x%02x data=0x%02x pio=%p sm=%d\n",
+            fast_log("REG_READ: offset=0x%02x data=0x%02x pio=%p sm=%d\n",
                      masked_offset, data, PIO_OUTPUT, REG_SM_OUTPUT);
 
             // Check TX FIFO level before pushing
@@ -110,10 +110,10 @@ void __time_critical_func(register_read_irq_isr)() {
 
             // Check TX FIFO level after pushing
             uint32_t tx_after = pio_sm_get_tx_fifo_level(PIO_OUTPUT, REG_SM_OUTPUT);
-            fast_log("BUS_HELPER_PUSH_RESULT: tx_before=%d tx_after=%d\n", tx_before, tx_after);
+            fast_log("REG_READ_PUSH_RESULT: tx_before=%d tx_after=%d\n", tx_before, tx_after);
     } else {
         trace_flags |= FIFO_TRACE_FLAG_ERROR;
-        fast_log("BUS_HELPER: Unknown payload type: 0x%02x raw=0x%08x\n", payload_type, raw_value);
+        fast_log("REG_READ: Unknown payload type: 0x%02x raw=0x%08x\n", payload_type, raw_value);
     }
 
     uint8_t pending_after = (uint8_t)fifo_read_count;

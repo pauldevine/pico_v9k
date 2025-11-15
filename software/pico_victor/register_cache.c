@@ -80,7 +80,6 @@ void warm_caches(void) {
     irq_set_enabled(PIO1_IRQ_1, false);
 
     // Warm up board_registers handler (handles writes only)
-    setup_pio_instance(register_pio, register_control);
     for (int warm_iter = 0; warm_iter < 10; warm_iter++) {
         warmup_write_sequence(register_pio, register_control, DMA_REGISTER_BASE + REG_CONTROL, 0x00);
         warmup_write_sequence(register_pio, register_control, DMA_REGISTER_BASE + REG_ADDR_L, 0x00);
@@ -90,7 +89,6 @@ void warm_caches(void) {
 
     // Warm up bus_output_helper handler (handles reads and DMA reads)
     // Note: bus_output_helper actually processes reads, not board_registers
-    setup_pio_instance(pio_output, reg_sm_output);
     for (int warm_iter = 0; warm_iter < 10; warm_iter++) {
         warmup_read_sequence(pio_output, reg_sm_output, DMA_REGISTER_BASE + REG_DATA);
         warmup_read_sequence(pio_output, reg_sm_output, DMA_REGISTER_BASE + REG_STATUS);

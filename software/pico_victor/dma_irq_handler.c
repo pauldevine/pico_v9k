@@ -52,11 +52,11 @@ void __time_critical_func(dma_read_isr)() {
             data = (raw_value >> 22) & 0xFF;
             // Extract address for logging (bits 2-21 contain the 20-bit address)
             uint32_t dma_address = (raw_value >> 2) & 0xFFFFF;
-            fast_log("BUS_HELPER_DMA_READ: addr=0x%05x data=0x%02x raw=0x%08x\n",
+            fast_log("DMA_READ: addr=0x%05x data=0x%02x raw=0x%08x\n",
                      dma_address, data, raw_value);
     } else {
         trace_flags |= FIFO_TRACE_FLAG_ERROR;
-        fast_log("BUS_HELPER: Unknown payload type: 0x%02x raw=0x%08x\n", payload_type, raw_value);
+        fast_log("DMA_READ: Unknown payload type: 0x%02x raw=0x%08x\n", payload_type, raw_value);
     }
 
     uint8_t pending_after = (uint8_t)fifo_read_count;

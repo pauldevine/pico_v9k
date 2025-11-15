@@ -90,16 +90,6 @@ static inline uint32_t dma_fifo_encode_write(uint32_t address, uint8_t data) {
            ((uint32_t)FIFO_WRITE_VALUE << 30); // Type in bits 31-30
 }
 
-static void setup_pio_instance(PIO pio, int sm) {
-    printf("remove this CALLLLLLLL to setup_pio_instance(pio: %d, sm: %d)\n", pio_get_index(pio), sm);
-    for (int pin = BD0_PIN; pin <= CLOCK_15B_PIN; ++pin) {
-        uint function = GPIO_FUNC_PIO0 + pio_get_index(pio);
-        gpio_set_function(pin, function);
-        printf("dma gpio_init %d  ", pin);
-        printf("GPIO%d_CTRL = 0x%08x\n", pin, io_bank0_hw->io[pin].ctrl);
-    }
-}
-
 
 // DMA operations use a TWO-WORD FIFO protocol (see dma_read_write.pio for details):
 //

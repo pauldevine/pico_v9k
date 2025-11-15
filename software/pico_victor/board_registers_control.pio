@@ -50,7 +50,7 @@ T3_READ:                                 ; 8088 read cycle // pico's writing (bu
     wait 1 GPIO READY_PIN side 1         ; Wait for READY - gives ARM 800ns window to push data to bus_output_helper
     wait 1 GPIO RD_PIN side 1            ; wait for RD to go high (end of read cycle)
 T4:
-    irq next nowait 4 side 1             ; Signal bus_output_helper to tri-state bus
+    irq next nowait 4 side 1             ; Signal board_registers_output to tri-state bus
 .wrap
 
 T3_WRITE:                                ; 8088 write cycle // pico's reading

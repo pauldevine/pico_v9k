@@ -130,11 +130,11 @@ int main() {
     printf("dma_control_pio pio_set_gpio_base outcome: %d PICO_PIO_USE_GPIO_BASE %d\n", outcome, PICO_PIO_USE_GPIO_BASE);
     int dma_rw_control_program_offset = pio_add_program(dma_control_pio, &dma_rw_control_program);
     pio_sm_claim(dma_control_pio, DMA_SM_CONTROL); 
-    int dma_sm = DMA_SM_CONTROL;
-    dma_rw_control_program_init(dma_control_pio, dma_sm, dma_rw_control_program_offset, BD0_PIN);
-    pio_sm_set_enabled(dma_control_pio, dma_sm, true);
+    int dma_control_sm = DMA_SM_CONTROL;
+    dma_rw_control_program_init(dma_control_pio, dma_control_sm, dma_rw_control_program_offset, BD0_PIN);
+    pio_sm_set_enabled(dma_control_pio, dma_control_sm, true);
     printf("dma_rw_control PIO initialized on PIO%d SM%d\n",
-           pio_get_index(dma_control_pio), dma_sm);
+           pio_get_index(dma_control_pio), dma_control_sm);
 
     //configure the dma_rw_output PIO state machine to manage BD0-A19 inputs and outputs
     PIO dma_output_pio = PIO_OUTPUT;
@@ -212,32 +212,51 @@ int main() {
             
         // Every 10M iterations, check PIO state
         if (i % 10000000 == 0) {
-            printf("\nPIO check: FIFO RX level=%d, TX level=%d, PC=0x%x, stalled=%d\n",
-                    pio_sm_get_rx_fifo_level(register_pio, reg_sm_control),
-                    pio_sm_get_tx_fifo_level(register_pio, reg_sm_control),
-                    pio_sm_get_pc(register_pio, reg_sm_control),
-                    pio_sm_is_exec_stalled(register_pio, reg_sm_control));
+            // Check board_registers state machine (PIO0)
+            printf("\nboard_registers (PIO%d SM%d): PC=0x%02x, stalled=%d, RX=%d/8, TX=%d/8\n",
+                   pio_get_index(register_pio), reg_sm_control,
+                   pio_sm_get_pc(register_pio, reg_sm_control),
+                   pio_sm_is_exec_stalled(register_pio, reg_sm_control),
+                   pio_sm_get_rx_fifo_level(register_pio, reg_sm_control),
+                   pio_sm_get_tx_fifo_level(register_pio, reg_sm_control));
 
-            // Check register_output state
-            printf("register_output: TX FIFO=%d/8, RX FIFO=%d/8, PC=0x%x, stalled=%d\n",
-                    pio_sm_get_tx_fifo_level(pio_output, reg_sm_output),
-                    pio_sm_get_rx_fifo_level(pio_output, reg_sm_output),
-                    pio_sm_get_pc(pio_output, reg_sm_output),
-                    pio_sm_is_exec_stalled(pio_output, reg_sm_output));
+            // Check reg_sm_output state machine (PIO1)
+            printf("reg_sm_output (PIO%d SM%d): PC=0x%02x, stalled=%d, RX=%d/8, TX=%d/8\n",
+                   pio_get_index(pio_output), reg_sm_output,
+                   pio_sm_get_pc(pio_output, reg_sm_output),
+                   pio_sm_is_exec_stalled(pio_output, reg_sm_output),
+                   pio_sm_get_rx_fifo_level(pio_output, reg_sm_output),
+                   pio_sm_get_tx_fifo_level(pio_output, reg_sm_output));
 
-            // Check IRQ status for each IRQ on all PIOs
+            // Check dma_output_sm state machine (PIO1)
+            printf("dma_output_sm (PIO%d SM%d): PC=0x%02x, stalled=%d, RX=%d/8, TX=%d/8\n",
+                   pio_get_index(pio_output), dma_output_sm,
+                   pio_sm_get_pc(pio_output, dma_output_sm),
+                   pio_sm_is_exec_stalled(pio_output, dma_output_sm),
+                   pio_sm_get_rx_fifo_level(pio_output, dma_output_sm),
+                   pio_sm_get_tx_fifo_level(pio_output, dma_output_sm));
+
+            // Check DMA control state machine (PIO2)
+            bool dma_enabled = !!(dma_control_pio->ctrl & (1u << (PIO_CTRL_SM_ENABLE_LSB + dma_control_sm)));
+            printf("dma_read_write (PIO%d SM%d): PC=0x%02x, stalled=%d, RX=%d/8, TX=%d/8, enabled=%d\n",
+                   pio_get_index(dma_control_pio), dma_control_sm,
+                   pio_sm_get_pc(dma_control_pio, dma_control_sm),
+                   pio_sm_is_exec_stalled(dma_control_pio, dma_control_sm),
+                   pio_sm_get_rx_fifo_level(dma_control_pio, dma_control_sm),
+                   pio_sm_get_tx_fifo_level(dma_control_pio, dma_control_sm),
+                   dma_enabled);
+
+            // Check IRQ flags on all PIOs
+            printf("\nIRQ Flags:\n");
             for (int pio_idx = 0; pio_idx < 3; pio_idx++) {
                 PIO pio_inst = (pio_idx == 0) ? pio0 : (pio_idx == 1) ? pio1 : pio2;
-                printf("PIO%d IRQ status: IRQ0=%d, IRQ1=%d, IRQ2=%d, IRQ3=%d, IRQ4=%d, IRQ5=%d, IRQ6=%d, IRQ7=%d\n",
-                        pio_idx,
-                        pio_interrupt_get(pio_inst, 0) ? 1 : 0,
-                        pio_interrupt_get(pio_inst, 1) ? 1 : 0,
-                        pio_interrupt_get(pio_inst, 2) ? 1 : 0,
-                        pio_interrupt_get(pio_inst, 3) ? 1 : 0,
-                        pio_interrupt_get(pio_inst, 4) ? 1 : 0,
-                        pio_interrupt_get(pio_inst, 5) ? 1 : 0,
-                        pio_interrupt_get(pio_inst, 6) ? 1 : 0,
-                        pio_interrupt_get(pio_inst, 7) ? 1 : 0);
+                printf("  PIO%d: ", pio_idx);
+                for (int irq = 0; irq < 8; irq++) {
+                    if (pio_interrupt_get(pio_inst, irq)) {
+                        printf("IRQ%d=1 ", irq);
+                    }
+                }
+                printf("\n");
             }
 
         }
