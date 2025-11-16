@@ -98,6 +98,8 @@ void __time_critical_func(register_read_irq_isr)() {
             fifo_read_count++;
             data = cached->values[masked_offset];
 
+            uint32_t payload = (0xFF << 8) | (data & 0xFF); // pio ouputs 8 bits of data plus 8 bits of pindirs (0xFF for output)
+
             // Debug: Check if PIO_OUTPUT and REG_SM_OUTPUT are correct
             fast_log("REG_READ: offset=0x%02x data=0x%02x pio=%p sm=%d\n",
                      masked_offset, data, PIO_OUTPUT, REG_SM_OUTPUT);
@@ -106,7 +108,7 @@ void __time_critical_func(register_read_irq_isr)() {
             uint32_t tx_before = pio_sm_get_tx_fifo_level(PIO_OUTPUT, REG_SM_OUTPUT);
 
             // Push data byte to bus_output_helper for output on BD0-BD7
-            pio_sm_put_blocking(PIO_OUTPUT, REG_SM_OUTPUT, (uint32_t)(data & 0xFFu));
+            pio_sm_put_blocking(PIO_OUTPUT, REG_SM_OUTPUT, payload);
 
             // Check TX FIFO level after pushing
             uint32_t tx_after = pio_sm_get_tx_fifo_level(PIO_OUTPUT, REG_SM_OUTPUT);
