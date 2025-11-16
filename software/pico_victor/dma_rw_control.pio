@@ -157,7 +157,7 @@ static inline void dma_rw_control_program_init(PIO pio, uint sm, uint offset, ui
     pio_sm_set_clkdiv(pio, sm, 1.0f);
 
     // Init output pins for PIO first
-    for (int i = pin; i <= CLOCK_15B_PIN; i++) {
+    for (int i = pin; i <= (BD0_PIN + ADDRESS_BUS_SIZE); i++) {
         gpio_set_drive_strength(i, GPIO_DRIVE_STRENGTH_2MA);
         gpio_set_slew_rate(i, GPIO_SLEW_RATE_SLOW);
         gpio_disable_pulls(i);

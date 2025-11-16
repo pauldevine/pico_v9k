@@ -75,7 +75,7 @@ void __time_critical_func(register_read_irq_isr)() {
     *(volatile uint32_t *)SIO_GPIO_OUT_SET_REG = DEBUG_PIN_MASK;
 
     // Get value from bus_output_helper PIO FIFO
-    raw_value = PIO_REGISTERS->rxf[REG_SM_CONTROL];
+    raw_value = PIO_OUTPUT->rxf[REG_SM_OUTPUT];
 
     // Extract 2-bit payload type flag
     uint32_t payload_type = fifo_payload_type(raw_value);

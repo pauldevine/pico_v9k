@@ -47,7 +47,7 @@ T2:
     jmp pin T3_WRITE side 0              ; if RD pin is high 8088 is writing, if low 8088 is reading
 
 T3_READ:                                 ; 8088 read cycle // pico's writing (bus_output_helper handles the push)
-    wait 1 GPIO READY_PIN side 1         ; Wait for READY - gives ARM 800ns window to push data to bus_output_helper
+    wait 1 GPIO READY_PIN side 1 [15]    ; Wait for READY - gives ARM 800ns window to push data to bus_output_helper
     wait 1 GPIO RD_PIN side 1            ; wait for RD to go high (end of read cycle)
 T4:
     irq next nowait 4 side 1             ; Signal board_registers_output to tri-state bus

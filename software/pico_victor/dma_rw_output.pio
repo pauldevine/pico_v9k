@@ -88,7 +88,7 @@ static inline void dma_rw_output_program_init(PIO pio, uint sm, uint offset) {
 
     // NOW initialize GPIO pins AFTER pio_sm_init
     // Initialize GPIO pins for bus control
-    for (int i = BD0_PIN; i < BD0_PIN + 20; i++) {
+    for (int i = BD0_PIN; i < (BD0_PIN + ADDRESS_BUS_SIZE); i++) {
         pio_gpio_init(pio, i);
         gpio_set_drive_strength(i, GPIO_DRIVE_STRENGTH_2MA);
         gpio_set_slew_rate(i, GPIO_SLEW_RATE_SLOW);
@@ -97,7 +97,7 @@ static inline void dma_rw_output_program_init(PIO pio, uint sm, uint offset) {
     }
 
     // Set all bus pins as inputs initially (will be controlled by pindirs instructions)
-    pio_sm_set_consecutive_pindirs(pio, sm, BD0_PIN, 20, false);
+    pio_sm_set_consecutive_pindirs(pio, sm, BD0_PIN, ADDRESS_BUS_SIZE, false);
 
     // Initialize the sideset GPIO pin
     pio_gpio_init(pio, HOLD_PIN);
