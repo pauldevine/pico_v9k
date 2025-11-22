@@ -87,16 +87,18 @@ The main test runs in `test/register_test.c` and:
 - The 8088 uses a multiplexed address/data bus where AD0-AD7 carry address bits during T1 (when ALE is high) and data during T2-T3
 - Pin direction management is handled directly through PIO `pindirs` instructions without external buffer control
 
-## Current Status (2025-nov-12)
-### PIO Program Restructure and Payload Fixes
-- **Major restructuring**: Separated IRQ handlers for individual PIO programs to improve modularity and reduce coupling between state machines
-- **Payload consistency**: Fixed remaining payload flag inconsistencies across board_registers.pio and helper programs (commits c4b240e, 57cf119)
-- **board_registers.pio improvements**:
-  - Removed unnecessary push instructions from T3_READ path (d8412a1)
-  - Cleaned up program identifiers and structure
-- **dma_read_write.pio synchronization**: Changed from pull block to IRQ-based waiting for better coordination with helper programs (1b38e43)
-- **bus_output_helper.pio rework**: Major refactoring of the bus output helper to work with the new IRQ-based coordination model (4fd47b6)
-- **Project status**: PIO program structure is now cleaner with better separation of concerns. The IRQ-based coordination between programs provides more reliable timing control. Ready to resume testing with the restructured architecture.
+## Current Status (2025-nov-16)
+### Register Read Output SM Debugging
+- **EXTIO sampling fixed**: Added an extra `nop` delay when capturing the bus address so the `jmp pin` gate in `board_registers_output.pio` samples EXTIO ~40 ns later; analyzer now shows the state machine only falls through to T3 when EXTIO is genuinely low.
+- **Handshake swap**: Replaced the cross-PIO IRQ handshake with explicit `wait 0/1 GPIO EXTIO_PIN` sequencing. This avoids sticky IRQ flags and keeps the control/output SMs aligned without relying on `irq next`.
+- **FIFO payload format**: `register_read_irq_isr()` now pushes a combined word (`0xFF00 | data`) so `out pins, 8` and `out pindirs, 8` read back-to-back bytes from the same payload. Shift direction confirmed correct (no byte-swapping needed even with 0xFFFFFFFF test vectors).
+- **Open issue – bus release too early**: Despite the payload fix, BD0-BD7 drop back to input roughly 2 µs after the debug sideset pulse. Likely causes are (a) `mov pindirs, null` running immediately because EXTIO is already high, or (b) `dma_rw_output` reasserting its own `mov pindirs`. Need instrumentation to determine which path is clearing the bus.
+
+### Immediate Next Steps
+1. Guard the release with a `wait 0 GPIO EXTIO_PIN` before the existing `wait 1` so the output SM blocks until control explicitly re-asserts and then releases EXTIO.
+2. Capture `PIO_OUTPUT->dbg_padout` and `PIO_OUTPUT->dbg_padoe` around the T3 window to verify what the PIO hardware believes it is driving when the analyzer sees the drop.
+3. Temporarily halt `dma_rw_output` (disable SM1 or add an explicit wait) while exercising register reads to confirm it is not rewriting `pindirs`.
+4. Once the data bus stays driven through T3, re-test vintage Victor register reads (e.g., 0xEF320) to ensure the cached ISR responds within the required 200 ns window.
 
 ## Previous Status (2025-nov-03)
 ### EXTIO line isolation fix for register reads

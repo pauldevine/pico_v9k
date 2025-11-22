@@ -108,7 +108,7 @@ void __time_critical_func(register_read_irq_isr)() {
             uint32_t tx_before = pio_sm_get_tx_fifo_level(PIO_OUTPUT, REG_SM_OUTPUT);
 
             // Push data byte to bus_output_helper for output on BD0-BD7
-            pio_sm_put_blocking(PIO_OUTPUT, REG_SM_OUTPUT, payload);
+            pio_sm_put_blocking(PIO_OUTPUT, REG_SM_OUTPUT, 0xFFFFFFFF);
 
             // Check TX FIFO level after pushing
             uint32_t tx_after = pio_sm_get_tx_fifo_level(PIO_OUTPUT, REG_SM_OUTPUT);
