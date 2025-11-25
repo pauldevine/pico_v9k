@@ -87,10 +87,11 @@ static inline void register_output_program_init(PIO pio, uint sm, uint offset) {
 
     // Initialize the input/output shift register settings
     // We are reading 20 bits of address from pins, and writing 8 bits of data to pins
+    uint32_t out_shift_length = 16; // 8 bits data + 8 bits pindirs + 16 bits address
     sm_config_set_out_shift(&c, 
         true, // shift out right
         false, // don't autopull
-        DATA_SIZE);  // 8 bits for data bus
+        out_shift_length);  // 8 bits for data bus
     sm_config_set_in_shift(&c, 
         true,  // shift in right
         false,  // don't autopull

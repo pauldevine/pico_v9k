@@ -71,9 +71,6 @@ void __time_critical_func(register_read_irq_isr)() {
     uint8_t trace_flags = 0;
     uint8_t pending_before = (uint8_t)fifo_read_count;
 
-    // Set debug pin high
-    *(volatile uint32_t *)SIO_GPIO_OUT_SET_REG = DEBUG_PIN_MASK;
-
     // Get value from bus_output_helper PIO FIFO
     raw_value = PIO_OUTPUT->rxf[REG_SM_OUTPUT];
 
@@ -98,21 +95,11 @@ void __time_critical_func(register_read_irq_isr)() {
             fifo_read_count++;
             data = cached->values[masked_offset];
 
-            uint32_t payload = (0xFF << 8) | (data & 0xFF); // pio ouputs 8 bits of data plus 8 bits of pindirs (0xFF for output)
-
-            // Debug: Check if PIO_OUTPUT and REG_SM_OUTPUT are correct
-            fast_log("REG_READ: offset=0x%02x data=0x%02x pio=%p sm=%d\n",
-                     masked_offset, data, PIO_OUTPUT, REG_SM_OUTPUT);
-
-            // Check TX FIFO level before pushing
-            uint32_t tx_before = pio_sm_get_tx_fifo_level(PIO_OUTPUT, REG_SM_OUTPUT);
+            // pio ouputs 8 bits of data first then 8 bits of pindirs (0xFF for output)
+            uint32_t payload = (0xFF << 8) | (data & 0xFF); 
 
             // Push data byte to bus_output_helper for output on BD0-BD7
-            pio_sm_put_blocking(PIO_OUTPUT, REG_SM_OUTPUT, 0xFFFFFFFF);
-
-            // Check TX FIFO level after pushing
-            uint32_t tx_after = pio_sm_get_tx_fifo_level(PIO_OUTPUT, REG_SM_OUTPUT);
-            fast_log("REG_READ_PUSH_RESULT: tx_before=%d tx_after=%d\n", tx_before, tx_after);
+            pio_sm_put_blocking(PIO_OUTPUT, REG_SM_OUTPUT, payload);
     } else {
         trace_flags |= FIFO_TRACE_FLAG_ERROR;
         fast_log("REG_READ: Unknown payload type: 0x%02x raw=0x%08x\n", payload_type, raw_value);
@@ -134,8 +121,6 @@ void __time_critical_func(register_read_irq_isr)() {
         }
     }
 
-    // Clear debug pin
-    *(volatile uint32_t *)SIO_GPIO_OUT_CLR_REG = DEBUG_PIN_MASK;
 }
 
 // IRQ handler for board_registers_control SM handles FIFO_WRITE_VALUE
