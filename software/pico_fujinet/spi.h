@@ -1,3 +1,6 @@
+#ifndef SSPI_H
+#define SPI_H
+
 // SPI defines
 #define SPI_PORT spi1
 #define PIN_MISO 40
@@ -83,3 +86,5 @@ bool fujinet_write_sector(uint8_t device, uint32_t lba, const uint8_t *buffer, s
 bool fujinet_config_boot(bool enable);
 bool fujinet_mount_host(uint8_t host_slot, uint8_t access_mode);
 bool fujinet_mount_disk_slot(uint8_t slot, uint8_t access_mode);
+
+#endif

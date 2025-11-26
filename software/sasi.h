@@ -1,3 +1,6 @@
+#ifndef SASI_H
+#define SASI_H
+
 #define XEBEC_INTERNAL_DIAG 0xE4
 #define XEBEC_RAM_DIAG      0xE0
 #define XEBEC_DRIVE_DIAG    0xE3
@@ -27,3 +30,5 @@ void read_sector_from_disk(dma_registers_t *dma, uint32_t sector, uint8_t *buffe
 // Command lifecycle
 bool command_complete(uint8_t *command_buffer, int cmd_index);
 void signal_command_complete(dma_registers_t *dma);
+
+#endif

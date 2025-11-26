@@ -12,7 +12,7 @@
 .define DMA_MASK_SIZE 12
 .define ADDRESS_BUS_SIZE 20
 
-.program bus_output_helper
+.program dma_rw_output
 .side_set 1
 
 ; --- Pre-amble ---
@@ -20,29 +20,6 @@
 ; we need the pindirs for the address (input)/data (output) 0xFFF00 pins to be set for DMA read cycles
 pull block side 0         ; Pull pindirs for RD cycle from FIFO
 mov y, osr side 0         ; Store pindirs for RD cycle in Y
-
-
-.wrap_target
-T1:   
-    wait 0 GPIO ALE_PIN side 0            ; wait for ALE to go low = T0 start & wait for address to stabilize
-    wait 1 GPIO ALE_PIN [9] side 0        ; wait for ALE to go high = T1 start & wait for address to stabilize
-    in pins, ADDRESS_BUS_SIZE side 0 [15] ; shift 20 bits of address into ISR, wait for other SM to adjust EXTIO
-    nop side 0 [15]                       ; wait for other SM to adjust EXTIO
-    nop side 0 [15]                       ; wait for other SM to adjust EXTIO
-    jmp pin T3_READ_REG side 1            ; if EXTIO_PIN is high, 8088 is reeading our registers, we're writing
-    jmp !OSRE DMA_T1 side 1            ; if FIFO has data, we're doing DMA and need to output address and then data
-
-T3_READ_REG:                             ; 8088 read cycle // pico's writing
-    in null, 2 side 0                    ; add ISR 0x00 for payload type 0 = register read
-    push noblock side 1                  ; Push the current ISR address for ARM to know what address is being read
-    pull block side 1                    ; Pull data byte to output from FIFO for 8088 to read 
-    out pins, 8 side 1                   ; we're outputing byte on BD0-BD7, 8088 is driving A8-A19
-    out pindirs, 8 side 1                ; set BD0-BD7 as outputs
- 
-T4_END:
-    wait 1 irq 4 side 1       ; wait for source SM (board_registers or dma_read_write) to signal cycle complete
-    mov pindirs, null side 0  ; tri-state bus (BD0-BD7 for registers, BD0-A19 for DMA)
-.wrap
 
 DMA_T1:
     wait 1 GPIO HLDA_PIN side 0    ; wait for HLDA to go high
@@ -69,6 +46,10 @@ DMA_T2_READ:
     push side 0                ; push data to FIFO for ARM to read push payload RD: [payload type=3 /2bits][data BD7-BD0 /8bits][address A19-A0 /20bits]
     jmp T4_END side 0          ; wait for cycle complete
 
+T4_END:
+    wait 1 irq 4 side 1       ; wait for source SM dma_read_write to signal cycle complete
+    mov pindirs, null side 0  ; tri-state bus (BD0-BD7 for registers, BD0-A19 for DMA)
+.wrap
 
 % c-sdk {
 #include <stdio.h>
@@ -76,19 +57,38 @@ DMA_T2_READ:
 #include "hardware/gpio.h"
 #include "pico_victor/dma.h"
 
-static inline void bus_output_helper_program_init(PIO pio, uint sm, uint offset) {
-    printf("Configuring PIO for bus_output_helper SM\n");
-    pio_sm_config c = bus_output_helper_program_get_default_config(offset);
+static inline void dma_rw_output_program_init(PIO pio, uint sm, uint offset) {
+    printf("Configuring PIO for dma_rw_output SM\n");
+    pio_sm_config c = dma_rw_output_program_get_default_config(offset);
 
     // Configure OUT pins for BD0-A19 (20 pins starting at BD0_PIN)
     sm_config_set_out_pins(&c, BD0_PIN, 20);
+
+    // Configure IN pins for reading address bus (20 pins starting at BD0_PIN)
+    sm_config_set_in_pins(&c, BD0_PIN);
 
     // Configure JMP pin for EXTIO (to distinguish register reads from register writes)
     //using presence of TX FIFO data to identify DMA pending
     sm_config_set_jmp_pin(&c, EXTIO_PIN);
 
+    //todo: remove after debugging
+    // Configure sideset in the sm_config BEFORE calling pio_sm_init
+    sm_config_set_sideset_pins(&c, HOLD_PIN);
+    sm_config_set_sideset(&c,
+        1,     // bit_count: 1 pin for side-set
+        false, // optional: side-set is mandatory on every instruction
+        false  // pindirs: false means sideset controls pin value (not direction)
+    );
+
+    sm_config_set_clkdiv(&c, 1.0f);
+
+    // Load our configuration, and jump to the start of the program
+    int init_rc = pio_sm_init(pio, sm, offset, &c);
+    printf("pio_sm_init rc=%d, SM%d execctrl after init=0x%08x\n", init_rc, sm, pio->sm[sm].execctrl);
+
+    // NOW initialize GPIO pins AFTER pio_sm_init
     // Initialize GPIO pins for bus control
-    for (int i = BD0_PIN; i < BD0_PIN + 20; i++) {
+    for (int i = BD0_PIN; i < (BD0_PIN + ADDRESS_BUS_SIZE); i++) {
         pio_gpio_init(pio, i);
         gpio_set_drive_strength(i, GPIO_DRIVE_STRENGTH_2MA);
         gpio_set_slew_rate(i, GPIO_SLEW_RATE_SLOW);
@@ -97,16 +97,10 @@ static inline void bus_output_helper_program_init(PIO pio, uint sm, uint offset)
     }
 
     // Set all bus pins as inputs initially (will be controlled by pindirs instructions)
-    pio_sm_set_consecutive_pindirs(pio, sm, BD0_PIN, 20, false);
+    pio_sm_set_consecutive_pindirs(pio, sm, BD0_PIN, ADDRESS_BUS_SIZE, false);
 
-    //todo: remove after debugging
+    // Initialize the sideset GPIO pin
     pio_gpio_init(pio, HOLD_PIN);
-    sm_config_set_sideset_pins(&c, HOLD_PIN);
-    sm_config_set_sideset(&c,
-        1,     // bit_count: 1 pin for side-set
-        false, // optional: side-set is mandatory on every instruction
-        false  // pindirs: false means sideset controls pin value (not direction)
-    );
 
     // Set the pin value to 0 initially (important for sideset to work)
     pio_sm_set_pins_with_mask(pio, sm, 0, 1u << HOLD_PIN);
@@ -115,12 +109,6 @@ static inline void bus_output_helper_program_init(PIO pio, uint sm, uint offset)
     pio_sm_set_consecutive_pindirs(pio, sm, HOLD_PIN, 1, true);
     printf("HOLD_PIN Pin %d func: %d, dir: %d\n",
            HOLD_PIN, gpio_get_function(HOLD_PIN), gpio_get_dir(HOLD_PIN));
-    
-    sm_config_set_clkdiv(&c, 1.0f);
-
-    // Load our configuration, and jump to the start of the program
-    int init_rc = pio_sm_init(pio, sm, offset, &c);
-    printf("pio_sm_init rc=%d, SM%d execctrl after init=0x%08x\n", init_rc, sm, pio->sm[sm].execctrl);
 
     if (init_rc == PICO_OK) {
         pio_sm_set_enabled(pio, sm, true);

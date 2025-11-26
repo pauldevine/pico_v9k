@@ -67,7 +67,7 @@ void debug_queue_process(void) {
     const int max_per_call = 10;  // Process max 10 entries per call to avoid blocking
 
     while (count < max_per_call && debug_queue_pop(&value)) {
-        uint32_t payload_type = dma_fifo_payload_type(value);
+        uint32_t payload_type = fifo_payload_type(value);
 
         if (payload_type == FIFO_WRITE_VALUE) {
             uint32_t address = dma_fifo_write_address(value);

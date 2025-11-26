@@ -35,7 +35,8 @@ target_include_directories(test_dma_cleaned PRIVATE
 )
 
 # Generate PIO headers
-pico_generate_pio_header(test_dma_cleaned ${CMAKE_SOURCE_DIR}/pico_victor/dma_read_write.pio)
+pico_generate_pio_header(test_dma_cleaned ${CMAKE_SOURCE_DIR}/pico_victor/dma_rw_control.pio)
+pico_generate_pio_header(test_dma_cleaned ${CMAKE_SOURCE_DIR}/pico_victor/dma_rw_output.pio)
 
 # Link libraries
 target_link_libraries(test_dma_cleaned

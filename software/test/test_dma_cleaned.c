@@ -19,7 +19,8 @@
 #include "hardware/clocks.h"
 #include "hardware/gpio.h"
 #include "hardware/structs/iobank0.h"
-#include "dma_read_write.pio.h"
+#include "dma_rw_control.pio.h"
+#include "dma_rw_output.pio.h"
 #include "pico_victor/dma.h"
 
 // Test parameters - start simple
@@ -183,6 +184,17 @@ int main() {
     PIO pio = pio0;
     uint sm = 0;  // Use state machine 0
 
+    // TODO: Update test to use new split PIO architecture (dma_rw_control + dma_rw_output)
+    // The old dma_read_write.pio has been split into two programs:
+    // - dma_rw_control.pio: handles control signals
+    // - dma_rw_output.pio: handles data output
+    // This test needs to be updated to work with the new architecture
+
+    printf("ERROR: Test needs updating for new PIO architecture\n");
+    printf("The dma_read_write.pio has been split into dma_rw_control and dma_rw_output\n");
+    return 1;
+
+    #if 0  // Commented out old code - needs rewrite
     // Add the PIO program
     uint offset = pio_add_program(pio, &dma_read_write_program);
     printf("Program loaded at offset: 0x%02x\n", offset);
@@ -191,6 +203,7 @@ int main() {
     // Initialize the PIO state machine
     printf("Initializing PIO state machine...\n");
     dma_read_write_program_init(pio, sm, offset, BD0_PIN);
+    #endif
 
     // Verify HOLD control before enabling SM
     verify_hold_control(pio, sm);

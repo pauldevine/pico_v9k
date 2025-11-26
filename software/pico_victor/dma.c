@@ -12,7 +12,6 @@
 #include "sasi.h"
 #include "logging.h"
 #include "pico_fujinet/spi.h"
-#include "dma_ultra_fast.h"
 
 #define SASI_SECTOR_SIZE 512
 
@@ -67,8 +66,6 @@ static bool sasi_dma_device_to_ram(dma_registers_t *dma) {
     uint32_t sectors_remaining = sasi_dma_sector_count(dma);
     uint32_t addr = dma->dma_address.full;
 
-    // Optional: quiesce register SM during DMA to avoid spurious IRQs
-    pio_sm_set_enabled(PIO_REGISTERS, REGISTERS_SM, false);
 
     if (sectors_remaining == 0) {
         return false;
@@ -82,7 +79,7 @@ static bool sasi_dma_device_to_ram(dma_registers_t *dma) {
             return false;
         }
 
-        dma_write_to_victor_ram(dma_get_unified_pio(), dma_get_unified_sm(), sector, SASI_SECTOR_SIZE, addr);
+        dma_write_to_victor_ram(sector, SASI_SECTOR_SIZE, addr);
 
         addr += SASI_SECTOR_SIZE;
         sectors_remaining--;
@@ -93,7 +90,6 @@ static bool sasi_dma_device_to_ram(dma_registers_t *dma) {
     dma->logical_block.full = lba;
     dma->block_count.full = 0;
 
-    pio_sm_set_enabled(PIO_REGISTERS, REGISTERS_SM, true);
     return true;
 }
 
@@ -103,9 +99,6 @@ static bool sasi_dma_ram_to_device(dma_registers_t *dma) {
     uint32_t sectors_remaining = sasi_dma_sector_count(dma);
     uint32_t addr = dma->dma_address.full;
 
-    // Optional: quiesce register SM during DMA to avoid spurious IRQs
-    pio_sm_set_enabled(PIO_REGISTERS, REGISTERS_SM, false);
-
     if (sectors_remaining == 0) {
         return false;
     }
@@ -113,7 +106,7 @@ static bool sasi_dma_ram_to_device(dma_registers_t *dma) {
     while (sectors_remaining > 0) {
         uint8_t sector[SASI_SECTOR_SIZE];
 
-        dma_read_from_victor_ram(dma_get_unified_pio(), dma_get_unified_sm(), sector, SASI_SECTOR_SIZE, addr);
+        dma_read_from_victor_ram(sector, SASI_SECTOR_SIZE, addr);
 
         if (!fujinet_write_sector(device, lba, sector, SASI_SECTOR_SIZE)) {
             printf("Warning: FujiNet write LBA %lu failed\n", (unsigned long)lba);
@@ -129,219 +122,12 @@ static bool sasi_dma_ram_to_device(dma_registers_t *dma) {
     dma->logical_block.full = lba;
     dma->block_count.full = 0;
 
-    pio_sm_set_enabled(PIO_REGISTERS, REGISTERS_SM, true);
     return true;
 }
 
 // Place the actual registers in time_critical section
 static dma_registers_t registers_storage __attribute__((section(".time_critical.dma_registers")));
 static dma_registers_t *registers = NULL;
-
-// Unified DMA SM storage and accessors
-static PIO unified_dma_pio = NULL;
-static int unified_dma_sm = -1;
-
-void dma_set_unified_sm(PIO pio, int sm) {
-    unified_dma_pio = pio;
-    unified_dma_sm = sm;
-}
-
-int dma_get_unified_sm() {
-    return unified_dma_sm;
-}
-
-PIO dma_get_unified_pio() {
-    return unified_dma_pio ? unified_dma_pio : PIO_DMA;
-}
-
-// bus_output_helper SM storage and accessors
-static PIO bus_helper_pio = NULL;
-static int bus_helper_sm = -1;
-
-void dma_set_bus_helper_sm(PIO pio, int sm) {
-    bus_helper_pio = pio;
-    bus_helper_sm = sm;
-}
-
-int dma_get_bus_helper_sm() {
-    return bus_helper_sm;
-}
-
-PIO dma_get_bus_helper_pio() {
-    return bus_helper_pio ? bus_helper_pio : PIO_BUS_HELPER;
-}
-
-#ifdef CACHED_MODE
-// Forward declaration for cached version
-void core1_main_cached(void);
-#endif
-
-void core1_main() {
-#ifdef CACHED_MODE
-    // Use the cached/deferred version for improved timing
-    core1_main_cached();
-    return;  // Never reached as core1_main_cached doesn't return
-#endif
-    //run IRQ processing on separate core
-    //configure the IRQs used to indicate a Register has been accessed on the 8088 bus
-    // Set up IRQ when RX FIFO has >= 1 item
-
-    PIO register_pio = PIO_REGISTERS;
-    int register_sm = REGISTERS_SM;
-
-    printf("Setting up IRQ for PIO%d SM%d\n", pio_get_index(register_pio), register_sm);
-    printf("FIFO source: %d\n", fifo_sources[register_sm]);
-
-    // Pre-initialize and warm up DMA registers
-    registers_irq_handler_ultra_init();  // Initialize ultra handler's static data
-    dma_registers_t *dma = dma_get_registers();
-    if (dma) {
-        // Touch all the critical memory locations to bring them into cache
-        volatile uint8_t dummy = 0;
-
-        // Touch the DMA address registers (most commonly accessed)
-        dma->dma_address.full = 0;
-        dummy = dma->dma_address.bytes.low;
-        dummy = dma->dma_address.bytes.mid;
-        dummy = dma->dma_address.bytes.high;
-
-        // Touch control and status registers
-        dma->control = 0;
-        dma->status = 0;
-        dummy = dma->control;
-        dummy = dma->status;
-
-        // Pre-warm the IRQ handler by calling it with dummy data
-        // This loads the code into I-cache and warms up branch predictors
-        printf("Pre-warming IRQ handler cache...\n");
-
-        // Temporarily disable IRQ while we warm up
-        irq_set_enabled(PIO1_IRQ_0, false);
-
-        // Set handler
-        irq_set_exclusive_handler(PIO1_IRQ_0, registers_irq_handler_ultra);
-
-        // Call handler multiple times with different operations to fully warm caches
-        // This ensures all code paths and data are cached
-        for (int warm_iter = 0; warm_iter < 10; warm_iter++) {
-            uint32_t control_addr = DMA_REGISTER_BASE + REG_CONTROL;
-            uint32_t data_addr = DMA_REGISTER_BASE + REG_DATA;
-            uint32_t status_addr = DMA_REGISTER_BASE + REG_STATUS;
-            uint32_t addr_l = DMA_REGISTER_BASE + REG_ADDR_L;
-            uint32_t addr_m = DMA_REGISTER_BASE + REG_ADDR_M;
-            uint32_t addr_h = DMA_REGISTER_BASE + REG_ADDR_H;
-
-
-            if (pio_sm_is_tx_fifo_empty(register_pio, register_sm)) {
-                pio_sm_put(register_pio, register_sm, dma_fifo_encode_write(control_addr, 0x00));
-                registers_irq_handler_ultra();
-                if (!pio_sm_is_rx_fifo_empty(register_pio, register_sm)) {
-                    pio_sm_get(register_pio, register_sm);
-                }
-            }
-
-            if (pio_sm_is_tx_fifo_empty(register_pio, register_sm)) {
-                pio_sm_put(register_pio, register_sm, board_fifo_encode_read(data_addr));
-                registers_irq_handler_ultra();
-                if (!pio_sm_is_rx_fifo_empty(register_pio, register_sm)) {
-                    pio_sm_get(register_pio, register_sm);
-                }
-            }
-
-            if (pio_sm_is_tx_fifo_empty(register_pio, register_sm)) {
-                pio_sm_put(register_pio, register_sm, board_fifo_encode_read(status_addr));
-                registers_irq_handler_ultra();
-                if (!pio_sm_is_rx_fifo_empty(register_pio, register_sm)) {
-                    pio_sm_get(register_pio, register_sm);
-                }
-            }
-
-            if (pio_sm_is_tx_fifo_empty(register_pio, register_sm)) {
-                pio_sm_put(register_pio, register_sm, dma_fifo_encode_write(addr_l, 0x00));
-                registers_irq_handler_ultra();
-                if (!pio_sm_is_rx_fifo_empty(register_pio, register_sm)) {
-                    pio_sm_get(register_pio, register_sm);
-                }
-            }
-
-            if (pio_sm_is_tx_fifo_empty(register_pio, register_sm)) {
-                pio_sm_put(register_pio, register_sm, board_fifo_encode_read(addr_l));
-                registers_irq_handler_ultra();
-                if (!pio_sm_is_rx_fifo_empty(register_pio, register_sm)) {
-                    pio_sm_get(register_pio, register_sm);
-                }
-            }
-
-            if (pio_sm_is_tx_fifo_empty(register_pio, register_sm)) {
-                pio_sm_put(register_pio, register_sm, dma_fifo_encode_write(addr_m, 0x00));
-                registers_irq_handler_ultra();
-                if (!pio_sm_is_rx_fifo_empty(register_pio, register_sm)) {
-                    pio_sm_get(register_pio, register_sm);
-                }
-            }
-
-            if (pio_sm_is_tx_fifo_empty(register_pio, register_sm)) {
-                pio_sm_put(register_pio, register_sm, dma_fifo_encode_write(addr_h, 0x00));
-                registers_irq_handler_ultra();
-                if (!pio_sm_is_rx_fifo_empty(register_pio, register_sm)) {
-                    pio_sm_get(register_pio, register_sm);
-                }
-            }
-        }
-
-        printf("Cache pre-warming complete (70 handler calls)\n");
-
-        // Small delay to let caches settle
-        busy_wait_us(100);
-
-        // One more round of warming after the delay
-        for (int i = 0; i < 5; i++) {
-            if (pio_sm_is_tx_fifo_empty(register_pio, register_sm)) {
-                pio_sm_put(register_pio, register_sm, board_fifo_encode_read(DMA_REGISTER_BASE + REG_ADDR_L));
-                registers_irq_handler_ultra();
-                if (!pio_sm_is_rx_fifo_empty(register_pio, register_sm)) {
-                    pio_sm_get(register_pio, register_sm);
-                }
-            }
-            if (pio_sm_is_tx_fifo_empty(register_pio, register_sm)) {
-                pio_sm_put(register_pio, register_sm, dma_fifo_encode_write(DMA_REGISTER_BASE + REG_ADDR_L, (uint8_t)i));
-                registers_irq_handler_ultra();
-                if (!pio_sm_is_rx_fifo_empty(register_pio, register_sm)) {
-                    pio_sm_get(register_pio, register_sm);
-                }
-            }
-        }
-
-        (void)dummy; // Prevent unused variable warning
-    }
-    //clear the FIFOs so cache timing doesn't interfere with normal operation
-    pio_sm_set_enabled(register_pio, register_sm, false);   
-    pio_sm_clear_fifos(register_pio, register_sm);          
-    pio_sm_set_enabled(register_pio, register_sm, true);   
-    printf("\nPIO check: FIFO RX level=%d, TX level=%d, PC=0x%x, stalled=%d\n", 
-                    pio_sm_get_rx_fifo_level(register_pio, register_sm),
-                    pio_sm_get_tx_fifo_level(register_pio, register_sm),
-                    pio_sm_get_pc(register_pio, register_sm),
-                    pio_sm_is_exec_stalled(register_pio, register_sm));
-
-    pio_set_irq0_source_enabled(register_pio, fifo_sources[register_sm], true);
-    irq_set_enabled(PIO1_IRQ_0, true);
-    printf("Core1 started, PIO: %d SM: %d\n", register_pio, register_sm);
-    setup_pio_instance(register_pio, register_sm);
-    
-    // Add a test to see if IRQ is working
-    printf("Testing IRQ setup... FIFO level: %d\n", pio_sm_get_rx_fifo_level(register_pio, register_sm));
-
-    systick_hw->csr = 0x5; // Enable, use processor clock, no interrupt
-    systick_hw->rvr = 0x00FFFFFF; // Max reload value (24-bit)
-
-
-    while (true) {
-        tight_loop_contents();
-    }
-}
-
-
 
 dma_registers_t* dma_get_registers() {
     if (!registers) {
@@ -577,89 +363,13 @@ uint8_t dma_read_register(dma_registers_t *dma, dma_reg_offsets_t offset) {
     return data;
 }
 
- void __time_critical_func(registers_irq_handler)() {
-    gpio_put(DEBUG_PIN, 1);
-    // Handle IRQ for register PIO
-    static int irq_count = 0;
-    irq_count++;
-    //printf("Register IRQ triggered\n");
-    PIO pio = PIO_REGISTERS; 
-    uint sm = REGISTERS_SM; 
-
-    //printf("getting address\n");
-    uint32_t raw_value = pio_sm_get(pio, sm); //retrieve the payload from the FIFO
-    uint32_t payload_type = dma_fifo_payload_type(raw_value);
-    uint32_t start_cycles = systick_hw->cvr;
-    uint32_t end_cycles;
-
-    dma_registers_t *registers_ptr = dma_get_registers();
-    if (!registers_ptr) {
-        fast_log("Failed to get DMA registers\n");
-        gpio_put(DEBUG_PIN, 0);
-        return;
-    }
-
-    switch (payload_type) {
-        case FIFO_REG_READ: {
-            uint32_t address = board_fifo_read_address(raw_value);
-            dma_reg_offsets_t offset = address - DMA_REGISTER_BASE;
-            uint32_t masked_offset = dma_mask_offset(offset);
-            if (masked_offset == 0x30) {
-                masked_offset = REG_STATUS;
-            }
-
-            uint8_t data = dma_read_register(registers_ptr, masked_offset);
-
-            #ifndef BENCHMARK_MODE
-            // Push data byte to bus_output_helper (not board_registers!)
-            // bus_output_helper will output this on BD0-BD7 when it receives IRQ 1
-            PIO helper_pio = dma_get_bus_helper_pio();
-            int helper_sm = dma_get_bus_helper_sm();
-            pio_sm_put_blocking(helper_pio, helper_sm, (uint32_t)(data & 0xFFu));
-            #endif
-            fast_log("[IRQ#%d] REG_READ addr=%05X offset=%02X data=0x%02X\n", irq_count, address, masked_offset, data);
-            break;
-        }
-
-        case FIFO_WRITE_VALUE: {
-            uint32_t address = dma_fifo_write_address(raw_value);
-            dma_reg_offsets_t offset = address - DMA_REGISTER_BASE;
-            uint32_t masked_offset = dma_mask_offset(offset);
-            if (masked_offset == 0x30) {
-                masked_offset = REG_STATUS;
-            }
-
-            uint8_t data = dma_fifo_write_data(raw_value);
-            dma_write_register(registers_ptr, masked_offset, data);
-            fast_log("[IRQ#%d] WRITE addr=%05X offset=%02X data=0x%02X\n", irq_count, address, masked_offset, data);
-            break;
-        }
-
-        default:
-            fast_log("[IRQ#%d] Unknown payload type: 0x%02X raw=0x%08X\n", irq_count, payload_type, raw_value);
-            break;
-    }
-
-    end_cycles = systick_hw->cvr;
-
-    uint32_t cycles_used;
-    if (start_cycles >= end_cycles) {
-        cycles_used = start_cycles - end_cycles;
-    } else {
-        // Handle wraparound
-        cycles_used = start_cycles + (0x00FFFFFF - end_cycles);
-    }
-    //fast_log("cycles: %lu (%.1f ns)\n", cycles_used, cycles_used * 5.0);
-    gpio_put(DEBUG_PIN, 0);
-
-}
-
-
 #ifndef UNIT_TEST
 // Write function using two-word FIFO protocol:
 //  Word 1: bits 0=W/R flag (1=write), bits 1-20=address A0-A19
 //  Word 2: bits 0-7=data byte, bits 8-19=address A8-A19 (MSB)
-void dma_write_to_victor_ram(PIO write_pio, int write_sm, uint8_t *data, size_t length, uint32_t start_address) {
+void dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_address) {
+    PIO write_pio = PIO_OUTPUT;
+    int write_sm = DMA_SM_OUTPUT;
 
     printf("Starting DMA write to Victor RAM\n");
     printf("Length: %zu\n", length);
@@ -687,7 +397,10 @@ void dma_write_to_victor_ram(PIO write_pio, int write_sm, uint8_t *data, size_t 
 // Read function (PIO-based) using two-word FIFO protocol:
 //  Word 1: bits 0=W/R flag (0=read), bits 1-20=address A0-A19
 //  Word 2: pindirs control value 0xFFF00 (A8-A19 outputs, BD0-BD7 inputs)
-void dma_read_from_victor_ram(PIO read_pio, int read_sm, uint8_t *data, size_t length, uint32_t start_address) {
+void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_address) {
+    PIO read_pio = PIO_OUTPUT;
+    int read_sm = DMA_SM_OUTPUT;
+
     printf("Starting DMA read from Victor RAM\n");
     printf("Length: %zu, start_address: %d ", length, start_address);
     print_segment_offset(start_address);
@@ -808,11 +521,3 @@ void dma_handle_sasi_req(dma_registers_t *dma) {
         dma_update_interrupts(dma, true);
     }
 }
-
-#ifndef CACHED_MODE
-// Stub implementation for non-cached mode
-// In non-cached mode, all processing happens synchronously in the IRQ handler
-void dma_process_deferred_events(void) {
-    // Nothing to do - all processing happens immediately in the IRQ handler
-}
-#endif

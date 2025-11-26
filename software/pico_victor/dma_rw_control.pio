@@ -14,7 +14,7 @@
 .define CONTROL_PINCOUNT 12
 .define DATA_SIZE 8
  
-.program dma_read_write
+.program dma_rw_control
 .side_set 2 opt pindirs; 
 
 ; side-set GPIO Pin Mapping (LSB first):
@@ -56,14 +56,13 @@ T0:                                ; Address Setup Phase (Put Address on Bus)
     set pins, 0b11111 side SIDE_HOLD_ASSERT_IO_INPUT ; Assert HOLD/, keep IO/M/ input during request
     wait 1 gpio HLDA_PIN           ; wait for HLDA to go high
 T1:
-    irq prev nowait 1              ; Signal to bus_output_helper to put address on the bus
     set pindirs, 0b11111           ; Set control pins to output DEN=1, ALE=1, DT/R=1, WR/=1, RD=1 //ALE high to latch address
     wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
     wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go low
 T2:
     set pins, 0b00111              ; Write: set control pins DEN=0, ALE=0, DT/R=1, WR=1, RD=1 // Pull ALE/DEN low to prepare for read or write
     wait 1 GPIO CLOCK_15B_PIN      ; Wait for CLK15B to go high
-    irq prev nowait 2              ; tell bus_output_helper SM to move to T2 data phase
+    irq prev nowait 2              ; tell dma_rw_output SM to move to T2 data phase
     jmp !x T2_READ                 ; If x=0 (read), jump to T2_READ
     ; Fall through for write (x=1)
 T2_WRITE_INLINE:
@@ -75,8 +74,8 @@ T3:
     wait 0 GPIO CLOCK_5_PIN side SIDE_HOLD_RELEASE_IO_OUTPUT ; Wait for CLK5 to go low, release HOLD/, keep IO/M/ output
     jmp x-- T4                     ; If x=1 (write), jump to T4
 T3_READ_INLINE:
-    ; Fall through for DMA read (x=0) - signal bus_output_helper to capture data
-    irq prev nowait 3              ; Signal bus_output_helper to read data from BD0-BD7
+    ; Fall through for DMA read (x=0) - signal dma_rw_output to capture data
+    irq prev nowait 3              ; Signal dma_rw_output to read data from BD0-BD7
 T4:
     wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go low
     wait 1 GPIO CLOCK_15B_PIN      ; Wait for CLK15B to go high
@@ -86,7 +85,7 @@ T4:
     set pins, 0b10111              ; Set control pins to T4 close, DEN=1, ALE=0, DT/R=1, WR=1, RD=1  // DEN high to end cycle
     wait 0 gpio HLDA_PIN side SIDE_HOLD_RELEASE_IO_OUTPUT ; wait for HLDA to go low, keep HOLD released
     set pindirs, 0b00000 side SIDE_HOLD_RELEASE_IO_INPUT ; Set control pins' direction to input / release IO/M and HOLD
-    irq prev nowait 4             ; Signal bus_output_helper to tri-state all address outputs (Release Bus)
+    irq prev nowait 4             ; Signal dma_rw_output to tri-state all address outputs (Release Bus)
 .wrap
 
 T2_READ:
@@ -130,10 +129,10 @@ T2_READ:
  *   - If a pin isn't routed to PIO, wait will hang forever
  *   - Using pio_gpio_init() on input-only pins causes them to glitch when pindirs changes
  */
-static inline void dma_read_write_program_init(PIO pio, uint sm, uint offset, uint pin) {
+static inline void dma_rw_control_program_init(PIO pio, uint sm, uint offset, uint pin) {
     printf("Configuring PIO for DMA READ/WRITE operations (single SM)\n");
-    printf("starting to configure dma_read_write_program_init\n");
-    pio_sm_config c = dma_read_write_program_get_default_config(offset);
+    printf("starting to configure dma_rw_control_program_init\n");
+    pio_sm_config c = dma_rw_control_program_get_default_config(offset);
 
     printf("setting out pin mapping to %d, count %d\n", pin, ADDRESS_BUS_SIZE);
     sm_config_set_out_pins(&c, pin, ADDRESS_BUS_SIZE);
@@ -158,7 +157,7 @@ static inline void dma_read_write_program_init(PIO pio, uint sm, uint offset, ui
     pio_sm_set_clkdiv(pio, sm, 1.0f);
 
     // Init output pins for PIO first
-    for (int i = pin; i <= CLOCK_15B_PIN; i++) {
+    for (int i = pin; i <= (BD0_PIN + ADDRESS_BUS_SIZE); i++) {
         gpio_set_drive_strength(i, GPIO_DRIVE_STRENGTH_2MA);
         gpio_set_slew_rate(i, GPIO_SLEW_RATE_SLOW);
         gpio_disable_pulls(i);
