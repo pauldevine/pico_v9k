@@ -235,6 +235,10 @@ void dma_device_reset(dma_registers_t *dma);
 void dma_update_interrupts(dma_registers_t *dma, bool irq_state);
 void dma_handle_sasi_req(dma_registers_t *dma);
 
+// DMA read IRQ control - enable when DMA is active, disable when idle
+void enable_dma_read_irq(void);
+void disable_dma_read_irq(void);
+
 
 #ifdef UNIT_TEST
 uint8_t* test_get_victor_ram();

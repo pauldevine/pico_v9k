@@ -22,11 +22,11 @@ CFLAGS_DEBUG = -bt=dos -ms -0 -od -zq -za99 -d2 -I$(WATCOM_INC)
 LFLAGS = format dos LIBPATH $(WATCOM_LIB) LIBPATH $(WATCOM_PATH)/rel/lib286
 
 # Target executables
-TARGETS = dmatest.exe addrtest.exe addr_mid.exe minimal.exe read.exe
+TARGETS = dmatest.exe addrtest.exe addr_mid.exe minimal.exe read.exe victor_boot_trace.exe
 
 # Source and object files
-SOURCES = dmatest.c addrtest.c addr_mid.c minimal.c read.c
-OBJECTS = dmatest.o addrtest.o addr_mid.o minimal.o read.o
+SOURCES = dmatest.c addrtest.c addr_mid.c minimal.c read.c victor_boot_trace.c
+OBJECTS = dmatest.o addrtest.o addr_mid.o minimal.o read.o victor_boot_trace.o
 
 # Default target
 .PHONY: all
@@ -50,6 +50,10 @@ minimal.exe: minimal.o
 	@$(LINK) $(LFLAGS) name $@ file $<
 
 read.exe: read.o
+	@echo "Linking $@..."
+	@$(LINK) $(LFLAGS) name $@ file $<
+
+victor_boot_trace.exe: victor_boot_trace.o
 	@echo "Linking $@..."
 	@$(LINK) $(LFLAGS) name $@ file $<
 
@@ -116,6 +120,7 @@ help:
 	@echo "  addrtest.exe - Address register focused test"
 	@echo "  addr_mid.exe - Minimal DMA_ADDR_MID write/read tester"
 	@echo "  minimal.exe  - Minimal single register test (REG_ADDR_H)"
+	@echo "  victor_boot_trace.exe - Replay first 20 BIOS accesses from MAME log"
 	@echo ""
 	@echo "Environment:"
 	@echo "  WATCOM_PATH = $(WATCOM_PATH)"

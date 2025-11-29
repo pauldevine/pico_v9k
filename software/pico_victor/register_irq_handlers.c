@@ -95,8 +95,8 @@ void __time_critical_func(register_read_irq_isr)() {
             fifo_read_count++;
             data = cached->values[masked_offset];
 
-            // pio ouputs 8 bits of data first then 8 bits of pindirs (0xFF for output)
-            uint32_t payload = (0xFF << 8) | (data & 0xFF); 
+            // pio outputs 8 bits of data first then 8 bits of pindirs (0xFF for output)
+            uint32_t payload = (0xFF << 8) | (data & 0xFF);
 
             // Push data byte to bus_output_helper for output on BD0-BD7
             pio_sm_put_blocking(PIO_OUTPUT, REG_SM_OUTPUT, payload);
@@ -150,6 +150,26 @@ void __time_critical_func(register_write_irq_isr)() {
         data = dma_fifo_write_data(raw_value);
         if (masked_offset == REG_ADDR_H) {
             data &= 0x0F;
+        }
+
+        // For CONTROL register writes, check if SELECT is being asserted
+        // and immediately update cached STATUS with BSY so the Victor sees
+        // the device respond before deferred processing runs
+        if (masked_offset == REG_CONTROL) {
+            uint8_t prev_ctrl = cached->values[REG_CONTROL];
+            bool prev_sel = (prev_ctrl & DMA_SELECT_BIT) != 0;
+            bool now_sel = (data & DMA_SELECT_BIT) != 0;
+
+            if (now_sel && !prev_sel) {
+                // SELECT rising edge - target responds with BSY
+                cached->values[REG_STATUS] = SASI_BSY_BIT;
+                cached->values[0x30] = SASI_BSY_BIT;
+            } else if (!now_sel && prev_sel) {
+                // SELECT falling edge - enter command phase (BSY|REQ|CTL)
+                uint8_t cmd_phase = SASI_BSY_BIT | SASI_REQ_BIT | SASI_CTL_BIT;
+                cached->values[REG_STATUS] = cmd_phase;
+                cached->values[0x30] = cmd_phase;
+            }
         }
 
         cached->values[masked_offset] = data;

@@ -27,6 +27,7 @@ void dma_defer_init(void) {
     memset(cached_regs.values, 0xFF, sizeof(cached_regs.values));
 
     // Set initial values for specific registers
+    cached_regs.values[REG_CONTROL] = 0x00;  // Control must start at 0 for SELECT edge detection
     cached_regs.values[REG_STATUS] = 0x00;
     cached_regs.values[0x30] = 0x00;  // Status alias
     cached_regs.values[REG_ADDR_L] = 0x00;

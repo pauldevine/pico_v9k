@@ -41,25 +41,47 @@ static inline void warmup_write_sequence(PIO pio, int sm, uint32_t address, uint
 }
 
 void setup_irq_handlers(void) {
+    //delete any data that might be in the FIFOs from cache warming
+    pio_sm_clear_fifos(PIO_OUTPUT, REG_SM_OUTPUT);
+    pio_sm_clear_fifos(PIO_OUTPUT, DMA_SM_OUTPUT);
+    pio_sm_clear_fifos(PIO_REGISTERS, REG_SM_CONTROL);
+    pio_sm_clear_fifos(PIO_DMA_CONTROL, DMA_SM_CONTROL);
+
+
+
+    // Register WRITE path = 8088 writing to pico registers
+    // MUST have highest priority so cache is updated before any read returns stale data
+    pio_set_irq0_source_enabled(PIO_REGISTERS, fifo_sources[REG_SM_CONTROL], true);
+    irq_set_exclusive_handler(PIO0_IRQ_0, register_write_irq_isr);
+    irq_set_priority(PIO0_IRQ_0, 0);   // highest priority - updates cache first
+    irq_set_enabled(PIO0_IRQ_0, true);
+
     // Register READ path = 8088 reading from pico registers
     pio_set_irq0_source_enabled(PIO_OUTPUT, fifo_sources[REG_SM_OUTPUT], true);
     irq_set_exclusive_handler(PIO1_IRQ_0, register_read_irq_isr);
-    irq_set_priority(PIO1_IRQ_0, 0);   // highest: commits first
+    irq_set_priority(PIO1_IRQ_0, 1);   // lower priority than write
     irq_set_enabled(PIO1_IRQ_0, true);
 
-    // Register WRITE path = 8088 writing to pico registers
-    pio_set_irq0_source_enabled(PIO_REGISTERS, fifo_sources[REG_SM_CONTROL], true);
-    irq_set_exclusive_handler(PIO0_IRQ_0, register_write_irq_isr);
-    irq_set_priority(PIO0_IRQ_0, 1);          
-    irq_set_enabled(PIO0_IRQ_0, true);
-
     // DMA READ path = pico doing DMA read from 8088 bus
+    // NOTE: DMA read IRQ is NOT enabled at startup to avoid spurious interrupts
+    // during register-only operations. Enable via enable_dma_read_irq() when DMA is needed.
+    // The current blocking DMA implementation (pio_sm_get_blocking) doesn't need the IRQ anyway.
     pio_set_irq1_source_enabled(PIO_OUTPUT, fifo_sources[DMA_SM_OUTPUT], true);
     irq_set_exclusive_handler(PIO1_IRQ_1, dma_read_isr);
     irq_set_priority(PIO1_IRQ_1, 2);
-    irq_set_enabled(PIO1_IRQ_1, true);
+    // irq_set_enabled(PIO1_IRQ_1, true);  // Disabled - enable when DMA is needed
 
     // DMA Write path does not generate IRQs
+}
+
+// Enable DMA read IRQ - call this before starting DMA operations
+void enable_dma_read_irq(void) {
+    irq_set_enabled(PIO1_IRQ_1, true);
+}
+
+// Disable DMA read IRQ - call this when DMA operations are complete
+void disable_dma_read_irq(void) {
+    irq_set_enabled(PIO1_IRQ_1, false);
 }
 
 void warm_caches(void) {
@@ -118,10 +140,10 @@ void warm_caches(void) {
     pio_sm_clear_fifos(pio_output, dma_sm_output);
     pio_sm_set_enabled(pio_output, dma_sm_output, true);
 
-    // Re-enable IRQs
+    // Re-enable IRQs (except DMA read IRQ which stays disabled until DMA is needed)
     irq_set_enabled(PIO0_IRQ_0, true);
     irq_set_enabled(PIO1_IRQ_0, true);
-    irq_set_enabled(PIO1_IRQ_1, true);
+    // irq_set_enabled(PIO1_IRQ_1, true);  // DMA read IRQ stays disabled
 }
 
 // Modified core1_main that uses cached handler and deferred processing

@@ -32,6 +32,13 @@ void __time_critical_func(dma_read_isr)() {
     // Set debug pin high
     *(volatile uint32_t *)SIO_GPIO_OUT_SET_REG = DEBUG_PIN_MASK;
 
+    // Check if SM1 RX FIFO is actually non-empty - if empty, this is a spurious IRQ
+    if (pio_sm_is_rx_fifo_empty(PIO_OUTPUT, DMA_SM_OUTPUT)) {
+        fast_log("DMA_READ: Spurious IRQ - SM1 RX FIFO empty!\n");
+        *(volatile uint32_t *)SIO_GPIO_OUT_CLR_REG = DEBUG_PIN_MASK;
+        return;
+    }
+
     // Get value from bus_output_helper PIO FIFO
     raw_value = PIO_OUTPUT->rxf[DMA_SM_OUTPUT];
 
