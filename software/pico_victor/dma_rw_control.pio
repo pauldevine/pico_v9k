@@ -15,15 +15,13 @@
 .define DATA_SIZE 8
  
 .program dma_rw_control
-.side_set 2 opt pindirs; 
+.side_set 1 opt pindirs; 
 
 ; side-set GPIO Pin Mapping (LSB first):
 ; Bit 0 -> HOLD/  (GPIO 26)
 
-.define SIDE_HOLD_RELEASE_IO_INPUT 0b00
-.define SIDE_HOLD_ASSERT_IO_INPUT  0b01
-.define SIDE_HOLD_RELEASE_IO_OUTPUT 0b10
-.define SIDE_HOLD_ASSERT_IO_OUTPUT  0b11
+.define HOLD_RELEASE 0b0
+.define HOLD_ASSERT  0b1
 
 ; Set pins
 ; Bit 0 -> RD/ (GPIO 21)
@@ -37,7 +35,7 @@
 T0:                                ; Address Setup Phase (Assert HOLD/, wait for HLDA to go high when we have data)
     pull block                     ; Block if FIFO empty (HOLD stays released!)
     out x, 1                       ; Get W/R bit from LSB (1=Write, 0=Read)
-    set pins, 0b11111 side SIDE_HOLD_ASSERT_IO_INPUT ; Assert HOLD/, keep IO/M/ input during request
+    set pins, 0b11111 side HOLD_ASSERT ; Assert HOLD/
     wait 1 gpio HLDA_PIN           ; wait for HLDA to go high
 T1:
     set pindirs, 0b11111           ; Set control pins to output DEN=1, ALE=1, DT/R=1, WR/=1, RD=1 //ALE high to latch address
@@ -55,7 +53,7 @@ T2_CONTINUE:
     wait 1 GPIO READY_PIN          ; Wait for READY to go high
 T3:
     wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
-    wait 0 GPIO CLOCK_5_PIN side SIDE_HOLD_RELEASE_IO_OUTPUT ; Wait for CLK5 to go low, release HOLD/, keep IO/M/ output
+    wait 0 GPIO CLOCK_5_PIN side HOLD_RELEASE ; Wait for CLK5 to go low, release HOLD/
     jmp x-- T4                     ; If x=1 (write), jump to T4
 T3_READ_INLINE:
     ; Fall through for DMA read (x=0) - signal dma_rw_output to capture data
@@ -67,9 +65,9 @@ T4:
     wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
     
     set pins, 0b10111              ; Set control pins to T4 close, DEN=1, ALE=0, DT/R=1, WR=1, RD=1  // DEN high to end cycle
-    wait 0 gpio HLDA_PIN side SIDE_HOLD_RELEASE_IO_OUTPUT ; wait for HLDA to go low, keep HOLD released
-    set pindirs, 0b00000 side SIDE_HOLD_RELEASE_IO_INPUT ; Set control pins' direction to input / release IO/M and HOLD
-    irq prev nowait 4             ; Signal dma_rw_output to tri-state all address outputs (Release Bus)
+    wait 0 gpio HLDA_PIN           ; wait for HLDA to go low, keep HOLD released
+    set pindirs, 0b00000           ; Set control pins' direction to input
+    irq prev nowait 4              ; Signal dma_rw_output to tri-state all address outputs (Release Bus)
 .wrap
 
 T2_READ:
@@ -123,7 +121,7 @@ static inline void dma_rw_control_program_init(PIO pio, uint sm, uint offset, ui
     sm_config_set_set_pins(&c, RD_PIN, 5);
     printf("setting sideset pin mapping to %d, count 2\n", HOLD_PIN);
     sm_config_set_sideset_pins(&c, HOLD_PIN);
-    sm_config_set_sideset(&c, 3, true, true);  // 3 bits total: 1 optional bit + 2 pin bits for ".side_set 2 opt"
+    sm_config_set_sideset(&c, 2, true, true);  // 2 bits total: 1 optional bit + 1 pin bits for ".side_set 1 opt pindirs"
     // Don't set pindirs here - it will be overridden by line 157
 
     // Shift Register configuration settings, dma_rw_output does all the data handling
