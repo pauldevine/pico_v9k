@@ -42,6 +42,18 @@ void initialize_uart() {
     return;
 }
 
+void initialize_shared_gpios() {
+    // Ensure shared GPIOs are in a known state so all PIO programs can input on these pins
+    uint lowest_pin = READY_PIN;
+    uint highest_pin = CLOCK_15B_PIN;
+    for (uint pin = lowest_pin; pin <= highest_pin; ++pin) {
+        gpio_init(pin);                              // initialize GPIO for SIO, to plumb pin for muxer to pass to PIO
+        gpio_disable_pulls(pin);                     // clear pull up or pull down
+        gpio_set_dir(pin, false);                    // input mode
+        printf("Shared GPIO%u initialized for input\n", pin);
+    }
+}
+
 
 int main() {
     set_sys_clock_khz(200000, true);
@@ -68,6 +80,15 @@ int main() {
 
     // Initialize SPI bus for FujiNet storage
     spi_bus_init();
+    if (!fujinet_config_boot(false)) {
+        printf("FujiNet: failed to clear boot config\n");
+    }
+    if (!fujinet_mount_host(0, FUJINET_DISK_ACCESS_READ)) {
+        printf("FujiNet: failed to mount host slot 0\n");
+    }
+    if (!fujinet_mount_disk_slot(0, FUJINET_DISK_ACCESS_READ)) {
+        printf("FujiNet: failed to mount disk slot 0\n");
+    }
 
     //setup our debug pin
     gpio_init(DEBUG_PIN);
@@ -85,6 +106,8 @@ int main() {
     gpio_put(DEBUG_PIN, 1);
     sleep_ms(1);
     gpio_put(DEBUG_PIN, 0);
+
+    initialize_shared_gpios();
     
     // configure the register controller PIO, which controls the board registers timing for both read and write
     // but only handles data for 8088 write cycles, which means pico is reading from the 8088 bus
@@ -175,10 +198,6 @@ int main() {
     pio_debug_state();
     debug_dump_pin(BD0_PIN);
 
-    //todo: remove after debugging
-    uint hold_function = GPIO_FUNC_PIO0 + pio_get_index(PIO_OUTPUT);
-    gpio_set_function(HOLD_PIN, hold_function);
-    pio_sm_set_consecutive_pindirs(PIO_OUTPUT, reg_sm_output, HOLD_PIN, 1, true);
 
     printf("HOLD_PIN Pin %d func: %d, sio dir: %d\n",
            HOLD_PIN, gpio_get_function(HOLD_PIN), gpio_get_dir(HOLD_PIN));
@@ -197,12 +216,8 @@ int main() {
         char buffer[256];
         if (queue_try_remove(&log_queue, buffer)) {
             printf("%s", buffer);
-        } else {
-            int level = queue_get_level(&log_queue);
-            //printf("Log queue empty, current level: %d\n", level);
-            if (i % 100000 == 0) {
-            printf (".");
-            }
+        } else if (i % 100000 == 0) {
+            printf(".");
         }
 
         dma_process_deferred_events_cached();

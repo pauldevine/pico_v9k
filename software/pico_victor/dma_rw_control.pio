@@ -1,5 +1,5 @@
 ;
-; Copyright (c) 2020 Raspberry Pi (Trading) Ltd.
+; Copyright (c) 2025 by Paul Devine
 ;
 ; SPDX-License-Identifier: BSD-3-Clause
 ;
@@ -19,7 +19,6 @@
 
 ; side-set GPIO Pin Mapping (LSB first):
 ; Bit 0 -> HOLD/  (GPIO 26)
-; Bit 1 -> IO/M/  (GPIO 27)
 
 .define SIDE_HOLD_RELEASE_IO_INPUT 0b00
 .define SIDE_HOLD_ASSERT_IO_INPUT  0b01
@@ -33,25 +32,10 @@
 ; Bit 3 -> ALE  (GPIO 24)
 ; Bit 4 -> DEN/ (GPIO 25)
 
-; TX FIFO data format:
-; First FIFO entry: Address + R/W bit
-; Second FIFO entry: Data byte + MSB of address (for writes) or pindirs value 0xFFF00 (for reads)
-; Bit 0:     W/R flag (1=Write, 0=Read)
-; Bits 1-20: A0-A19 Address (shifted left by 1)
-; Bits 21-28: Data byte for writes (pindirs value 0xFFF00 for reads)
-; Bits 29-31: Unused
-;
-; Example FIFO word format:
-; Write: 
-; First FIFO: 0x[DATA][ADDR<<1 | 1]  where LSB=1 for write
-; Second FIFO: 0x[ADDR>>8][DATA] where upper byte is A8-A19, lower byte is data byte
-; Read:  
-; First FIFO: 0x[0x00][ADDR<<1 | 0]  where LSB=0 for read
-; Second FIFO: 0x[0xFFF][0x00] where upper byte is 0xFFF for pindirs out for address, lower byte is 0x00 for pindirs in for data
 
 .wrap_target
-T0:                                ; Address Setup Phase (Put Address on Bus)
-    wait 1 irq 0                   ; Block if FIFO empty (HOLD stays released!)
+T0:                                ; Address Setup Phase (Assert HOLD/, wait for HLDA to go high when we have data)
+    pull block                     ; Block if FIFO empty (HOLD stays released!)
     out x, 1                       ; Get W/R bit from LSB (1=Write, 0=Read)
     set pins, 0b11111 side SIDE_HOLD_ASSERT_IO_INPUT ; Assert HOLD/, keep IO/M/ input during request
     wait 1 gpio HLDA_PIN           ; wait for HLDA to go high
@@ -100,8 +84,9 @@ T2_READ:
 #include "hardware/gpio.h"
 #include "hardware/clocks.h"
 #include "pico_victor/dma.h"
-#define OUTPUT_PIN_FIRST BD0_PIN
-#define OUTPUT_PIN_LAST EXTIO_PIN
+#define MY_FIRST_PIN RD_PIN
+#define MY_LAST_PIN HOLD_PIN
+#define RW_BIT_SIZE 1
 
 /*
  * CRITICAL PIN INITIALIZATION RULES:
@@ -109,7 +94,7 @@ T2_READ:
  * Output pins (controlled by PIO via pindirs):
  *   - A0-A19 (address bus) - pins 1-20
  *   - RD/, WR/, DT/R/, ALE, DEN/ (control outputs) - pins 21-25
- *   - HOLD/, IO/M/ (side-set outputs) - pins 26-27
+ *   - HOLD/, EXTIO/ (side-set outputs) - pins 26-27
  *   - HOLD is active low, and setup for open-drain on the Victor 9000. 
  *     We pull HOLD low to assert, and release to float high via 10K pullup on the Victor board
  *     Hence we use pindirs to control HOLD - output=assert, input=release
@@ -134,8 +119,6 @@ static inline void dma_rw_control_program_init(PIO pio, uint sm, uint offset, ui
     printf("starting to configure dma_rw_control_program_init\n");
     pio_sm_config c = dma_rw_control_program_get_default_config(offset);
 
-    printf("setting out pin mapping to %d, count %d\n", pin, ADDRESS_BUS_SIZE);
-    sm_config_set_out_pins(&c, pin, ADDRESS_BUS_SIZE);
     printf("setting set pin mapping to %d, count 5\n", RD_PIN);
     sm_config_set_set_pins(&c, RD_PIN, 5);
     printf("setting sideset pin mapping to %d, count 2\n", HOLD_PIN);
@@ -143,21 +126,20 @@ static inline void dma_rw_control_program_init(PIO pio, uint sm, uint offset, ui
     sm_config_set_sideset(&c, 3, true, true);  // 3 bits total: 1 optional bit + 2 pin bits for ".side_set 2 opt"
     // Don't set pindirs here - it will be overridden by line 157
 
-    // Shift Register configuration settings
-    // Configure for both read and write operations
+    // Shift Register configuration settings, dma_rw_output does all the data handling
+    // we're only reading in 1 bit read or write to determine operation we're doing
     printf("Configuring in/out pins for read/write mode\n");
-    sm_config_set_in_pins(&c, BD0_PIN);
-    sm_config_set_in_pin_count(&c, DATA_SIZE);
-    // Note: With R/W bit in LSB, we need 29 bits total (1 + 20 + 8)
-    // MUST disable autopull when using pull ifempty - otherwise OSR fills with zeros
-    sm_config_set_out_shift(&c, true, false, 32);  // Right shift, NO autopull
-    sm_config_set_in_shift(&c, false, true, DATA_SIZE);
+    sm_config_set_out_shift(&c, 
+        true, // right shift = bit in LSB
+        false, // no autopull
+        RW_BIT_SIZE);  //single bit for W/R flag
     
     pio_sm_clear_fifos(pio, sm);
     pio_sm_set_clkdiv(pio, sm, 1.0f);
 
     // Init output pins for PIO first
-    for (int i = pin; i <= (BD0_PIN + ADDRESS_BUS_SIZE); i++) {
+    for (int i = MY_FIRST_PIN; i <= MY_LAST_PIN; i++) {
+        pio_gpio_init(pio, i);
         gpio_set_drive_strength(i, GPIO_DRIVE_STRENGTH_2MA);
         gpio_set_slew_rate(i, GPIO_SLEW_RATE_SLOW);
         gpio_disable_pulls(i);
@@ -167,6 +149,11 @@ static inline void dma_rw_control_program_init(PIO pio, uint sm, uint offset, ui
         printf("dma gpio_init %d  ", i);
         printf("GPIO%d_CTRL = 0x%08x\n", i, io_bank0_hw->io[i].ctrl);
     }
+
+    pio_gpio_init(pio, CLOCK_15B_PIN);
+    pio_gpio_init(pio, CLOCK_5_PIN);
+    pio_gpio_init(pio, READY_PIN);
+    pio_gpio_init(pio, HLDA_PIN);
 
     // Load our configuration, and jump to the start of the program
     pio_sm_init(pio, sm, offset, &c);

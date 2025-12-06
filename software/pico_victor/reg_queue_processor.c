@@ -15,6 +15,28 @@
 // Static instances - place in time_critical section for fast access
 defer_queue_t defer_queue __attribute__((section(".time_critical.defer_queue")));
 cached_registers_t cached_regs __attribute__((section(".time_critical.cached_regs")));
+static int read_request_counter = 0;
+
+void cached_status_sync_from_bus(const dma_registers_t *dma) {
+    if (!dma) {
+        return;
+    }
+
+    uint8_t ctrl = dma->bus_ctrl;
+    uint8_t new_status = 0;
+    if (ctrl & SASI_INP_BIT)  new_status |= SASI_INP_BIT;
+    if (ctrl & SASI_CTL_BIT)  new_status |= SASI_CTL_BIT;
+    if (ctrl & SASI_BSY_BIT)  new_status |= SASI_BSY_BIT;
+    if (ctrl & SASI_REQ_BIT)  new_status |= SASI_REQ_BIT;
+    if (ctrl & SASI_MSG_BIT)  new_status |= SASI_MSG_BIT;
+
+    cached_regs.values[REG_STATUS] = new_status;
+    cached_regs.values[0x30] = new_status;
+}
+
+void cached_set_data(uint8_t value) {
+    cached_regs.values[REG_DATA] = value;
+}
 
 // Initialize the deferred processing system
 void dma_defer_init(void) {
@@ -67,7 +89,11 @@ bool defer_dequeue(defer_queue_t *queue, defer_entry_t *entry) {
 // The cache was already read and returned by the fast handler
 void defer_process_read(dma_registers_t *dma, uint32_t raw_value) {
     // Extract address FIFO has 00[address] - REG_READ payload
-    fast_log("RAW=0x%08x\n", raw_value);
+    if (++read_request_counter >= 1000) {
+        read_request_counter = 0;
+        fast_log("1000 READ requests processed\n");
+    }
+    //fast_log("RAW=0x%08x\n", raw_value);
     uint32_t address = board_fifo_read_address(raw_value);
     uint32_t offset = address - DMA_REGISTER_BASE;
     uint32_t masked_offset = dma_mask_offset(offset);
@@ -87,6 +113,15 @@ void defer_process_read(dma_registers_t *dma, uint32_t raw_value) {
         case REG_STATUS:
             // Clear interrupt on status read (side effect only)
             dma_update_interrupts(dma, false);
+            // Some host firmware polls the status register instead of reading the
+            // message-in byte. If we're still advertising message phase, treat the
+            // status read as an implicit ACK and release the bus so BSY drops.
+            if (dma->bus_ctrl & SASI_MSG_BIT) {
+                dma->state.non_dma_req = 0;
+                dma->bus_ctrl &= ~SASI_REQ_BIT;
+                dma->bus_ctrl &= ~(SASI_CTL_BIT | SASI_INP_BIT | SASI_MSG_BIT | SASI_ACK_BIT | SASI_BSY_BIT);
+                cached_status_sync_from_bus(dma);
+            }
             break;
 
         case REG_DATA:
@@ -99,22 +134,21 @@ void defer_process_read(dma_registers_t *dma, uint32_t raw_value) {
                     dma->bus_ctrl &= ~(SASI_CTL_BIT | SASI_INP_BIT | SASI_MSG_BIT |
                                         SASI_ACK_BIT | SASI_BSY_BIT);
                     dma_update_interrupts(dma, false);
-
-                    // Update cached status to reflect new bus state
-                    uint8_t new_status = 0;
-                    cached_regs.values[REG_STATUS] = new_status;
-                    cached_regs.values[0x30] = new_status;
+                    cached_status_sync_from_bus(dma);
                 } else if ((dma->bus_ctrl & (SASI_CTL_BIT | SASI_INP_BIT)) ==
                             (SASI_CTL_BIT | SASI_INP_BIT)) {
-                    // Status phase - set message phase
-                    dma->bus_ctrl |= (SASI_MSG_BIT | SASI_REQ_BIT);
-                    dma->state.non_dma_req = 1;
-                    dma_update_interrupts(dma, true);
-
-                    // Update cached status to reflect new bus state
-                    uint8_t new_status = SASI_MSG_BIT | SASI_REQ_BIT | SASI_CTL_BIT | SASI_INP_BIT;
-                    cached_regs.values[REG_STATUS] = new_status;
-                    cached_regs.values[0x30] = new_status;
+                    // Status phase - only transition to message if status_pending is set
+                    // This ensures we only transition when host intentionally reads status,
+                    // not from stale DATA reads queued during DMA transfer
+                    if (dma->state.status_pending) {
+                        dma->state.status_pending = 0;  // Clear the flag
+                        cached_set_data(0x00); // Completion message the host will read next
+                        dma->bus_ctrl |= (SASI_MSG_BIT | SASI_REQ_BIT);
+                        dma->state.non_dma_req = 1;
+                        dma_update_interrupts(dma, true);
+                        cached_status_sync_from_bus(dma);
+                    }
+                    // If status_pending is not set, ignore this read (it's stale)
                 } else {
                     dma->state.non_dma_req = 0;
                 }
@@ -191,7 +225,8 @@ void defer_process_write(dma_registers_t *dma, uint32_t raw_value) {
                         dma_update_interrupts(dma, true);
                     }
                 }
-            }  
+                cached_status_sync_from_bus(dma);
+            }
             fast_log("DEFER: Write CONTROL = 0x%02x\n", write_data);
             break;
 
@@ -221,6 +256,7 @@ void defer_process_write(dma_registers_t *dma, uint32_t raw_value) {
                 // Command phase - process SASI command byte
                 handle_sasi_command_byte(dma, write_data);
             }
+            cached_status_sync_from_bus(dma);
             fast_log("DEFER: Write DATA = 0x%02x\n", write_data);
             break;
 
@@ -246,17 +282,6 @@ void defer_process_write(dma_registers_t *dma, uint32_t raw_value) {
             // Unknown register
             fast_log("DEFER_WRITE: Unknown register offset=0x%02x\n", masked_offset);
             break;
-    }
-
-    // After any write that changes bus state, update cached status
-    if (masked_offset == REG_CONTROL || masked_offset == REG_DATA) {
-        uint8_t new_status = ((dma->bus_ctrl & SASI_INP_BIT) ? SASI_INP_BIT : 0) |
-                                ((dma->bus_ctrl & SASI_CTL_BIT) ? SASI_CTL_BIT : 0) |
-                                ((dma->bus_ctrl & SASI_BSY_BIT) ? SASI_BSY_BIT : 0) |
-                                ((dma->bus_ctrl & SASI_REQ_BIT) ? SASI_REQ_BIT : 0) |
-                                ((dma->bus_ctrl & SASI_MSG_BIT) ? SASI_MSG_BIT : 0);
-        cached_regs.values[REG_STATUS] = new_status;
-        cached_regs.values[0x30] = new_status;
     }
 }
 

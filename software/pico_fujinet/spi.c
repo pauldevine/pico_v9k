@@ -92,6 +92,14 @@ static void spi_end_transaction_phase(const char *phase)
            phase, gpio_get(PIN_SPI_HANDSHAKE), waited);
 }
 
+static inline bool ack_is_success(uint8_t ack_byte) {
+    return ack_byte == SPI_ACK || ack_byte == FUJICMD_DEVICE_READY;
+}
+
+static inline bool status_is_success(uint8_t status_byte) {
+    return status_byte == 'C' || status_byte == FUJICMD_DEVICE_READY;
+}
+
 static bool receive_status_byte(const char *label, uint8_t *status_out) {
     if (!status_out) return false;
 
@@ -125,7 +133,7 @@ static bool finish_simple_command(const char *label) {
         }
     }
 
-    if (status != 'C') {
+    if (!status_is_success(status)) {
         printf("%s: unexpected status 0x%02X\n", label, status);
         return false;
     }
@@ -170,15 +178,14 @@ spi_transaction_result send_command_frame(cmdFrame_t cmd) {
     //end transaction
     spi_end_transaction_phase("CMD_ACK_RX");
     printf("ACK received: %02X\n", ack_byte);
-    spi_transaction_result ack = (spi_transaction_result)ack_byte;
-    if (ack != SPI_ACK) {
-        printf("Error: Received ACK 0x%02X instead of 0x%02X\n", ack, SPI_ACK);
-        return ack;
-    } else {
-        printf("Command frame sent successfully, ACK received: %02X\n", ack);
+    if (!ack_is_success(ack_byte)) {
+        printf("Error: Received ACK 0x%02X instead of expected 0x%02X/0x%02X\n",
+               ack_byte, SPI_ACK, FUJICMD_DEVICE_READY);
+        return (spi_transaction_result)ack_byte;
     }
 
-    return ack;
+    printf("Command frame sent successfully, ACK received: %02X\n", ack_byte);
+    return SPI_ACK;
 }
 
 // Send data with checksum (binary-safe)
@@ -229,12 +236,13 @@ spi_transaction_result send_data_frame(const uint8_t *data, size_t len) {
 
     printf("Data sent: %d bytes (padded), ACK received: 0x%02X\n", bytes_written, ack);
 
-    spi_transaction_result ack_result = (spi_transaction_result)ack;
-    if (ack_result != SPI_ACK) {
-        printf("Error: Received ACK 0x%02X instead of 0x%02X\n", ack_result, SPI_ACK);
+    if (!ack_is_success(ack)) {
+        printf("Error: Received ACK 0x%02X instead of expected 0x%02X/0x%02X\n",
+               ack, SPI_ACK, FUJICMD_DEVICE_READY);
+        return (spi_transaction_result)ack;
     }
 
-    return ack_result;
+    return SPI_ACK;
 }
 
 
@@ -388,7 +396,7 @@ bool fujinet_read_sector(uint8_t device, uint32_t lba, uint8_t *buffer, size_t l
     cmdFrame_t cmd = {0};
     cmd.device = device;
     cmd.comnd  = CMD_DISK_READ;
-    cmd.aux    = 0;
+    cmd.aux    = sizeof(header);
 
     spi_transaction_result ack = send_command_frame(cmd);
     if (ack != SPI_ACK) {
@@ -411,7 +419,7 @@ bool fujinet_read_sector(uint8_t device, uint32_t lba, uint8_t *buffer, size_t l
             return false;
         }
     }
-    if (status != 'C') {
+    if (!status_is_success(status)) {
         printf("FujiNet reported error status 0x%02X\n", status);
         return false;
     }
@@ -439,7 +447,7 @@ bool fujinet_write_sector(uint8_t device, uint32_t lba, const uint8_t *buffer, s
     cmdFrame_t cmd = {0};
     cmd.device = device;
     cmd.comnd  = CMD_DISK_WRITE;
-    cmd.aux    = 0;
+    cmd.aux    = sizeof(header);
 
     spi_transaction_result ack = send_command_frame(cmd);
     if (ack != SPI_ACK) {
@@ -467,7 +475,7 @@ bool fujinet_write_sector(uint8_t device, uint32_t lba, const uint8_t *buffer, s
             return false;
         }
     }
-    if (status != 'C') {
+    if (!status_is_success(status)) {
         printf("FujiNet write status 0x%02X for LBA %lu\n", status, (unsigned long)lba);
         return false;
     }

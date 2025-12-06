@@ -87,17 +87,6 @@ static inline void register_output_program_init(PIO pio, uint sm, uint offset) {
         false,  // don't autopull
         DATA_SIZE); // 8 bits for data bus
 
-    // Initialize the sideset GPIO pin
-    pio_gpio_init(pio, HOLD_PIN);
-
-    // Set the pin value to 0 initially (important for sideset to work)
-    pio_sm_set_pins_with_mask(pio, sm, 0, 1u << HOLD_PIN);
-
-    // Set pin as output initially
-    pio_sm_set_consecutive_pindirs(pio, sm, HOLD_PIN, 1, true);
-    printf("HOLD_PIN Pin %d func: %d, dir: %d\n",
-           HOLD_PIN, gpio_get_function(HOLD_PIN), gpio_get_dir(HOLD_PIN));
-
     // Load our configuration, and jump to the start of the program
     int init_rc = pio_sm_init(pio, sm, offset, &c);
     printf("pio_sm_init rc=%d, SM%d execctrl after init=0x%08x\n", init_rc, sm, pio->sm[sm].execctrl);

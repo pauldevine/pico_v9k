@@ -31,4 +31,7 @@ void read_sector_from_disk(dma_registers_t *dma, uint32_t sector, uint8_t *buffe
 bool command_complete(uint8_t *command_buffer, int cmd_index);
 void signal_command_complete(dma_registers_t *dma);
 
+// Reset SASI command state (call on device reset)
+void sasi_reset_command_state(void);
+
 #endif

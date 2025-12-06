@@ -90,6 +90,7 @@ add_executable(dma_board_tests
     logging.c
     sasi.c
     ${CMAKE_CURRENT_LIST_DIR}/pico_victor/dma.c
+    ${CMAKE_CURRENT_LIST_DIR}/pico_victor/reg_queue_processor.c
     ${CMAKE_CURRENT_LIST_DIR}/pico_fujinet/spi.c)
 
 target_compile_definitions(dma_board_tests PRIVATE UNIT_TEST=1)

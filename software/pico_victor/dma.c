@@ -387,13 +387,15 @@ void dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_addres
         // print_segment_offset(addr);
 
         // Send two FIFO words per the PIO protocol
-        // Word 1: address shifted left with write 2-bit flag in LSB
-        pio_sm_put_blocking(write_pio, write_sm, (addr << 2) | 3);
+        // Word 1: address shifted left with write 2-bit flag in LSB (3 = write)
+        uint32_t word1 = (addr << 2) | 3;
+        pio_sm_put_blocking(write_pio, write_sm, word1);
         // Word 2: address MSB (A8-A19) in upper bits, data byte in lower bits
         pio_sm_put_blocking(write_pio, write_sm, (addr & 0xFFF00) | byte);
-        // After pio_sm_put_blocking calls, trigger control SM:
-        pio_interrupt_clear(PIO_DMA_CONTROL, 0);
-        hw_set_bits(&PIO_DMA_CONTROL->irq, 1 << 0);
+
+        // The control SM (PIO2) also needs the W/R flag in its TX FIFO
+        // It uses "out x, 1" to extract the write/read bit and trigger the cycle
+        pio_sm_put_blocking(PIO_DMA_CONTROL, DMA_SM_CONTROL, word1);
 
     }
     printf("Finished DMA write to Victor RAM\n");
@@ -424,9 +426,14 @@ void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_addre
 
         // Send two FIFO words per the PIO protocol
         // Word 1: address shifted left with read 2-bit flag (0) in LSB
-        pio_sm_put_blocking(read_pio, read_sm, (addr << 2) | 0);
+        uint32_t word1 = (addr << 2) | 0;
+        pio_sm_put_blocking(read_pio, read_sm, word1);
         // Word 2: pindirs value to set BD0-BD7 as inputs, A8-A19 as outputs
         pio_sm_put_blocking(read_pio, read_sm, 0xFFF00);
+
+        // The control SM (PIO2) also needs the W/R flag in its TX FIFO
+        // It uses "out x, 1" to extract the write/read bit and trigger the cycle
+        pio_sm_put_blocking(PIO_DMA_CONTROL, DMA_SM_CONTROL, word1);
 
         // Get the data byte that was read
         uint32_t char_data = pio_sm_get_blocking(read_pio, read_sm);
@@ -441,16 +448,14 @@ void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_addre
 static uint8_t test_victor_ram[1 << 16];
 static const size_t TEST_VICTOR_RAM_SIZE = (1 << 16);
 
-void dma_write_to_victor_ram(PIO write_pio, int write_sm, uint8_t *data, size_t length, uint32_t start_address) {
-    (void)write_pio; (void)write_sm;
+void dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_address) {
     for (size_t i = 0; i < length; i++) {
         uint32_t addr = (start_address + i) & 0xFFFFF;
         if (addr < TEST_VICTOR_RAM_SIZE) test_victor_ram[addr] = data[i];
     }
 }
 
-void dma_read_from_victor_ram(PIO read_pio, int read_sm, uint8_t *data, size_t length, uint32_t start_address) {
-    (void)read_pio; (void)read_sm;
+void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_address) {
     for (size_t i = 0; i < length; i++) {
         uint32_t addr = (start_address + i) & 0xFFFFF;
         data[i] = (addr < TEST_VICTOR_RAM_SIZE) ? test_victor_ram[addr] : 0x00;
@@ -468,6 +473,7 @@ void dma_device_reset(dma_registers_t *dma) {
     dma->dma_address.full = 0;
     dma->state.asserting_ack = 0;
     dma->state.non_dma_req = 0;
+    dma->state.status_pending = 0;
     dma->command = 0;
     dma->bus_ctrl = 0;
     dma->control = 0;
@@ -477,6 +483,9 @@ void dma_device_reset(dma_registers_t *dma) {
 
     // Clear interrupt
     dma_update_interrupts(dma, false);
+
+    // Reset SASI command accumulator state
+    sasi_reset_command_state();
 
     printf("DMA device reset\n");
 }
