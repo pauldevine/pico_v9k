@@ -80,7 +80,13 @@ static inline void test_hold_hlda_program_init(PIO pio, uint sm, uint offset) {
     // This unlocks the side-set pindirs functionality on RP2350
     pio_sm_exec(pio, sm, pio_encode_set(pio_pindirs, 0));  // Start with HOLD tri-stated
 
-    // Enable the state machine
-    pio_sm_set_enabled(pio, sm, true);
+    // Load our configuration, and jump to the start of the program
+    int init_rc = pio_sm_init(pio, sm, offset, &c);
+    printf("test_hold_hlda pio_sm_init rc=%d, SM%d execctrl after init=0x%08x\n", init_rc, sm, pio->sm[sm].execctrl);
+    if (init_rc == PICO_OK) {
+        pio_sm_set_enabled(pio, sm, true);
+    } else {
+        printf("WARNING: pio_sm_init failed; SM%d not enabled\n", sm);
+    }
 }
 %}

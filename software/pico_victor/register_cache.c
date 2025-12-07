@@ -140,6 +140,11 @@ void warm_caches(void) {
     pio_sm_clear_fifos(pio_output, dma_sm_output);
     pio_sm_set_enabled(pio_output, dma_sm_output, true);
 
+    pio_sm_set_enabled(pio_output, dma_sm_control, false);
+    pio_sm_clear_fifos(pio_output, dma_sm_control);
+    pio_sm_set_enabled(pio_output, dma_sm_control, true);
+
+
     // Re-enable IRQs (except DMA read IRQ which stays disabled until DMA is needed)
     irq_set_enabled(PIO0_IRQ_0, true);
     irq_set_enabled(PIO1_IRQ_0, true);

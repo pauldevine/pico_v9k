@@ -89,7 +89,7 @@ static inline void register_output_program_init(PIO pio, uint sm, uint offset) {
 
     // Load our configuration, and jump to the start of the program
     int init_rc = pio_sm_init(pio, sm, offset, &c);
-    printf("pio_sm_init rc=%d, SM%d execctrl after init=0x%08x\n", init_rc, sm, pio->sm[sm].execctrl);
+    printf("register_output pio_sm_init rc=%d, SM%d execctrl after init=0x%08x\n", init_rc, sm, pio->sm[sm].execctrl);
 
     if (init_rc == PICO_OK) {
         pio_sm_set_enabled(pio, sm, true);

@@ -75,10 +75,6 @@ static inline void dma_rw_output_program_init(PIO pio, uint sm, uint offset) {
 
     sm_config_set_clkdiv(&c, 1.0f);
 
-    // Load our configuration, and jump to the start of the program
-    int init_rc = pio_sm_init(pio, sm, offset, &c);
-    printf("pio_sm_init rc=%d, SM%d execctrl after init=0x%08x\n", init_rc, sm, pio->sm[sm].execctrl);
-
     // NOW initialize GPIO pins AFTER pio_sm_init
     // Initialize GPIO pins for bus control
     for (int i = BD0_PIN; i < (BD0_PIN + ADDRESS_BUS_SIZE); i++) {
@@ -92,6 +88,9 @@ static inline void dma_rw_output_program_init(PIO pio, uint sm, uint offset) {
     // Set all bus pins as inputs initially (will be controlled by pindirs instructions)
     pio_sm_set_consecutive_pindirs(pio, sm, BD0_PIN, ADDRESS_BUS_SIZE, false);
 
+    // Load our configuration, and jump to the start of the program
+    int init_rc = pio_sm_init(pio, sm, offset, &c);
+    printf("dma_rw_output pio_sm_init rc=%d, SM%d execctrl after init=0x%08x\n", init_rc, sm, pio->sm[sm].execctrl);
     if (init_rc == PICO_OK) {
         pio_sm_set_enabled(pio, sm, true);
     } else {

@@ -118,6 +118,11 @@ int main() {
     int outcome = pio_set_gpio_base(register_pio, LOWER_PIN_BASE);
     printf("register_pio pio_set_gpio_base outcome: %d PICO_PIO_USE_GPIO_BASE %d\n", outcome, PICO_PIO_USE_GPIO_BASE);
     int board_registers_program_offset = pio_add_program(register_pio, &board_registers_program);
+    if (board_registers_program_offset < 0) {
+        printf("ERROR: Failed to load board_registers_program - PIO%d SM%d instruction memory full!\n", pio_get_index(register_pio), reg_sm_control);
+        return -1;
+    }
+
     board_registers_program_init(register_pio, reg_sm_control, board_registers_program_offset);
     //initialize state machine, it stores a 12-bit bitmask (0x00000EF3) of the registeraddress MSBs to match against for register accesses
     //we pull in the full 20-bit address and then drop the lower 8 bits in the PIO program to compare against the 12 MSBs to match our register range
@@ -132,8 +137,14 @@ int main() {
     int reg_sm_output = REG_SM_OUTPUT;
     pio_sm_claim(pio_output, reg_sm_output);
     int reg_output_offset = pio_add_program(pio_output, &register_output_program);
+
+    if (reg_output_offset < 0) {
+        printf("ERROR: Failed to load board_registers_program - PIO%d SM%d instruction memory full!\n", pio_get_index(pio_output), reg_sm_output);
+        return -1;
+    }
+
     register_output_program_init(pio_output, reg_sm_output, reg_output_offset);
-    pio_sm_set_enabled(pio_output, reg_sm_output, true);
+    
     printf("register_output initialized on PIO%d SM%d\n",
            pio_get_index(pio_output), reg_sm_output);
     
@@ -152,10 +163,15 @@ int main() {
     outcome = pio_set_gpio_base(dma_control_pio, UPPER_PIN_BASE);
     printf("dma_control_pio pio_set_gpio_base outcome: %d PICO_PIO_USE_GPIO_BASE %d\n", outcome, PICO_PIO_USE_GPIO_BASE);
     int dma_rw_control_program_offset = pio_add_program(dma_control_pio, &dma_rw_control_program);
+
+    if (dma_rw_control_program_offset < 0) {
+        printf("ERROR: Failed to load dma_rw_control_program - PIO%d SM%d instruction memory full!\n", pio_get_index(dma_control_pio), DMA_SM_CONTROL);
+        return -1;
+    }
     pio_sm_claim(dma_control_pio, DMA_SM_CONTROL); 
     int dma_control_sm = DMA_SM_CONTROL;
     dma_rw_control_program_init(dma_control_pio, dma_control_sm, dma_rw_control_program_offset, BD0_PIN);
-    pio_sm_set_enabled(dma_control_pio, dma_control_sm, true);
+    
     printf("dma_rw_control PIO initialized on PIO%d SM%d\n",
            pio_get_index(dma_control_pio), dma_control_sm);
 
@@ -164,8 +180,14 @@ int main() {
     int dma_output_sm = DMA_SM_OUTPUT;
     pio_sm_claim(dma_output_pio, dma_output_sm);
     int dma_output_offset = pio_add_program(dma_output_pio, &dma_rw_output_program);
+
+    if (dma_output_offset < 0) {
+        printf("ERROR: Failed to load dma_rw_output_program - PIO%d SM%d instruction memory full!\n", pio_get_index(dma_output_pio), dma_output_sm);
+        return -1;
+    }
+
     dma_rw_output_program_init(dma_output_pio, dma_output_sm, dma_output_offset);
-    pio_sm_set_enabled(dma_output_pio, dma_output_sm, true);
+    
     printf("dma_rw_output PIO initialized on PIO%d SM%d\n",
            pio_get_index(dma_output_pio), dma_output_sm);
 
@@ -179,8 +201,13 @@ int main() {
     printf("iom pio_set_gpio_base outcome: %d PICO_PIO_USE_GPIO_BASE %d\n", outcome, PICO_PIO_USE_GPIO_BASE);
     pio_sm_claim (iom_pio, iom_sm);
     int iom_program_offset = pio_add_program(iom_pio, &iom_helper_program);
+
+    if (iom_program_offset < 0) {
+        printf("ERROR: Failed to load iom_helper_program - PIO%d SM%d instruction memory full!\n", pio_get_index(iom_pio), iom_sm);
+        return -1;
+    }
     iom_helper_program_init(iom_pio, iom_sm, iom_program_offset);
-    pio_sm_set_enabled(iom_pio, iom_sm, true);
+    
     printf("IOM PIO initialized\n");
 
     // The unified dma_read_write state machine handles both read and write operations
@@ -273,6 +300,16 @@ int main() {
                 }
                 printf("\n");
             }
+
+            while (!pio_sm_is_rx_fifo_empty(PIO_OUTPUT, DMA_SM_OUTPUT)) {
+                uint32_t raw = pio_sm_get(PIO_OUTPUT, DMA_SM_OUTPUT);
+                printf("dma_output RX: raw=0x%08x type=%u addr=0x%05x data=0x%02x\n",
+                    raw,
+                    fifo_payload_type(raw),
+                    board_fifo_read_address(raw),
+                    (raw >> 22) & 0xFF);
+            }
+
 
         }
     
