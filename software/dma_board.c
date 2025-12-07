@@ -228,7 +228,7 @@ int main() {
         // Every 10M iterations, check PIO state
         if (i % 10000000 == 0) {
             // Check board_registers state machine (PIO0)
-            printf("\nboard_registers (PIO%d SM%d): PC=0x%02x, stalled=%d, RX=%d/8, TX=%d/8\n",
+            printf("\nboard_registers (PIO%d SM%d): PC=0x%02x, stalled=%d, RX=%d/4, TX=%d/4\n",
                    pio_get_index(register_pio), reg_sm_control,
                    pio_sm_get_pc(register_pio, reg_sm_control),
                    pio_sm_is_exec_stalled(register_pio, reg_sm_control),
@@ -236,7 +236,7 @@ int main() {
                    pio_sm_get_tx_fifo_level(register_pio, reg_sm_control));
 
             // Check reg_sm_output state machine (PIO1)
-            printf("reg_sm_output (PIO%d SM%d): PC=0x%02x, stalled=%d, RX=%d/8, TX=%d/8\n",
+            printf("reg_sm_output (PIO%d SM%d): PC=0x%02x, stalled=%d, RX=%d/4, TX=%d/4\n",
                    pio_get_index(pio_output), reg_sm_output,
                    pio_sm_get_pc(pio_output, reg_sm_output),
                    pio_sm_is_exec_stalled(pio_output, reg_sm_output),
@@ -244,7 +244,7 @@ int main() {
                    pio_sm_get_tx_fifo_level(pio_output, reg_sm_output));
 
             // Check dma_output_sm state machine (PIO1)
-            printf("dma_output_sm (PIO%d SM%d): PC=0x%02x, stalled=%d, RX=%d/8, TX=%d/8\n",
+            printf("dma_output_sm (PIO%d SM%d): PC=0x%02x, stalled=%d, RX=%d/4, TX=%d/4\n",
                    pio_get_index(pio_output), dma_output_sm,
                    pio_sm_get_pc(pio_output, dma_output_sm),
                    pio_sm_is_exec_stalled(pio_output, dma_output_sm),
@@ -253,7 +253,7 @@ int main() {
 
             // Check DMA control state machine (PIO2)
             bool dma_enabled = !!(dma_control_pio->ctrl & (1u << (PIO_CTRL_SM_ENABLE_LSB + dma_control_sm)));
-            printf("dma_read_write (PIO%d SM%d): PC=0x%02x, stalled=%d, RX=%d/8, TX=%d/8, enabled=%d\n",
+            printf("dma_read_write (PIO%d SM%d): PC=0x%02x, stalled=%d, RX=%d/4, TX=%d/4, enabled=%d\n",
                    pio_get_index(dma_control_pio), dma_control_sm,
                    pio_sm_get_pc(dma_control_pio, dma_control_sm),
                    pio_sm_is_exec_stalled(dma_control_pio, dma_control_sm),

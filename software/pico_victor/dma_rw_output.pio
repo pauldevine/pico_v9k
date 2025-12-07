@@ -20,15 +20,18 @@
 pull block                ; Pull pindirs for RD cycle from FIFO
 mov y, osr                ; Store pindirs for RD cycle in Y
 
+.wrap_target
 DMA_T1:
     wait 1 GPIO HLDA_PIN  ; wait for HLDA to go high
+    pull block            ; Pull T1 payload for address phase from FIFO [2 bits W/R][20 bits address A19-A0]
     out pins, 20          ; output address on bus, we're driving A0-A19 for ALE in T1
     mov pindirs, ~null    ; drive address pins output
-    pull block            ; new payload WR: [A19-A8] [data BD7-BD0] [W/R bit = 1] from FIFO for WR T2
-                          ; new payload RD: [A19-A8] [data=0x00 for BD7-BD0] [W/R bit = 0] from FIFO for RD T2
+
 DMA_T2:
     out x, 2              ; get W/R 2-bit flag from LSB (3=Write, 0=Read)
     wait 1 irq 2          ; wait for DMA read_write SM to signal move from address to data phase
+    pull block            ; Pull T2 new payload WR: [A19-A8] [data BD7-BD0] from FIFO for WR T2
+                          ;         new payload RD: [A19-A8] [data=0x00 for BD7-BD0] from FIFO for RD T2
     out pins, 20          ; output data byte plus MSB of address on BD0-BD7 and A8-A19
     jmp !x DMA_T2_READ    ; if x=0 (read), jump to DMA_T2_READ
     ; Fall through for write (x=1)
@@ -43,7 +46,7 @@ DMA_T2_READ:
     in pins, DATA_SIZE    ; RD case, read data from bus
     in x, 2               ; move the DMA read flag into ISR as MSBs, came from out at start of DMA_T2
     push                  ; push data to FIFO for ARM to read push payload RD: [payload type=3 /2bits][data BD7-BD0 /8bits][address A19-A0 /20bits]
-    jmp T4_END            ; wait for cycle complete
+    ; Fall through to T4_END
 
 T4_END:
     wait 1 irq 4          ; wait for source SM dma_rw_control to signal cycle complete

@@ -59,6 +59,7 @@ T3_READ_INLINE:
     ; Fall through for DMA read (x=0) - signal dma_rw_output to capture data
     irq prev nowait 3              ; Signal dma_rw_output to read data from BD0-BD7
 T4:
+    wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
     wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go low
     wait 1 GPIO CLOCK_15B_PIN      ; Wait for CLK15B to go high
     set pins, 0b00111              ; Set control pins to T4 close, DEN=0, ALE=0, DT/R=1, WR=1, RD=1  // WR/ and RD/ high to end cycle

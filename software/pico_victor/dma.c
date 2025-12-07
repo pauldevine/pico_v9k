@@ -144,7 +144,7 @@ dma_registers_t* dma_get_registers() {
 
 void debug_pio_state(PIO pio, uint sm) {
     // Check FIFO levels
-    printf("pio: %d sm: %d RX FIFO: %d/8 ", pio, sm, pio_sm_get_rx_fifo_level(pio, sm));
+    printf("pio: %d sm: %d RX FIFO: %d/4 ", pio, sm, pio_sm_get_rx_fifo_level(pio, sm));
 
     // Check if the state machine is enabled
     printf("SM stalled: %d  ", pio_sm_is_exec_stalled(pio, sm));
@@ -387,15 +387,19 @@ void dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_addres
         // print_segment_offset(addr);
 
         // Send two FIFO words per the PIO protocol
-        // Word 1: address shifted left with write 2-bit flag in LSB (3 = write)
-        uint32_t word1 = (addr << 2) | 3;
-        pio_sm_put_blocking(write_pio, write_sm, word1);
-        // Word 2: address MSB (A8-A19) in upper bits, data byte in lower bits
-        pio_sm_put_blocking(write_pio, write_sm, (addr & 0xFFF00) | byte);
+        // fifo_t1: T1 DMA Output value, 
+        // value = [2-bit flag read/write flag in MSB (3 = write)][20 bit address in LSB] 
+        uint32_t fifo_t1 = ((FIFO_DMA_WRITE & 0xFFu) << 20) | (addr & 0xFFFFFu);
+        pio_sm_put_blocking(write_pio, write_sm, fifo_t1);
+
+        // Fifo T2: address MSB (A19-A8) in upper bits, data byte in lower bits
+        // value = [12 bits address A19-A8][8 bits data byte]
+        uint32_t fifo_t2 = (addr & 0xFFF00u) | byte;
+        pio_sm_put_blocking(write_pio, write_sm, fifo_t2);
 
         // The control SM (PIO2) also needs the W/R flag in its TX FIFO
         // It uses "out x, 1" to extract the write/read bit and trigger the cycle
-        pio_sm_put_blocking(PIO_DMA_CONTROL, DMA_SM_CONTROL, word1);
+        pio_sm_put_blocking(PIO_DMA_CONTROL, DMA_SM_CONTROL, FIFO_DMA_WRITE);
 
     }
     printf("Finished DMA write to Victor RAM\n");
@@ -425,15 +429,18 @@ void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_addre
         uint32_t addr = (start_address + i) & 0xFFFFF;  // 20-bit address
 
         // Send two FIFO words per the PIO protocol
-        // Word 1: address shifted left with read 2-bit flag (0) in LSB
-        uint32_t word1 = (addr << 2) | 0;
-        pio_sm_put_blocking(read_pio, read_sm, word1);
+        // fifo_t1: T1 DMA Output value, 
+        // value = [2-bit flag read/write flag in MSB (0 = read)][20 bit address in LSB] 
+        uint32_t fifo_t1 = ((FIFO_DMA_READ & 0xFFu) << 20) | (addr & 0xFFFFFu);
+        pio_sm_put_blocking(read_pio, read_sm, fifo_t1);
+
         // Word 2: pindirs value to set BD0-BD7 as inputs, A8-A19 as outputs
-        pio_sm_put_blocking(read_pio, read_sm, 0xFFF00);
+        uint32_t fifo_t2 = (addr & 0xFFF00); // A8-A19 outputs, BD0-BD7 inputs
+        pio_sm_put_blocking(read_pio, read_sm, fifo_t2);
 
         // The control SM (PIO2) also needs the W/R flag in its TX FIFO
         // It uses "out x, 1" to extract the write/read bit and trigger the cycle
-        pio_sm_put_blocking(PIO_DMA_CONTROL, DMA_SM_CONTROL, word1);
+        pio_sm_put_blocking(PIO_DMA_CONTROL, DMA_SM_CONTROL, FIFO_DMA_READ);
 
         // Get the data byte that was read
         uint32_t char_data = pio_sm_get_blocking(read_pio, read_sm);

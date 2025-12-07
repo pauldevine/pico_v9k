@@ -216,7 +216,15 @@ void core1_main() {
     // Now run the deferred processing worker
     // This will process the queue of deferred register operations
     printf("Starting deferred processing worker on Core1...\n");
-    defer_worker_main();  // This never returns
+    //todo: investigate claude's feedback we don't need this: defer_worker_main();  // This never returns
+    
+    printf("Starting deferred processing worker on Core1...\n");
+    
+    // Core 1 must stay alive to service IRQs
+    // Just spin - IRQs will interrupt this and enqueue work
+    while (1) {
+        __wfi();  // Wait for interrupt - low power, wakes on IRQ
+    }
 }
 
 // Alternative: Process deferred events from main loop instead of Core1

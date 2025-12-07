@@ -54,7 +54,9 @@
 // FIFO operation types, defines for the 2-bit pio payload type flag
 #define FIFO_REG_READ    0x00
 #define FIFO_WRITE_VALUE 0x01
-#define FIFO_DMA_READ    0x02
+
+#define FIFO_DMA_READ    0x00
+#define FIFO_DMA_WRITE   0x03
 
 static inline uint32_t fifo_payload_type(uint32_t raw_value) {
     // PIO encoding varies by operation type, but payload-type identifier is always in bits 31-30
