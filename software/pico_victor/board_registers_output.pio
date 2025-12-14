@@ -17,13 +17,12 @@
 
 .wrap_target
 T1:   
-    mov pindirs, null             ; tri-state bus (BD0-BD7 for registers, BD0-A19 for DMA)
+   
     wait 0 GPIO ALE_PIN            ; wait for ALE to go low = T0 start & wait for address to stabilize
     wait 1 GPIO ALE_PIN [9]        ; wait for ALE to go high = T1 start & wait for address to stabilize
     in pins, ADDRESS_BUS_SIZE [15] ; shift 20 bits of address into ISR, wait for other SM to adjust EXTIO
-    nop [15]                       ; wait for other SM to adjust EXTIO
-    nop [15]                       ; wait for other SM to adjust EXTIO
-    nop [15]                       ; wait for other SM to adjust EXTIO           
+    nop [30]                       ; wait for other SM to adjust EXTIO
+    nop [30]                       ; wait for other SM to adjust EXTIO
     jmp pin T1                     ; if EXTIO_PIN is high, we're not doing a register read, jump to start of T1 again
     ; if EXTIO_PIN is low, 8088 is reeading our registers, fall through to T3_READ_REG
 
@@ -36,7 +35,7 @@ T3_READ_REG:                             ; 8088 read cycle // pico's writing
 
 T4_END:
     wait 1 GPIO EXTIO_PIN         ; wait for source SM board_registers to signal cycle complete
-    
+    mov pindirs, null             ; tri-state bus (BD0-BD7 for registers, BD0-A19 for DMA
 .wrap
 
 % c-sdk {

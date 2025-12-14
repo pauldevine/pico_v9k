@@ -45,7 +45,7 @@ DMA_T2_READ:
     wait 1 irq 3          ; wait for DMA read_write SM to signal read capture
     in pins, DATA_SIZE    ; RD case, read data from bus
     in x, 2               ; move the DMA read flag into ISR as MSBs, came from out at start of DMA_T2
-    push                  ; push data to FIFO for ARM to read push payload RD: [payload type=3 /2bits][data BD7-BD0 /8bits][address A19-A0 /20bits]
+    ;push                  ; push data to FIFO for ARM to read push payload RD: [payload type=3 /2bits][data BD7-BD0 /8bits][address A19-A0 /20bits]
     ; Fall through to T4_END
 
 T4_END:

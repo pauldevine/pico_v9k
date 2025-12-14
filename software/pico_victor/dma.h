@@ -51,6 +51,18 @@
 #define DMA_READ 1
 #define DMA_WRITE 0
 
+// Extract target ID from SASI selection byte (bit mask format)
+// In SASI selection, the data byte is a bit mask where each bit represents an ID:
+// - Bit 7 (0x80) = Initiator (typically ID 7)
+// - Bits 0-6 = Target IDs (one bit set for the selected target)
+// Example: 0x81 = initiator 7 + target 0, 0x82 = initiator 7 + target 1
+static inline uint8_t sasi_extract_target_id(uint8_t selection_byte) {
+    uint8_t target_mask = selection_byte & 0x7F;  // Remove initiator bit (bit 7)
+    if (target_mask == 0) return 0;
+    // Find lowest set bit (target ID) using builtin
+    return (uint8_t)__builtin_ctz(target_mask);
+}
+
 // FIFO operation types, defines for the 2-bit pio payload type flag
 #define FIFO_REG_READ    0x00
 #define FIFO_WRITE_VALUE 0x01

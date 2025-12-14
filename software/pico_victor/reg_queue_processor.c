@@ -212,9 +212,9 @@ void defer_process_write(dma_registers_t *dma, uint32_t raw_value) {
 
                     bool now_sel = (write_data & DMA_SELECT_BIT) != 0;
                     if (now_sel && !prev_sel) {
-                        // Selection phase starting
+                        // Selection phase starting (SASI selection byte is a bit mask)
                         dma->bus_ctrl |= SASI_SEL_BIT;
-                        dma->selected_target = (dma->command & 0x07);
+                        dma->selected_target = sasi_extract_target_id(dma->command);
                         dma->bus_ctrl |= SASI_BSY_BIT;
                     } else if (!now_sel && prev_sel) {
                         // Selection phase ending - enter command phase
@@ -236,8 +236,8 @@ void defer_process_write(dma_registers_t *dma, uint32_t raw_value) {
             cached_regs.values[REG_DATA] = write_data;
 
             if (dma->control & DMA_SELECT_BIT) {
-                // During selection, data contains target ID
-                dma->selected_target = (write_data & 0x07);
+                // During selection, data contains target ID (SASI selection byte is a bit mask)
+                dma->selected_target = sasi_extract_target_id(write_data);
                 dma->bus_ctrl &= ~SASI_SEL_BIT;
                 dma->control &= ~DMA_SELECT_BIT;
             }

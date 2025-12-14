@@ -11,6 +11,7 @@
 #include "dma.h"
 #include "sasi.h"
 #include "logging.h"
+#include "reg_queue_processor.h"
 #include "pico_fujinet/spi.h"
 
 #define SASI_SECTOR_SIZE 512
@@ -208,8 +209,8 @@ void dma_write_register(dma_registers_t *dma, dma_reg_offsets_t offset, uint8_t 
                 // Assert SEL
                 dma->bus_ctrl |= SASI_SEL_BIT;
                 printf("SASI SEL asserted\n");
-                // Latch target ID from last data bus value
-                dma->selected_target = (dma->command & 0x07);
+                // Latch target ID from last data bus value (SASI selection byte is a bit mask)
+                dma->selected_target = sasi_extract_target_id(dma->command);
                 // Target responds busy after selection (matches log: status 0x04)
                 dma->bus_ctrl |= SASI_BSY_BIT;
             } else if (!now_sel && prev_sel) {
@@ -220,15 +221,17 @@ void dma_write_register(dma_registers_t *dma, dma_reg_offsets_t offset, uint8_t 
                 dma->state.non_dma_req = 1;
                 dma_update_interrupts(dma, true);
             }
+            // Sync cached status after any bus_ctrl changes from SELECT edges
+            cached_status_sync_from_bus(dma);
             break;
         }
 
         case REG_DATA: // 0x10 - Data register
             dma->command = value; // Store last written data value
 
-            // If writing DATA while SELECT is asserted, treat byte as target ID
+            // If writing DATA while SELECT is asserted, treat byte as target ID (bit mask format)
             if (dma->control & DMA_SELECT_BIT) {
-                dma->selected_target = (value & 0x07);
+                dma->selected_target = sasi_extract_target_id(value);
                 // Workaround like MAME: ensure SEL isn't asserted during data bus change
                 dma->bus_ctrl &= ~SASI_SEL_BIT;
                 dma->control &= ~DMA_SELECT_BIT;
@@ -254,6 +257,8 @@ void dma_write_register(dma_registers_t *dma, dma_reg_offsets_t offset, uint8_t 
             if (dma->bus_ctrl & SASI_CTL_BIT) {
                 handle_sasi_command_byte(dma, value);
             }
+            // Sync cached status after any bus_ctrl changes from DATA writes
+            cached_status_sync_from_bus(dma);
             break;
 
         case REG_STATUS: // 0x20 - Status register
