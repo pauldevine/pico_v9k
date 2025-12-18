@@ -18,7 +18,6 @@
 #include "pico_victor/dma.h"
 
 static inline void iom_helper_program_init(PIO pio, uint sm, uint offset) {
-    uint io_m_offset = IO_M_PIN - 16; // PIO pins start at GPIO16 for this base
     printf("Configuring PIO for IOM helper SM\n");
     pio_sm_config c = iom_helper_program_get_default_config(offset);
 
@@ -31,14 +30,22 @@ static inline void iom_helper_program_init(PIO pio, uint sm, uint offset) {
     pio_gpio_init(pio, HLDA_PIN);
 
     // preload latch low, will use pindirs to toggle low as needed
-    pio_sm_set_pins_with_mask(pio, sm, 0u, 1u << io_m_offset); 
-    pio_sm_set_consecutive_pindirs(pio, sm, io_m_offset, 1, false);
-    
+    //need to calculate internal pin number for PIO from GPIO number as we're at base offset 16
+    uint io_m_internal = IO_M_PIN - pio_get_gpio_base(pio);  // 34 - 16 = 18
+    pio_sm_set_pins_with_mask(pio, sm, 0u, 1u << io_m_internal); 
+    pio_sm_set_consecutive_pindirs(pio, sm, IO_M_PIN, 1, false);
+
     sm_config_set_clkdiv(&c, 1.0f);  
 
     // Load our configuration, and jump to the start of the program
     int init_rc = pio_sm_init(pio, sm, offset, &c);
     printf("pio_sm_init rc=%d, SM%d execctrl after init=0x%08x\n", init_rc, sm, pio->sm[sm].execctrl);
+    if (init_rc == PICO_OK) {
+        pio_sm_set_enabled(pio, sm, true);
+    } else {
+        printf("WARNING: pio_sm_init failed; SM%d not enabled\n", sm);
+    }
+
 }
 
 %}

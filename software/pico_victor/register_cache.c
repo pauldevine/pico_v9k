@@ -140,9 +140,10 @@ void warm_caches(void) {
     pio_sm_clear_fifos(pio_output, dma_sm_output);
     pio_sm_set_enabled(pio_output, dma_sm_output, true);
 
-    pio_sm_set_enabled(pio_output, dma_sm_control, false);
-    pio_sm_clear_fifos(pio_output, dma_sm_control);
-    pio_sm_set_enabled(pio_output, dma_sm_control, true);
+    // Fix: Use dma_ctrl_pio (PIO2) for DMA control SM, not pio_output (PIO1)
+    pio_sm_set_enabled(dma_ctrl_pio, dma_sm_control, false);
+    pio_sm_clear_fifos(dma_ctrl_pio, dma_sm_control);
+    pio_sm_set_enabled(dma_ctrl_pio, dma_sm_control, true);
 
 
     // Re-enable IRQs (except DMA read IRQ which stays disabled until DMA is needed)

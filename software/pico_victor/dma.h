@@ -8,10 +8,12 @@
 
 #define PIO_OUTPUT      pio1
 #define REG_SM_OUTPUT   0
-#define DMA_SM_OUTPUT   1
 
+// DMA state machines MUST be on the same PIO for IRQ signaling to work
+// IRQ flags 0-3 are PIO-local and not visible across PIOs
 #define PIO_DMA_CONTROL pio2
 #define DMA_SM_CONTROL  0
+#define DMA_SM_OUTPUT   2   // Now on PIO2 with control SM for proper IRQ sync
 #define IOM_SM          1
 
 #define ADDR_START_PIN 1 // DMA address output

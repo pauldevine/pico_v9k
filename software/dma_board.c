@@ -195,10 +195,9 @@ int main() {
     pio_sm_put_blocking(dma_output_pio, dma_output_sm, DMA_READ_T2_PINDIRS);
 
     //configure the IO/M helper PIO state machine to manage the IO/M pin during register accesses
+    // Note: iom_pio uses PIO_DMA_CONTROL which already has GPIO base set to UPPER_PIN_BASE (line 163)
     PIO iom_pio = PIO_DMA_CONTROL;
     int iom_sm = IOM_SM;
-    outcome = pio_set_gpio_base(iom_pio, UPPER_PIN_BASE);
-    printf("iom pio_set_gpio_base outcome: %d PICO_PIO_USE_GPIO_BASE %d\n", outcome, PICO_PIO_USE_GPIO_BASE);
     pio_sm_claim (iom_pio, iom_sm);
     int iom_program_offset = pio_add_program(iom_pio, &iom_helper_program);
 
