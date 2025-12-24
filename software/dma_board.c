@@ -235,6 +235,7 @@ int main() {
     PIO_CTRL_NEXTPREV_CLKDIV_RESTART_BITS;
 
     printf("PIO0 CTRL: 0x%08x (cross-PIO IRQ enabled)\n", pio0->ctrl);
+    printf("HLDA_PIN hysterisis: %d\n", gpio_is_input_hysteresis_enabled(HLDA_PIN));
 
     printf("waiting for DMA register access...\n");
     uint64_t iterations = INT64_MAX;

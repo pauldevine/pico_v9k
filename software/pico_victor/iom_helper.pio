@@ -1,14 +1,15 @@
 .pio_version 1
 .define IO_M_PIN 34
-.define HLDA_PIN 29
+.define PIO_GPIO_BASE 16          ; Must match `pio_set_gpio_base(PIO_DMA_CONTROL, 16)` in `dma_board.c`
+.define HLDA_GPIO 13              ; GPIO29 - PIO_GPIO_BASE
 .program iom_helper
 .side_set 1 pindirs;
 
 .wrap_target
-;remember with wait and side-set the side-set happens before the wait condition is evaluated
-;so the side-set value is applied before waiting, the logic below is inverted from what you might expect
-    wait 1 GPIO HLDA_PIN side 0  ; wait for HLDA to go high, meaning we're doing DMA. Meanwhile keep IO/M/ input
-    wait 0 GPIO HLDA_PIN side 1  ; wait for HLDA to go low, meaning DMA is done. Meanwhile keep IO/M/ output
+	;remember with wait and side-set the side-set happens before the wait condition is evaluated
+	;so the side-set value is applied before waiting, the logic below is inverted from what you might expect
+	    wait 1 GPIO HLDA_GPIO side 0  ; wait for HLDA to go high, meaning we're doing DMA. Meanwhile keep IO/M/ input
+	    wait 0 GPIO HLDA_GPIO side 1  ; wait for HLDA to go low, meaning DMA is done. Meanwhile keep IO/M/ output
 .wrap
 
 % c-sdk {

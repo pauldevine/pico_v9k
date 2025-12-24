@@ -4,10 +4,11 @@
 ; SPDX-License-Identifier: BSD-3-Clause
 ;
 .pio_version 1 
-.define CLOCK_15B_PIN 31 
-.define CLOCK_5_PIN  30
-.define READY_PIN 28
-.define HLDA_PIN 29
+.define PIO_GPIO_BASE 16          ; Must match `pio_set_gpio_base(PIO_DMA_CONTROL, 16)` in `dma_board.c`
+.define CLOCK_15B_GPIO 15         ; GPIO31 - PIO_GPIO_BASE
+.define CLOCK_5_GPIO  14          ; GPIO30 - PIO_GPIO_BASE
+.define READY_GPIO 12             ; GPIO28 - PIO_GPIO_BASE
+.define HLDA_GPIO 13              ; GPIO29 - PIO_GPIO_BASE
 
 .define ADDRESS_BUS_SIZE 20
 .define ADDR_CONTROL_SIZE 27
@@ -15,13 +16,14 @@
 .define DATA_SIZE 8
  
 .program dma_rw_control
-.side_set 1 opt pindirs; 
+.side_set 2 opt pindirs; 
 
 ; side-set GPIO Pin Mapping (LSB first):
 ; Bit 0 -> HOLD/  (GPIO 26)
+; Bit 1 -> EXTIO/ (GPIO 27)
 
-.define HOLD_RELEASE 0b0
-.define HOLD_ASSERT  0b1
+.define HOLD_RELEASE 0b10  ; opt=1, value=0 → apply, pindirs input (release)
+.define HOLD_ASSERT  0b11  ; opt=1, value=1 → apply, pindirs output (assert)
 
 ; Set pins
 ; Bit 0 -> RD/ (GPIO 21)
@@ -36,37 +38,38 @@ T0:                                ; Address Setup Phase (Assert HOLD/, wait for
     pull block                     ; Block if FIFO empty (HOLD stays released!)
     out x, 1                       ; Get W/R bit from LSB (1=Write, 0=Read)
     set pins, 0b11111 side HOLD_ASSERT ; Assert HOLD/
-    wait 1 gpio HLDA_PIN           ; wait for HLDA to go high
+    wait 1 gpio HLDA_GPIO [2]          ; wait for HLDA to go high
+    wait 1 gpio HLDA_GPIO           ; wait for HLDA to go high
 T1:
     set pindirs, 0b11111           ; Set control pins to output DEN=1, ALE=1, DT/R=1, WR/=1, RD=1 //ALE high to latch address
-    wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
-    wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go low
+    wait 1 GPIO CLOCK_5_GPIO       ; Wait for CLK5 to go high
+    wait 0 GPIO CLOCK_5_GPIO       ; Wait for CLK5 to go low
 T2:
     set pins, 0b00111              ; Write: set control pins DEN=0, ALE=0, DT/R=1, WR=1, RD=1 // Pull ALE/DEN low to prepare for read or write
-    wait 1 GPIO CLOCK_15B_PIN      ; Wait for CLK15B to go high
+    wait 1 GPIO CLOCK_15B_GPIO     ; Wait for CLK15B to go high
     irq prev nowait 2              ; tell dma_rw_output SM to move to T2 data phase
     jmp !x T2_READ                 ; If x=0 (read), jump to T2_READ
     ; Fall through for write (x=1)
 T2_WRITE_INLINE:
     set pins, 0b00101              ; Write: set control pins DEN=0, ALE=0, DT/R=1, WR=0, RD=1 // WR/ low to write data    
 T2_CONTINUE:
-    wait 1 GPIO READY_PIN          ; Wait for READY to go high
+    wait 1 GPIO READY_GPIO         ; Wait for READY to go high
 T3:
-    wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
-    wait 0 GPIO CLOCK_5_PIN side HOLD_RELEASE ; Wait for CLK5 to go low, release HOLD/
+    wait 1 GPIO CLOCK_5_GPIO       ; Wait for CLK5 to go high
+    wait 0 GPIO CLOCK_5_GPIO side HOLD_RELEASE ; Wait for CLK5 to go low, release HOLD/
     jmp x-- T4                     ; If x=1 (write), jump to T4
 T3_READ_INLINE:
     ; Fall through for DMA read (x=0) - signal dma_rw_output to capture data
     irq prev nowait 3              ; Signal dma_rw_output to read data from BD0-BD7
 T4:
-    wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
-    wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go low
-    wait 1 GPIO CLOCK_15B_PIN      ; Wait for CLK15B to go high
+    wait 1 GPIO CLOCK_5_GPIO       ; Wait for CLK5 to go high
+    wait 0 GPIO CLOCK_5_GPIO       ; Wait for CLK5 to go low
+    wait 1 GPIO CLOCK_15B_GPIO     ; Wait for CLK15B to go high
     set pins, 0b00111              ; Set control pins to T4 close, DEN=0, ALE=0, DT/R=1, WR=1, RD=1  // WR/ and RD/ high to end cycle
-    wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
+    wait 1 GPIO CLOCK_5_GPIO       ; Wait for CLK5 to go high
     
     set pins, 0b10111              ; Set control pins to T4 close, DEN=1, ALE=0, DT/R=1, WR=1, RD=1  // DEN high to end cycle
-    wait 0 gpio HLDA_PIN           ; wait for HLDA to go low, keep HOLD released
+    wait 0 gpio HLDA_GPIO          ; wait for HLDA to go low, keep HOLD released
     set pindirs, 0b00000           ; Set control pins' direction to input
     irq prev nowait 4              ; Signal dma_rw_output to tri-state all address outputs (Release Bus)
 .wrap
@@ -113,16 +116,16 @@ T2_READ:
  *   - If a pin isn't routed to PIO, wait will hang forever
  *   - Using pio_gpio_init() on input-only pins causes them to glitch when pindirs changes
  */
-static inline void dma_rw_control_program_init(PIO pio, uint sm, uint offset, uint pin) {
+	static inline void dma_rw_control_program_init(PIO pio, uint sm, uint offset, uint pin) {
     printf("Configuring PIO for DMA READ/WRITE operations (single SM)\n");
     printf("starting to configure dma_rw_control_program_init\n");
     pio_sm_config c = dma_rw_control_program_get_default_config(offset);
 
     printf("setting set pin mapping to %d, count 5\n", RD_PIN);
     sm_config_set_set_pins(&c, RD_PIN, 5);
-    printf("setting sideset pin mapping to %d, count 2\n", HOLD_PIN);
-    sm_config_set_sideset_pins(&c, HOLD_PIN);
-    sm_config_set_sideset(&c, 2, true, true);  // 2 bits total: 1 optional bit + 1 pin bits for ".side_set 1 opt pindirs"
+	    printf("setting sideset pin mapping to %d, count 2 (+opt)\n", HOLD_PIN);
+	    sm_config_set_sideset_pins(&c, HOLD_PIN);
+	    sm_config_set_sideset(&c, 3, true, true);  // 3 bits stolen: 2 side-set pins (HOLD, EXTIO) + 1 optional-enable bit
     // Don't set pindirs here - it will be overridden by line 157
 
     // Shift Register configuration settings, dma_rw_output does all the data handling

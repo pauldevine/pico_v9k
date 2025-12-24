@@ -68,7 +68,7 @@ T3_WRITE:                                ; 8088 write cycle // pico's reading
 #include "pico_victor/dma.h"
 #define ADDRESS_RD_WR_SIZE 22 
 #define REG_PIN_FIRST BD0_PIN
-#define REG_PIN_LAST CLOCK_15B_PIN
+#define REG_PIN_LAST DEN_PIN
 
 static inline void board_registers_program_init(PIO pio, uint sm, uint offset) {
     pio_debug_state();
