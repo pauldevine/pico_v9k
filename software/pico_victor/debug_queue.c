@@ -69,7 +69,7 @@ void debug_queue_process(void) {
     while (count < max_per_call && debug_queue_pop(&value)) {
         uint32_t payload_type = fifo_payload_type(value);
 
-        if (payload_type == FIFO_WRITE_VALUE) {
+        if (payload_type == FIFO_REG_WRITE) {
             uint32_t address = dma_fifo_write_address(value);
             uint8_t data = dma_fifo_write_data(value);
 

@@ -1,0 +1,157 @@
+;
+; Copyright (c) 2020 Raspberry Pi (Trading) Ltd.
+;
+; SPDX-License-Identifier: BSD-3-Clause
+;
+.pio_version 1 
+.define CLOCK_15B_PIN 31 
+.define CLOCK_5_PIN  30
+.define READY_PIN 28
+.define HLDA_PIN 29
+
+.define ADDRESS_BUS_SIZE 20
+.define ADDR_CONTROL_SIZE 27
+.define CONTROL_PINCOUNT 12
+.define DATA_SIZE 8
+
+.program dma_read_write
+
+; Set pins
+; Bit 0 -> RD/ (GPIO 21)
+; Bit 1 -> WR/ (GPIO 22)
+; Bit 2 -> DT/R/ (GPIO 23)
+; Bit 3 -> ALE  (GPIO 24)
+; Bit 4 -> DEN/ (GPIO 25)
+
+; TX FIFO data format:
+; First FIFO entry: Address + R/W bit
+; Second FIFO entry: Data byte + MSB of address (for writes) or pindirs value 0xFFF00 (for reads)
+; Bit 0:     W/R flag (1=Write, 0=Read)
+; Bits 1-20: A0-A19 Address (shifted left by 1)
+; Bits 21-28: Data byte for writes (pindirs value 0xFFF00 for reads)
+; Bits 29-31: Unused
+;
+; Example FIFO word format:
+; Write: 
+; First FIFO: 0x[DATA][ADDR<<1 | 1]  where LSB=1 for write
+; Second FIFO: 0x[ADDR>>8][DATA] where upper byte is A8-A19, lower byte is data byte
+; Read:  
+; First FIFO: 0x[0x00][ADDR<<1 | 0]  where LSB=0 for read
+; Second FIFO: 0x[0xFFF][0x00] where upper byte is 0xFFF for pindirs out for address, lower byte is 0x00 for pindirs in for data
+
+.wrap_target
+T0:                                ; Prepare for DMA read/write cycle
+    pull block                     ; Block if FIFO empty 
+    out x, 1                       ; Get W/R bit from LSB (1=Write, 0=Read)
+    out pins, ADDRESS_BUS_SIZE     ; Output A0-A19 on bus, we're driving A0-A19 for ALE in T1
+    pull block                     ; Pull next word from FIFO (data byte + MSB address or 0x00 for read)
+    wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
+    wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go low
+T1:
+    set pins, 0b11111              ; Set control pins to output DEN=1, ALE=1, DT/R=1, WR/=1, RD=1 //ALE high to latch address
+    wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
+    wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go low
+T2:
+    set pins, 0b00111              ; Write: set control pins DEN=0, ALE=0, DT/R=1, WR=1, RD=1 // Pull ALE/DEN low to prepare for read or write
+    wait 1 GPIO CLOCK_15B_PIN      ; Wait for CLK15B to go high
+    jmp !x T2_READ                 ; If x=0 (read), jump to T2_READ
+    ; Fall through for write (x=1)
+
+T2_WRITE_INLINE:                   ; DMA Write, pico writing to bus
+    out pins, ADDRESS_BUS_SIZE     ; Output data on BD0-BD7, A8-A19 continues to hold MSB of address
+    set pins, 0b00101              ; Write: set control pins DEN=0, ALE=0, DT/R=1, WR=0, RD=1 // WR/ low to write data    
+
+T2_CONTINUE:
+    wait 1 GPIO READY_PIN          ; Wait for READY to go high
+
+T3:
+    wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
+    wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go low
+    jmp !x T3_READ_DATA            ; If x=0 (read), jump to read data
+    jmp T4                         ; x=1 (write), skip to T4
+
+T3_READ_DATA:                      ; DMA Read, pico reading from bus
+    in pins, DATA_SIZE             ; Read data from bus
+
+T4:
+    wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go low
+    wait 1 GPIO CLOCK_15B_PIN      ; Wait for CLK15B to go high
+    set pins, 0b00111              ; Set control pins to T4 close, DEN=0, ALE=0, DT/R=1, WR=1, RD=1  // WR/ and RD/ high to end cycle
+    wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high  
+    set pins, 0b10111              ; Set control pins to T4 close, DEN=1, ALE=0, DT/R=1, WR=1, RD=1  // DEN high to end cycle
+.wrap
+
+T2_READ:
+    set pins, 0b00010              ; Read: set control pins for RD control DEN=0, ALE=0, DT/R=0, WR=1, RD=0 // RD/ low to read data
+    out pindirs, ADDRESS_BUS_SIZE  ; set BD0-BD7 pins to input for RD cycle
+    jmp T2_CONTINUE                
+
+% c-sdk {
+#include <stdio.h>
+#include <string.h>
+#include <stdio.h>
+#include "hardware/pio.h"
+#include "hardware/gpio.h"
+#include "hardware/clocks.h"
+#include "pico_victor/dma.h"
+#define OUTPUT_PIN_FIRST BD0_PIN
+#define OUTPUT_PIN_LAST  IO_M_PIN
+
+
+static inline void dma_read_write_program_init(PIO pio, uint sm, uint offset, uint pin) {
+    printf("Configuring PIO for DMA READ/WRITE operations (single SM)\n");
+    printf("starting to configure dma_read_write_program_init\n");
+    pio_sm_config c = dma_read_write_program_get_default_config(offset);
+
+    printf("setting out pin mapping to %d, count %d\n", pin, ADDRESS_BUS_SIZE);
+    sm_config_set_out_pins(&c, pin, ADDRESS_BUS_SIZE);
+    printf("setting set pin mapping to %d, count 5\n", RD_PIN);
+    sm_config_set_set_pins(&c, RD_PIN, 5);
+
+    // Shift Register configuration settings
+    // Configure for both read and write operations
+    printf("Configuring in/out pins for read/write mode\n");
+    sm_config_set_in_pins(&c, BD0_PIN);
+    sm_config_set_in_pin_count(&c, DATA_SIZE);
+    
+    sm_config_set_out_shift(&c, 
+           true, // Left shift
+           false, // no autopull
+           29 );    // total bits [1 W/R flag] + [20 address] + [8 data]  
+    
+    sm_config_set_in_shift(&c, false, true, DATA_SIZE);
+    
+    pio_sm_clear_fifos(pio, sm);
+    pio_sm_set_clkdiv(pio, sm, 1.0f);
+
+    // Init output pins for PIO first
+    for (int i = pin; i <= CLOCK_15B_PIN; i++) {
+        gpio_set_drive_strength(i, GPIO_DRIVE_STRENGTH_12MA);
+        gpio_disable_pulls(i);
+        pio_gpio_init(pio, i);
+        gpio_pull_down(i);
+        pio_sm_set_pins_with_mask(pio, sm, 0u, 1u << i); // preload latch low
+        printf("dma gpio_init %d  ", i);
+        printf("GPIO%d_CTRL = 0x%08x\n", i, io_bank0_hw->io[i].ctrl);
+    }
+
+    // Load our configuration, and jump to the start of the program
+    pio_sm_init(pio, sm, offset, &c);
+
+
+    // Debug: Check the actual SM configuration
+    uint32_t pinctrl = pio->sm[sm].pinctrl;
+    uint32_t execctrl = pio->sm[sm].execctrl;
+    printf("SM%d PINCTRL = 0x%08x\n", sm, pinctrl);
+    printf("  SET_COUNT = %d\n", (pinctrl >> 26) & 0x7);
+    printf("  OUT_COUNT = %d\n", (pinctrl >> 20) & 0x3F);
+    printf("  IN_BASE = %d\n", (pinctrl >> 15) & 0x1F);
+    printf("  SET_BASE = %d\n", (pinctrl >> 5) & 0x1F);
+    printf("  OUT_BASE = %d\n", pinctrl & 0x1F);
+    printf("SM%d EXECCTRL = 0x%08x\n", sm, execctrl);
+
+    // Don't enable the state machine here - it will be enabled when needed
+    pio_sm_set_enabled(pio, sm, false);
+    printf("finished configuring dma_controller_program_init\n");
+}
+%}

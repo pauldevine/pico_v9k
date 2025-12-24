@@ -31,22 +31,22 @@ typedef struct {
 // Test cases covering all register types
 static test_case_t test_cases[] = {
     // Control register tests
-    {0xEF300, 0x15, FIFO_WRITE_VALUE,    "Write control register"},
+    {0xEF300, 0x15, FIFO_REG_WRITE,    "Write control register"},
     {0xEF300, 0x00, FIFO_PREFETCH_ADDRESS, "Read control register"},
     
     // Data register tests  
-    {0xEF310, 0x55, FIFO_WRITE_VALUE,    "Write data register"},
+    {0xEF310, 0x55, FIFO_REG_WRITE,    "Write data register"},
     {0xEF310, 0x00, FIFO_PREFETCH_ADDRESS, "Read data register"},
     
     // Status register tests
     {0xEF320, 0x00, FIFO_PREFETCH_ADDRESS, "Read status register"},
     
     // Address register tests (most common)
-    {0xEF380, 0x00, FIFO_WRITE_VALUE,    "Write DMA addr low"},
+    {0xEF380, 0x00, FIFO_REG_WRITE,    "Write DMA addr low"},
     {0xEF380, 0x00, FIFO_PREFETCH_ADDRESS, "Read DMA addr low"},
-    {0xEF3A0, 0x50, FIFO_WRITE_VALUE,    "Write DMA addr mid"},
+    {0xEF3A0, 0x50, FIFO_REG_WRITE,    "Write DMA addr mid"},
     {0xEF3A0, 0x00, FIFO_PREFETCH_ADDRESS, "Read DMA addr mid"},
-    {0xEF3C0, 0x0F, FIFO_WRITE_VALUE,    "Write DMA addr high"},
+    {0xEF3C0, 0x0F, FIFO_REG_WRITE,    "Write DMA addr high"},
     {0xEF3C0, 0x00, FIFO_PREFETCH_ADDRESS, "Read DMA addr high"},
 };
 
@@ -82,7 +82,7 @@ static void benchmark_handler(irq_handler_t handler, const char *name, test_case
         case FIFO_READ_COMMIT:
             simulated_fifo_value = board_fifo_encode_read(test->address);
             break;
-        case FIFO_WRITE_VALUE:
+        case FIFO_REG_WRITE:
             simulated_fifo_value = dma_fifo_encode_write(test->address, test->data);
             break;
         default:

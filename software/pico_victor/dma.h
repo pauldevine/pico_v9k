@@ -66,11 +66,12 @@ static inline uint8_t sasi_extract_target_id(uint8_t selection_byte) {
 }
 
 // FIFO operation types, defines for the 2-bit pio payload type flag
-#define FIFO_REG_READ    0x00
-#define FIFO_WRITE_VALUE 0x01
+#define FIFO_REG_PREFETCH    0x00
+#define FIFO_REG_READ_COMMIT 0x01
+#define FIFO_REG_WRITE       0x02
 
-#define FIFO_DMA_READ    0x00
-#define FIFO_DMA_WRITE   0x03
+#define FIFO_DMA_READ        0x00
+#define FIFO_DMA_WRITE       0x01
 
 static inline uint32_t fifo_payload_type(uint32_t raw_value) {
     // PIO encoding varies by operation type, but payload-type identifier is always in bits 31-30
@@ -103,7 +104,7 @@ static inline uint32_t board_fifo_encode_read(uint32_t address) {
 static inline uint32_t dma_fifo_encode_write(uint32_t address, uint8_t data) {
     return ((address & 0xFFFFFu) << 2) |       // Address in bits 21-2
            (((uint32_t)data & 0xFFu) << 22) |  // Data in bits 29-22
-           ((uint32_t)FIFO_WRITE_VALUE << 30); // Type in bits 31-30
+           ((uint32_t)FIFO_REG_WRITE << 30); // Type in bits 31-30
 }
 
 
