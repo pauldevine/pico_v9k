@@ -6,15 +6,8 @@
 #define PIO_REGISTERS   pio0
 #define REG_SM_CONTROL  0   
 
-#define PIO_OUTPUT      pio1
-#define REG_SM_OUTPUT   0
-
-// DMA state machines MUST be on the same PIO for IRQ signaling to work
-// IRQ flags 0-3 are PIO-local and not visible across PIOs
-#define PIO_DMA_CONTROL pio2
+#define PIO_DMA_MASTER pio2
 #define DMA_SM_CONTROL  0
-#define DMA_SM_OUTPUT   2   // Now on PIO2 with control SM for proper IRQ sync
-#define IOM_SM          1
 
 #define ADDR_START_PIN 1 // DMA address output
 #define LOWER_PIN_BASE 0
@@ -26,7 +19,12 @@
 #define ADDRESS_DATA_CONBIT_SIZE 29  // 20-bit address, 8-bit data, 1-bit control
 #define PIO_FULL_SIZE 32
 
+#define DMA_BATCH_SIZE 128  // Number of bytes per DMA batch transfer
+#define DMA_SHARE_WAIT_US 40   // Wait time after releasing bus before re-acquiring (in microseconds)
+#define DMA_TIMEOUT_US 2000  // Timeout for DMA master acquisition (in microseconds)
+
 #define BD0_PIN 1
+#define A19_PIN 20
 #define RD_PIN 21
 #define WR_PIN 22
 #define DTR_PIN 23       
@@ -98,7 +96,7 @@ static inline uint32_t dma_mask_offset(uint32_t offset) {
 }
 
 static inline uint32_t board_fifo_encode_read(uint32_t address) {
-    return ((address & 0xFFFFFu) << 10) | ((uint32_t)FIFO_REG_READ << 30);
+    return ((address & 0xFFFFFu) << 10) | ((uint32_t) FIFO_REG_READ_COMMIT << 30);
 }
 
 static inline uint32_t dma_fifo_encode_write(uint32_t address, uint8_t data) {

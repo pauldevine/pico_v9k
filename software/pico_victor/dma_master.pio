@@ -14,7 +14,7 @@
 .define CONTROL_PINCOUNT 12
 .define DATA_SIZE 8
 
-.program dma_read_write
+.program dma_master
 
 ; Set pins
 ; Bit 0 -> RD/ (GPIO 21)
@@ -44,7 +44,7 @@ T0:                                ; Prepare for DMA read/write cycle
     pull block                     ; Block if FIFO empty 
     out x, 1                       ; Get W/R bit from LSB (1=Write, 0=Read)
     out pins, ADDRESS_BUS_SIZE     ; Output A0-A19 on bus, we're driving A0-A19 for ALE in T1
-    pull block                     ; Pull next word from FIFO (data byte + MSB address or 0x00 for read)
+    pull block                     ; Pull next word from FIFO WR: data byte + MSB address or RD: pindirs value 0xFFF00
     wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
     wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go low
 T1:
@@ -72,6 +72,7 @@ T3:
 
 T3_READ_DATA:                      ; DMA Read, pico reading from bus
     in pins, DATA_SIZE             ; Read data from bus
+    push block                     ; Push data to FIFO for ARM to read
 
 T4:
     wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go low
@@ -83,7 +84,7 @@ T4:
 
 T2_READ:
     set pins, 0b00010              ; Read: set control pins for RD control DEN=0, ALE=0, DT/R=0, WR=1, RD=0 // RD/ low to read data
-    out pindirs, ADDRESS_BUS_SIZE  ; set BD0-BD7 pins to input for RD cycle
+    out pindirs, ADDRESS_BUS_SIZE  ; set BD0-BD7 pins to input for RD cycle, A8-A19 remain output 0xFFF00
     jmp T2_CONTINUE                
 
 % c-sdk {
@@ -98,10 +99,10 @@ T2_READ:
 #define OUTPUT_PIN_LAST  IO_M_PIN
 
 
-static inline void dma_read_write_program_init(PIO pio, uint sm, uint offset, uint pin) {
+static inline void dma_master_program_init(PIO pio, uint sm, uint offset, uint pin) {
     printf("Configuring PIO for DMA READ/WRITE operations (single SM)\n");
-    printf("starting to configure dma_read_write_program_init\n");
-    pio_sm_config c = dma_read_write_program_get_default_config(offset);
+    printf("starting to configure dma_master_program_init\n");
+    pio_sm_config c = dma_master_program_get_default_config(offset);
 
     printf("setting out pin mapping to %d, count %d\n", pin, ADDRESS_BUS_SIZE);
     sm_config_set_out_pins(&c, pin, ADDRESS_BUS_SIZE);

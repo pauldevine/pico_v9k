@@ -368,71 +368,207 @@ uint8_t dma_read_register(dma_registers_t *dma, dma_reg_offsets_t offset) {
     return data;
 }
 
+void ontime_pin_setup() {
+    //setup pin basics like enable pulls and set slew rate
+    for (int pin = BD0_PIN; pin <= PHASE_2_PIN; ++pin) {
+        gpio_set_drive_strength(pin, GPIO_DRIVE_STRENGTH_2MA);
+        gpio_set_slew_rate(pin, GPIO_SLEW_RATE_SLOW);
+        gpio_pull_down(pin); // enable pull-downs
+        gpio_put(pin, 0);  // by default drive low
+        gpio_set_dir(pin, GPIO_IN); // set as output to assert HOLD/
+        
+        printf("ontime gpio_setup %d  ", pin);
+    }
+
+    // for the bus control pins, to avoid floating pins during DMA handoff to 8088
+    // we need to set appropriate pull-ups or pull-downs
+    // we defaulted everything to pull low above, so just need to fix the active low pins
+    gpio_pull_up(RD_PIN);   // RD is active low, so pull-up
+    gpio_pull_up(WR_PIN);   // WR is active low, so pull-up
+    gpio_pull_up(DTR_PIN);  // DTR is active low, so pull-up 
+    gpio_pull_up(DEN_PIN);  // DEN is active low, so pull-up
+    gpio_pull_up(SSO_PIN);  // SSO is active low, so pull-up
+    gpio_pull_up(DLATCH_PIN); // DLATCH is active low, so pull-up
+}
+
+static inline void setup_pin_dma_control(uint32_t pin, bool is_output, bool preload_level) {
+    gpio_set_function(pin, GPIO_FUNC_PIO0 + pio_get_index(PIO_DMA_MASTER));
+    pio_gpio_init(PIO_DMA_MASTER, pin);
+    pio_sm_set_pins_with_mask(PIO_DMA_MASTER, DMA_SM_CONTROL, (preload_level ? 1u : 0u) << pin, 1u << pin); // preload level
+    pio_sm_set_pindirs_with_mask(PIO_DMA_MASTER, DMA_SM_CONTROL, (is_output ? 1u : 0u) << pin, 1u << pin); // direction
+}
+
+static inline void setup_pins_dma_control() {
+    
+    //setup data pins BD0 to A19 to be owned by PIO as inputs
+    for (int pin = BD0_PIN; pin <= A19_PIN; ++pin) {
+        uint function = GPIO_FUNC_PIO0 + pio_get_index(PIO_DMA_MASTER);
+        gpio_set_function(pin, function);
+        pio_gpio_init(PIO_DMA_MASTER, pin);
+        pio_sm_set_pins_with_mask(PIO_DMA_MASTER, DMA_SM_CONTROL, 0u, 1u << pin); // preload latch low
+        pio_sm_set_pindirs_with_mask(PIO_DMA_MASTER, DMA_SM_CONTROL, 0u, 1u << pin); // input
+
+        printf("dma gpio_init %d  ", pin);
+        printf("GPIO%d_CTRL = 0x%08x\n", pin, io_bank0_hw->io[pin].ctrl);
+    }
+
+    // Assign control pins to PIO, set direction and preload levels
+    uint32_t high = 1;
+    uint32_t low = 0;
+    setup_pin_dma_control(RD_PIN, GPIO_OUT, high);   // RD/ output, preload high
+    setup_pin_dma_control(WR_PIN, GPIO_OUT, high);   // WR/ output, preload high
+    setup_pin_dma_control(DTR_PIN, GPIO_OUT, high);  // DTR/ output, preload high
+
+    setup_pin_dma_control(ALE_PIN, GPIO_OUT, low);   // ALE/ output, preload low
+    setup_pin_dma_control(DEN_PIN, GPIO_OUT, low);   // DEN/ output, preload low
+    
+    setup_pin_dma_control(READY_PIN, GPIO_IN, low); // READY/ input, preload low
+    setup_pin_dma_control(CLOCK_5_PIN, GPIO_IN, low); // CLOCK_5 input, preload low
+    setup_pin_dma_control(CLOCK_15B_PIN, GPIO_IN, low); // CLOCK_15B input, preload low
+
+    gpio_init(SSO_PIN);
+    gpio_put(SSO_PIN, low); 
+    gpio_set_dir(SSO_PIN, GPIO_OUT);
+
+    gpio_init(IO_M_PIN);
+    gpio_put(IO_M_PIN, low); 
+    gpio_set_dir(IO_M_PIN, GPIO_OUT);
+    
+    printf("dma control setup pins RD:%d WR:%d DTR:%d\n", RD_PIN, WR_PIN, DTR_PIN);
+}   
+
+static inline void setup_pins_register_inputs() {
+    //setup data pins BD0 to A19 to be owned by board register PIO as inputs
+    for (int pin = BD0_PIN; pin <= CLOCK_15B_PIN; ++pin) {
+        uint function = GPIO_FUNC_PIO0 + pio_get_index(PIO_REGISTERS);
+        gpio_set_function(pin, function);
+
+        printf("PIO_REGISTERS gpio_init %d  ", pin);
+        printf("GPIO%d_CTRL = 0x%08x\n", pin, io_bank0_hw->io[pin].ctrl);
+    }
+} 
+
+
+static inline bool obtain_dma_master() {
+    //wait for low then high so we can sync to CLOCK_5 edge to help meta-stability of board
+    while (gpio_get(CLOCK_5_PIN)) { tight_loop_contents(); } // wait low
+    while (!gpio_get(CLOCK_5_PIN)) { tight_loop_contents(); } // then wait high
+
+    gpio_init(HOLD_PIN);
+    gpio_put(HOLD_PIN, 0);  // sink the line, HOLD/ is open drain on Victor
+    gpio_set_dir(HOLD_PIN, GPIO_OUT); // set as output to assert HOLD/
+    gpio_init(HLDA_PIN);
+    gpio_set_dir(HLDA_PIN, GPIO_IN);
+
+    absolute_time_t deadline = make_timeout_time_us(DMA_TIMEOUT_US);
+    while (!gpio_get(HLDA_PIN)) {
+        if (DMA_TIMEOUT_US && absolute_time_diff_us(get_absolute_time(), deadline) <= 0) {
+            return false;
+        }
+        tight_loop_contents();
+    }
+
+    return true;
+}
+
+static inline bool start_dma_control() {
+    if (!obtain_dma_master()) {
+        printf("Failed to obtain DMA master within timeout\n");
+        return false;
+    }
+    //setup all the pins to be controlled by PIO DMA SM
+    setup_pins_dma_control();
+    pio_sm_clear_fifos(PIO_DMA_MASTER, true);
+    pio_sm_set_enabled(PIO_DMA_MASTER, DMA_SM_CONTROL, true);
+    return true;
+}
+
+
+static inline void release_dma_master() {
+    //turn off DMA PIO and give back control to register PIO
+    pio_sm_set_enabled(PIO_DMA_MASTER, DMA_SM_CONTROL, false);
+    setup_pins_register_inputs();
+    pio_sm_set_enabled(PIO_REGISTERS, REG_SM_CONTROL, true);
+
+    //wait for low then high so we can sync to CLOCK_5 edge to help meta-stability of board
+    while (gpio_get(CLOCK_5_PIN)) { tight_loop_contents(); } // wait low
+    while (!gpio_get(CLOCK_5_PIN)) { tight_loop_contents(); } // then wait high
+    
+    gpio_set_dir(HOLD_PIN, GPIO_IN); // release HOLD/ is open drain on Victor
+}
+
+
 #ifndef UNIT_TEST
 // Write function using two-word FIFO protocol:
 //  Word 1: bits 0=W/R flag (1=write), bits 1-20=address A0-A19
 //  Word 2: bits 0-7=data byte, bits 8-19=address A8-A19 (MSB)
 void dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_address) {
-    PIO write_pio = PIO_OUTPUT;
-    int write_sm = DMA_SM_OUTPUT;
-
     printf("Starting DMA write to Victor RAM\n");
     printf("Length: %zu\n", length);
     print_segment_offset(start_address);
 
-    printf("write_pio: %p, write_sm: %d\n", write_pio, write_sm);
-    debug_pio_state(write_pio, write_sm);
+    printf("write_pio: %p, write_sm: %d\n", PIO_DMA_MASTER, DMA_SM_CONTROL);
+    debug_pio_state(PIO_DMA_MASTER, DMA_SM_CONTROL);
 
-    for (size_t i = 0; i < length; i++) {
-        uint32_t addr = (start_address + i) & 0xFFFFF;  // 20-bit address
-        uint8_t byte = data[i];                         // Data byte to write
+    uint32_t full_batch_count = length / DMA_BATCH_SIZE;
+    uint32_t remainder_bytes = length % DMA_BATCH_SIZE;
 
-        // Debug logging disabled for performance during DMA
-        // printf("Writing %02X to Victor RAM at address %08X ", byte, addr);
-        // print_segment_offset(addr);
+    if (remainder_bytes > 0) {
+        full_batch_count += 1;
+    }
 
-        // Send two FIFO words per the PIO protocol
-        
-        
-        // Wait for FIFOs space, yielding to allow IRQs to process
-        // we send 2 values to write SM and 1 to control SM
-        while (pio_sm_get_tx_fifo_level(write_pio, write_sm) > 2) {
-            tight_loop_contents();
+    for (uint32_t batch = 0; batch < full_batch_count; batch++) {
+        if (!start_dma_control()) {
+            printf("Failed to obtain DMA master\n");
+            return;
+        }
+        printf("Starting DMA transfer batch %d\n", batch);
+
+        for (size_t i = 0; i < 128; i++) {
+            uint32_t addr = (start_address + (batch * 128) + i) & 0xFFFFF;  // 20-bit address
+            uint8_t byte = data[(batch * 128) + i];                         // Data byte to write
+
+            // printf("Writing %02X to Victor RAM at address %08X ", byte, addr);
+            // print_segment_offset(addr);
+
+            // Send two FIFO payloads per memory address =  the PIO protocol
+            uint32_t fifo_t1 = ((addr & 0xFFFFFu) << 1) | 1;                // T1: [20 bit address][1-bit write=1 flag in LSB] 
+            pio_sm_put_blocking(PIO_DMA_MASTER, DMA_SM_CONTROL, fifo_t1);
+
+            uint32_t fifo_t2 = (addr & 0xFFF00u) | byte;                    // T2: [12 bits address A19-A8][8 bits data byte]
+            pio_sm_put_blocking(PIO_DMA_MASTER, DMA_SM_CONTROL, fifo_t2);
+
+            if ((batch * 128) + i + 1 >= length) {
+                break; // Exit if we've written all requested bytes
+            }
         }
 
-        while (pio_sm_is_tx_fifo_full(PIO_DMA_CONTROL, DMA_SM_CONTROL)) {
+        // Wait for TX FIFO to empty before releasing DMA master
+        while (pio_sm_get_tx_fifo_level(PIO_DMA_MASTER, DMA_SM_CONTROL) > 0) {
             tight_loop_contents();
         }
+        sleep_us(3); // small delay to ensure last data is processed
 
-        // fifo_t1: T1 DMA Output value, 
-        // value = [2-bit flag read/write flag in MSB (3 = write)][20 bit address in LSB] 
-        uint32_t fifo_t1 = ((FIFO_DMA_WRITE & 0xFFu) << 20) | (addr & 0xFFFFFu);
-        pio_sm_put(write_pio, write_sm, fifo_t1);
-
-        // Fifo T2: address MSB (A19-A8) in upper bits, data byte in lower bits
-        // value = [12 bits address A19-A8][8 bits data byte]
-        uint32_t fifo_t2 = (addr & 0xFFF00u) | byte;
-        pio_sm_put(write_pio, write_sm, fifo_t2);
-
-        // The control SM (PIO2) also needs the W/R flag in its TX FIFO
-        // It uses "out x, 1" to extract the write/read bit and trigger the cycle
-        pio_sm_put(PIO_DMA_CONTROL, DMA_SM_CONTROL, FIFO_DMA_WRITE);
-
+        release_dma_master();
+        
+        // give 8088 time to work background interrupts like serial port or other I/O before resuming DMA
+        printf("DMA master released after batch %d\n", batch);
+        sleep_us(DMA_SHARE_WAIT_US);
     }
     printf("Finished DMA write to Victor RAM\n");
+   
+    return;
 }
 
 // Read function (PIO-based) using two-word FIFO protocol:
 //  Word 1: bits 0=W/R flag (0=read), bits 1-20=address A0-A19
 //  Word 2: pindirs control value 0xFFF00 (A8-A19 outputs, BD0-BD7 inputs)
 void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_address) {
-    PIO read_pio = PIO_OUTPUT;
-    int read_sm = DMA_SM_OUTPUT;
 
     // Debug logging disabled for performance during DMA
-    // printf("Starting DMA read from Victor RAM\n");
-    // printf("Length: %zu, start_address: %d ", length, start_address);
-    // print_segment_offset(start_address);
+    printf("Starting DMA read from Victor RAM\n");
+    printf("Length: %zu, start_address: %d ", length, start_address);
+    print_segment_offset(start_address);
 
     uint8_t *temp = malloc((length + 1) * sizeof(uint8_t));
     if (!temp) {
@@ -440,43 +576,51 @@ void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_addre
         return;
     }
 
-    debug_pio_state(read_pio, read_sm);
+    printf("dma_read_pio: %p, read_sm: %d\n", PIO_DMA_MASTER, DMA_SM_CONTROL);
+    debug_pio_state(PIO_DMA_MASTER, DMA_SM_CONTROL);
     printf("Reading from Victor RAM at address %08X\n", start_address);
-    for (size_t i = 0; i < length; i++) {
-        uint32_t addr = (start_address + i) & 0xFFFFF;  // 20-bit address
 
+    uint32_t full_batch_count = length / DMA_BATCH_SIZE;
+    uint32_t remainder_bytes = length % DMA_BATCH_SIZE;
 
-        // Wait for FIFOs space, yielding to allow IRQs to process
-        // we send 2 values to read SM and 1 to control SM
-        while (pio_sm_get_tx_fifo_level(read_pio, read_sm) > 2) {
-            tight_loop_contents();
-        }
-
-        while (pio_sm_is_tx_fifo_full(PIO_DMA_CONTROL, DMA_SM_CONTROL)) {
-            tight_loop_contents();
-        }
-
-        // Send two FIFO words per the PIO protocol
-        // fifo_t1: T1 DMA Output value, 
-        // value = [2-bit flag read/write flag in MSB (0 = read)][20 bit address in LSB] 
-        uint32_t fifo_t1 = ((FIFO_DMA_READ & 0xFFu) << 20) | (addr & 0xFFFFFu);
-        pio_sm_put(read_pio, read_sm, fifo_t1);
-
-        // Word 2: pindirs value to set BD0-BD7 as inputs, A8-A19 as outputs
-        uint32_t fifo_t2 = (addr & 0xFFF00); // A8-A19 outputs, BD0-BD7 inputs
-        pio_sm_put(read_pio, read_sm, fifo_t2);
-
-        // The control SM (PIO2) also needs the W/R flag in its TX FIFO
-        // It uses "out x, 1" to extract the write/read bit and trigger the cycle
-        pio_sm_put(PIO_DMA_CONTROL, DMA_SM_CONTROL, FIFO_DMA_READ);
-
-        // Get the data byte that was read
-        while (pio_sm_is_rx_fifo_empty(read_pio, read_sm)) {
-            tight_loop_contents();
-        }
-        uint32_t char_data = pio_sm_get(read_pio, read_sm);
-        temp[i] = char_data & 0xFF;
+    if (remainder_bytes > 0) {
+        full_batch_count += 1;
     }
+
+     for (uint32_t batch = 0; batch < full_batch_count; batch++) {
+        if (!start_dma_control()) {
+            printf("Failed to obtain DMA master\n");
+            return;
+        }
+        printf("Starting DMA transfer batch %d\n", batch);
+
+        for (size_t i = 0; i < 128; i++) {
+            uint32_t addr = (start_address + (batch * 128) + i) & 0xFFFFF;  // 20-bit address
+
+
+            // Send two FIFO words per the PIO protocol
+            uint32_t fifo_t1 = ((addr & 0xFFFFFu) << 1) | 0; // T1: [20 bit address][1-bit read=0 flag in LSB]
+            pio_sm_put_blocking(PIO_DMA_MASTER, DMA_SM_CONTROL, fifo_t1);
+
+            uint32_t fifo_t2 = 0xFFF00; // pindirs value only, no data or address T2: [A8-A19 remain outputs][BD0-BD7 inputs]
+            pio_sm_put_blocking(PIO_DMA_MASTER, DMA_SM_CONTROL, fifo_t2);
+
+            // Get the data byte that was read
+            uint32_t char_data = pio_sm_get_blocking(PIO_DMA_MASTER, DMA_SM_CONTROL);
+            temp[i] = char_data & 0xFF;
+            if ((batch * 128) + i + 1 >= length) {
+                break; // Exit if we've read all requested bytes
+            }
+
+        }
+
+        release_dma_master();
+        
+        // give 8088 time to work background interrupts like serial port or other I/O before resuming DMA
+        printf("DMA master released after batch %d\n", batch);
+        sleep_us(DMA_SHARE_WAIT_US);
+    }
+
     memcpy(data, temp, length);
     free(temp);
     printf("\n\nFinished DMA read from Victor RAM\n");

@@ -57,11 +57,9 @@ target_sources(dma_board PRIVATE
 pico_set_binary_type(dma_board default)
 
 # Generate PIO headers for cached version
-pico_generate_pio_header(dma_board ${CMAKE_CURRENT_LIST_DIR}/pico_victor/board_registers_control.pio)
-pico_generate_pio_header(dma_board ${CMAKE_CURRENT_LIST_DIR}/pico_victor/board_registers_output.pio)
-pico_generate_pio_header(dma_board ${CMAKE_CURRENT_LIST_DIR}/pico_victor/dma_rw_control.pio)
-pico_generate_pio_header(dma_board ${CMAKE_CURRENT_LIST_DIR}/pico_victor/dma_rw_output.pio)
-pico_generate_pio_header(dma_board ${CMAKE_CURRENT_LIST_DIR}/pico_victor/iom_helper.pio)
+pico_generate_pio_header(dma_board ${CMAKE_CURRENT_LIST_DIR}/pico_victor/board_registers.pio)
+pico_generate_pio_header(dma_board ${CMAKE_CURRENT_LIST_DIR}/pico_victor/dma_master.pio)
+
 
 pico_enable_stdio_uart(dma_board 1)
 pico_enable_stdio_usb(dma_board 0)

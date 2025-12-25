@@ -73,12 +73,12 @@ T3_WRITE:                              ; 8088 write cycle // pico's reading
 #define REG_PIN_FIRST BD0_PIN
 #define REG_PIN_LAST CLOCK_15B_PIN
 
-static inline void dma_registers_program_init(PIO pio, uint sm, uint offset) {
+static inline void board_registers_program_init(PIO pio, uint sm, uint offset) {
     pio_debug_state();
     debug_dump_pin(BD0_PIN);
-    printf("starting to configure dma_registers_program_init\n");
-    pio_sm_config c = dma_registers_program_get_default_config(offset);
-
+    printf("starting to configure board_registers_program_init\n");
+    pio_sm_config c = board_registers_program_get_default_config(offset);
+    
     // init all the pins i'll be using as output
     for (int pin = REG_PIN_FIRST; pin <= REG_PIN_LAST; pin++) {
         gpio_set_drive_strength(pin, GPIO_DRIVE_STRENGTH_12MA);

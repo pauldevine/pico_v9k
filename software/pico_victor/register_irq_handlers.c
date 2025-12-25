@@ -72,7 +72,7 @@ void __time_critical_func(register_read_irq_isr)() {
     uint8_t pending_before = (uint8_t)fifo_read_count;
 
     // Get value from bus_output_helper PIO FIFO
-    raw_value = PIO_OUTPUT->rxf[REG_SM_OUTPUT];
+    raw_value = PIO_REGISTERS->rxf[REG_SM_CONTROL];
 
     // Extract 2-bit payload type flag
     uint32_t payload_type = fifo_payload_type(raw_value);
@@ -85,7 +85,7 @@ void __time_critical_func(register_read_irq_isr)() {
     // Handle different payload types
     // NOTE: register_output PIO can ONLY produce FIFO_REG_READ (0x00) via "in null, 2"
     // Any other payload type indicates stale/corrupted FIFO data - drop silently in ISR
-    if (payload_type != FIFO_REG_READ) {
+    if (payload_type != FIFO_REG_PREFETCH) {
         // Invalid payload type - don't respond, just trace for deferred analysis
         trace_flags |= FIFO_TRACE_FLAG_ERROR;
         fifo_trace_record(raw_value, payload_type, pending_before, (uint8_t)fifo_read_count, trace_flags, 0);
@@ -115,7 +115,7 @@ void __time_critical_func(register_read_irq_isr)() {
     uint32_t payload = (0xFF << 8) | (data & 0xFF);
 
     // Push data byte to bus_output_helper for output on BD0-BD7
-    pio_sm_put_blocking(PIO_OUTPUT, REG_SM_OUTPUT, payload);
+    pio_sm_put_blocking(PIO_REGISTERS, REG_SM_CONTROL, payload);
 
     uint8_t pending_after = (uint8_t)fifo_read_count;
     fifo_trace_record(raw_value, payload_type, pending_before, pending_after, trace_flags, data);
@@ -153,7 +153,7 @@ void __time_critical_func(register_write_irq_isr)() {
     cached_registers_t *cached = &cached_regs;
 
     // board_registers only pushes WRITE_VALUE payloads
-    if (payload_type != FIFO_WRITE_VALUE) {
+    if (payload_type != FIFO_REG_WRITE) {
         // Invalid payload type - drop silently and trace for deferred analysis
         trace_flags |= FIFO_TRACE_FLAG_ERROR;
         fifo_trace_record(raw_value, payload_type, pending_before, (uint8_t)fifo_read_count, trace_flags, 0);

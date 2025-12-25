@@ -2,7 +2,7 @@
     * dma_irq_handler.c
     *
     * IRQ handler for DMA read operations from the bus.
-    * This handler services FIFO_DMA_READ payloads from the dma_rw_output SM on the PIO_OUTPUT pio.
+    * This handler services FIFO_DMA_READ payloads from the dma_rw_output SM on the PIO_DMA_MASTER pio.
     * It retrieves the data captured from the bus during a DMA read cycle and enqueues it for deferred processing.
     *
 */
@@ -33,14 +33,14 @@ void __time_critical_func(dma_read_isr)() {
     *(volatile uint32_t *)SIO_GPIO_OUT_SET_REG = DEBUG_PIN_MASK;
 
     // Check if SM1 RX FIFO is actually non-empty - if empty, this is a spurious IRQ
-    if (pio_sm_is_rx_fifo_empty(PIO_OUTPUT, DMA_SM_OUTPUT)) {
+    if (pio_sm_is_rx_fifo_empty(PIO_DMA_MASTER, DMA_SM_CONTROL)) {
         fast_log("DMA_READ: Spurious IRQ - SM1 RX FIFO empty!\n");
         *(volatile uint32_t *)SIO_GPIO_OUT_CLR_REG = DEBUG_PIN_MASK;
         return;
     }
 
     // Get value from bus_output_helper PIO FIFO
-    raw_value = PIO_OUTPUT->rxf[DMA_SM_OUTPUT];
+    raw_value = PIO_DMA_MASTER->rxf[DMA_SM_CONTROL];
 
     // Extract 2-bit payload type flag
     uint32_t payload_type = fifo_payload_type(raw_value);
