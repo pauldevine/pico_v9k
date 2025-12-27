@@ -15,7 +15,7 @@
 .define FIFO_REG_WRITE       0x02
 
 .program board_registers
-.side_set 1
+.side_set 1 pindirs
 
 ; --- Pre-amble ---
 ; This code runs once at the start of state machine initialization
@@ -81,37 +81,49 @@ static inline void board_registers_program_init(PIO pio, uint sm, uint offset) {
     
     // init all the pins i'll be using as output
     for (int pin = REG_PIN_FIRST; pin <= REG_PIN_LAST; pin++) {
-        gpio_set_drive_strength(pin, GPIO_DRIVE_STRENGTH_12MA);
-        gpio_disable_pulls(pin);
         pio_gpio_init(pio, pin);
-        gpio_pull_down(pin);
         pio_sm_set_pins_with_mask(pio, sm, 0u, 1u << pin); // preload latch low
         printf("pio_gpio_init %d\n", pin);
     }
     uint pincount = REG_PIN_LAST - REG_PIN_FIRST + 1;
     pio_sm_set_consecutive_pindirs(pio, sm, BD0_PIN, pincount, false);
 
+    // Configure OUT pins for BD0-BD7 (8 pins starting at BD0_PIN)
+    sm_config_set_out_pins(&c, BD0_PIN, 8);
+
     sm_config_set_in_pins(&c, BD0_PIN);
     sm_config_set_in_pin_count(&c, ADDRESS_BUS_SIZE);
+
+    // Initialize the input/output shift register settings
+    // We are reading 20 bits of address from pins, and writing 8 bits of data to pins
+    uint32_t out_shift_length = 16; // 8 bits data + 8 bits pindirs for data bus
+    sm_config_set_out_shift(&c, 
+        true, // shift out right
+        false, // don't autopull
+        out_shift_length);  // 8 bits for data bus + 8 bits for pindirs
+    sm_config_set_in_shift(&c, 
+        true,  // shift in right
+        false,  // don't autopull
+        ADDRESS_BUS_SIZE); // 20 bits address
     
     sm_config_set_jmp_pin(&c, RD_PIN); // RD pin is the pin we check for write vs read cycle
 
     //setup EXTIO as side-set to handle 8088 RD case
     //we need to assert EXTIO low when we want to send data to the 8088 processor
     //it takes the buffers for the 6522's out of the circuit so we don't loose the electrical battle
+    //this isn't needed for writing to RAM in the DMA case
     pio_gpio_init(pio, EXTIO_PIN);
     sm_config_set_sideset_pins(&c, EXTIO_PIN);
-    sm_config_set_sideset(&c, 1, false, false);
-    pio_sm_set_consecutive_pindirs(pio, sm, EXTIO_PIN, 1, false);
+    //set as pindirs as EXTIO is open drain, will only be pulling to 0
+    sm_config_set_sideset(&c,
+        1,     // bit_count: 1 pin for side-set
+        false, // optional: side-set is mandatory on every instruction
+        true   // pindirs: use side-set to control pin direction (for open-drain)
+    );
+    pio_sm_set_consecutive_pindirs(pio, sm, EXTIO_PIN, 1, true);
     printf("EXTIO_PIN Pin %d func: %d, dir: %d\n", 
            EXTIO_PIN, gpio_get_function(EXTIO_PIN), gpio_get_dir(EXTIO_PIN));
-    
-    sm_config_set_out_shift(&c, true, false, DATA_SIZE);
-    sm_config_set_in_shift(&c, true, false, ADDRESS_BUS_SIZE);
-    printf("Config execctrl before init: 0x%08x pinhi:0x%08x pinctrl:0x%08x\n",
-            (uint32_t)c.execctrl, (uint32_t)c.pinhi, (uint32_t)c.pinctrl);
-    sm_config_set_out_pins(&c, BD0_PIN, DATA_SIZE);
-    sm_config_set_clkdiv(&c, 1.0f);  
+    pio_sm_set_pindirs_with_mask(pio, sm, 0, 1u << EXTIO_PIN); // preload value low
 
     pio_sm_clear_fifos(pio, sm);
 

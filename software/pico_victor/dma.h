@@ -6,7 +6,7 @@
 #define PIO_REGISTERS   pio0
 #define REG_SM_CONTROL  0   
 
-#define PIO_DMA_MASTER pio2
+#define PIO_DMA_MASTER pio1
 #define DMA_SM_CONTROL  0
 
 #define ADDR_START_PIN 1 // DMA address output

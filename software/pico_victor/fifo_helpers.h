@@ -24,7 +24,7 @@ typedef struct {
 static fifo_trace_entry_t fifo_trace[FIFO_TRACE_SIZE];
 static volatile uint32_t fifo_trace_head = 0;
 static volatile uint32_t fifo_trace_tail = 0;
-static volatile uint32_t fifo_read_count = 0;
+static volatile uint32_t fifo_pending_prefetch = 0;
 
 // For pins > 31, we need to use different registers
 #if DEBUG_PIN >= 32

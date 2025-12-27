@@ -125,17 +125,6 @@ static inline void dma_master_program_init(PIO pio, uint sm, uint offset, uint p
     pio_sm_clear_fifos(pio, sm);
     pio_sm_set_clkdiv(pio, sm, 1.0f);
 
-    // Init output pins for PIO first
-    for (int i = pin; i <= CLOCK_15B_PIN; i++) {
-        gpio_set_drive_strength(i, GPIO_DRIVE_STRENGTH_12MA);
-        gpio_disable_pulls(i);
-        pio_gpio_init(pio, i);
-        gpio_pull_down(i);
-        pio_sm_set_pins_with_mask(pio, sm, 0u, 1u << i); // preload latch low
-        printf("dma gpio_init %d  ", i);
-        printf("GPIO%d_CTRL = 0x%08x\n", i, io_bank0_hw->io[i].ctrl);
-    }
-
     // Load our configuration, and jump to the start of the program
     pio_sm_init(pio, sm, offset, &c);
 

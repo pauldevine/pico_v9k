@@ -19,7 +19,7 @@
 #include "logging.h"
 
 static inline void warmup_read_sequence(PIO pio, int sm, uint32_t address) {
-    // bus_output_helper pushes PREFETCH when handling reads
+    // board_registers pushes READ_COMMIT when handling reads
     if (pio_sm_is_tx_fifo_empty(pio, sm)) {
         pio_sm_put(pio, sm, board_fifo_encode_read(address));
         register_read_irq_isr();
@@ -45,20 +45,12 @@ void setup_irq_handlers(void) {
     pio_sm_clear_fifos(PIO_REGISTERS, REG_SM_CONTROL);
     pio_sm_clear_fifos(PIO_DMA_MASTER, DMA_SM_CONTROL);
 
-
-
-    // Register WRITE path = 8088 writing to pico registers
+    // Register READ/WRITE path = 8088 accessing pico registers (single SM)
     // MUST have highest priority so cache is updated before any read returns stale data
     pio_set_irq0_source_enabled(PIO_REGISTERS, fifo_sources[REG_SM_CONTROL], true);
-    irq_set_exclusive_handler(PIO0_IRQ_0, register_write_irq_isr);
+    irq_set_exclusive_handler(PIO0_IRQ_0, register_read_irq_isr);
     irq_set_priority(PIO0_IRQ_0, 0);   // highest priority - updates cache first
     irq_set_enabled(PIO0_IRQ_0, true);
-
-    // Register READ path = 8088 reading from pico registers
-    pio_set_irq0_source_enabled(PIO_REGISTERS, fifo_sources[REG_SM_CONTROL], true);
-    irq_set_exclusive_handler(PIO1_IRQ_0, register_read_irq_isr);
-    irq_set_priority(PIO1_IRQ_0, 1);   // lower priority than write
-    irq_set_enabled(PIO1_IRQ_0, true);
 
     // DMA READ path = pico doing DMA read from 8088 bus
     // NOTE: DMA read IRQ is NOT enabled at startup to avoid spurious interrupts

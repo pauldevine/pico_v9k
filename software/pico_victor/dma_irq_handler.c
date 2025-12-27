@@ -27,7 +27,7 @@ void __time_critical_func(dma_read_isr)() {
     static uint32_t masked_offset;
     uint8_t data = 0;
     uint8_t trace_flags = 0;
-    uint8_t pending_before = (uint8_t)fifo_read_count;
+    uint8_t pending_before = (uint8_t)fifo_pending_prefetch;
 
     // Set debug pin high
     *(volatile uint32_t *)SIO_GPIO_OUT_SET_REG = DEBUG_PIN_MASK;
@@ -66,7 +66,7 @@ void __time_critical_func(dma_read_isr)() {
         fast_log("DMA_READ: Unknown payload type: 0x%02x raw=0x%08x\n", payload_type, raw_value);
     }
 
-    uint8_t pending_after = (uint8_t)fifo_read_count;
+    uint8_t pending_after = (uint8_t)fifo_pending_prefetch;
     fifo_trace_record(raw_value, payload_type, pending_before, pending_after, trace_flags, data);
 
     if (enque_result) {

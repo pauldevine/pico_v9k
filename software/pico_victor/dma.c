@@ -371,7 +371,7 @@ uint8_t dma_read_register(dma_registers_t *dma, dma_reg_offsets_t offset) {
 void ontime_pin_setup() {
     //setup pin basics like enable pulls and set slew rate
     for (int pin = BD0_PIN; pin <= PHASE_2_PIN; ++pin) {
-        gpio_set_drive_strength(pin, GPIO_DRIVE_STRENGTH_2MA);
+        gpio_set_drive_strength(pin, GPIO_DRIVE_STRENGTH_12MA);
         gpio_set_slew_rate(pin, GPIO_SLEW_RATE_SLOW);
         gpio_pull_down(pin); // enable pull-downs
         gpio_put(pin, 0);  // by default drive low
@@ -383,12 +383,16 @@ void ontime_pin_setup() {
     // for the bus control pins, to avoid floating pins during DMA handoff to 8088
     // we need to set appropriate pull-ups or pull-downs
     // we defaulted everything to pull low above, so just need to fix the active low pins
+
+    gpio_pull_down(ALE_PIN);  // ALE is active high, so pull-down
+
     gpio_pull_up(RD_PIN);   // RD is active low, so pull-up
     gpio_pull_up(WR_PIN);   // WR is active low, so pull-up
     gpio_pull_up(DTR_PIN);  // DTR is active low, so pull-up 
     gpio_pull_up(DEN_PIN);  // DEN is active low, so pull-up
     gpio_pull_up(SSO_PIN);  // SSO is active low, so pull-up
     gpio_pull_up(DLATCH_PIN); // DLATCH is active low, so pull-up
+    gpio_pull_up(EXTIO_PIN); // EXTIO is active low, so pull-up
 }
 
 static inline void setup_pin_dma_control(uint32_t pin, bool is_output, bool preload_level) {
@@ -401,16 +405,18 @@ static inline void setup_pin_dma_control(uint32_t pin, bool is_output, bool prel
 static inline void setup_pins_dma_control() {
     
     //setup data pins BD0 to A19 to be owned by PIO as inputs
-    for (int pin = BD0_PIN; pin <= A19_PIN; ++pin) {
-        uint function = GPIO_FUNC_PIO0 + pio_get_index(PIO_DMA_MASTER);
+    uint function = GPIO_FUNC_PIO0 + pio_get_index(PIO_DMA_MASTER);
+    for (int pin = BD0_PIN; pin <= DEN_PIN; ++pin) {
         gpio_set_function(pin, function);
         pio_gpio_init(PIO_DMA_MASTER, pin);
         pio_sm_set_pins_with_mask(PIO_DMA_MASTER, DMA_SM_CONTROL, 0u, 1u << pin); // preload latch low
-        pio_sm_set_pindirs_with_mask(PIO_DMA_MASTER, DMA_SM_CONTROL, 0u, 1u << pin); // input
+        //pio_sm_set_pindirs_with_mask(PIO_DMA_MASTER, DMA_SM_CONTROL, 1u, 1u << pin); // output direction
 
-        printf("dma gpio_init %d  ", pin);
-        printf("GPIO%d_CTRL = 0x%08x\n", pin, io_bank0_hw->io[pin].ctrl);
+       // printf("dma gpio_init %d  ", pin);
+        //printf("GPIO%d_CTRL = 0x%08x\n", pin, io_bank0_hw->io[pin].ctrl);
     }
+
+    pio_sm_set_consecutive_pindirs(PIO_DMA_MASTER, DMA_SM_CONTROL, BD0_PIN, ADDRESS_BUS_SIZE, true); // address pins as outputs
 
     // Assign control pins to PIO, set direction and preload levels
     uint32_t high = 1;
@@ -418,6 +424,7 @@ static inline void setup_pins_dma_control() {
     setup_pin_dma_control(RD_PIN, GPIO_OUT, high);   // RD/ output, preload high
     setup_pin_dma_control(WR_PIN, GPIO_OUT, high);   // WR/ output, preload high
     setup_pin_dma_control(DTR_PIN, GPIO_OUT, high);  // DTR/ output, preload high
+    setup_pin_dma_control(EXTIO_PIN, GPIO_OUT, high);  // EXTIO/ output, preload high
 
     setup_pin_dma_control(ALE_PIN, GPIO_OUT, low);   // ALE/ output, preload low
     setup_pin_dma_control(DEN_PIN, GPIO_OUT, low);   // DEN/ output, preload low
@@ -433,19 +440,21 @@ static inline void setup_pins_dma_control() {
     gpio_init(IO_M_PIN);
     gpio_put(IO_M_PIN, low); 
     gpio_set_dir(IO_M_PIN, GPIO_OUT);
-    
+
     printf("dma control setup pins RD:%d WR:%d DTR:%d\n", RD_PIN, WR_PIN, DTR_PIN);
 }   
 
 static inline void setup_pins_register_inputs() {
     //setup data pins BD0 to A19 to be owned by board register PIO as inputs
+    pio_sm_set_consecutive_pindirs(PIO_DMA_MASTER, DMA_SM_CONTROL, BD0_PIN, 32, false); // all pins as inputs
     for (int pin = BD0_PIN; pin <= CLOCK_15B_PIN; ++pin) {
         uint function = GPIO_FUNC_PIO0 + pio_get_index(PIO_REGISTERS);
         gpio_set_function(pin, function);
 
-        printf("PIO_REGISTERS gpio_init %d  ", pin);
-        printf("GPIO%d_CTRL = 0x%08x\n", pin, io_bank0_hw->io[pin].ctrl);
+       // printf("PIO_REGISTERS gpio_init %d  ", pin);
+        //printf("GPIO%d_CTRL = 0x%08x\n", pin, io_bank0_hw->io[pin].ctrl);
     }
+    
 } 
 
 
@@ -476,9 +485,13 @@ static inline bool start_dma_control() {
         printf("Failed to obtain DMA master within timeout\n");
         return false;
     }
+    // Quiesce register SM before taking bus, and drain any queued events
+    pio_sm_set_enabled(PIO_REGISTERS, REG_SM_CONTROL, false);
+    pio_sm_clear_fifos(PIO_REGISTERS, REG_SM_CONTROL);
+
     //setup all the pins to be controlled by PIO DMA SM
     setup_pins_dma_control();
-    pio_sm_clear_fifos(PIO_DMA_MASTER, true);
+    pio_sm_clear_fifos(PIO_DMA_MASTER, DMA_SM_CONTROL);
     pio_sm_set_enabled(PIO_DMA_MASTER, DMA_SM_CONTROL, true);
     return true;
 }
@@ -486,8 +499,10 @@ static inline bool start_dma_control() {
 
 static inline void release_dma_master() {
     //turn off DMA PIO and give back control to register PIO
+    pio_sm_clear_fifos(PIO_DMA_MASTER, DMA_SM_CONTROL);
     pio_sm_set_enabled(PIO_DMA_MASTER, DMA_SM_CONTROL, false);
     setup_pins_register_inputs();
+    pio_sm_clear_fifos(PIO_REGISTERS, REG_SM_CONTROL);
     pio_sm_set_enabled(PIO_REGISTERS, REG_SM_CONTROL, true);
 
     //wait for low then high so we can sync to CLOCK_5 edge to help meta-stability of board

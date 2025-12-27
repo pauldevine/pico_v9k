@@ -296,7 +296,7 @@ void defer_process_entry(dma_registers_t *dma, const defer_entry_t *entry) {
     uint32_t offset;
 
     switch (payload_type) {
-        case FIFO_REG_PREFETCH:
+        case FIFO_REG_READ_COMMIT:
             // Read operation - process side effects only
             defer_process_read(dma, raw_value);
             break;
