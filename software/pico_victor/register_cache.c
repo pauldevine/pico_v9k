@@ -217,7 +217,7 @@ void dma_process_deferred_events_cached(void) {
 
     // Log statistics periodically (every 1000 calls)
     static uint32_t call_count = 0;
-    if (++call_count >= 1000) {
+    if (++call_count >= 10000) {
         call_count = 0;
         if (queue->drops > 0 || queue->processed > last_process + 100) {
             fast_log("DEFER_STATS: processed=%u, drops=%u, queue_level=%u\n",

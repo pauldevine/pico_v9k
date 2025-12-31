@@ -5,6 +5,7 @@
 #include "pico/stdlib.h"
 #include "pico/multicore.h"
 #include "hardware/structs/systick.h"
+#include "hardware/sync.h"  // For __dmb() memory barrier
 #include <string.h>
 #include "reg_queue_processor.h"
 #include "dma.h"
@@ -91,7 +92,7 @@ void defer_process_read(dma_registers_t *dma, uint32_t raw_value) {
     // Extract address FIFO has 00[address] - REG_READ payload
     if (++read_request_counter >= 1000) {
         read_request_counter = 0;
-        fast_log("1000 READ requests processed\n");
+        //fast_log("1000 READ requests processed\n");
     }
     //fast_log("RAW=0x%08x\n", raw_value);
     uint32_t address = board_fifo_read_address(raw_value);
@@ -113,47 +114,47 @@ void defer_process_read(dma_registers_t *dma, uint32_t raw_value) {
         case REG_STATUS:
             // Clear interrupt on status read (side effect only)
             dma_update_interrupts(dma, false);
-            // Some host firmware polls the status register instead of reading the
-            // message-in byte. If we're still advertising message phase, treat the
-            // status read as an implicit ACK and release the bus so BSY drops.
-            if (dma->bus_ctrl & SASI_MSG_BIT) {
-                dma->state.non_dma_req = 0;
-                dma->bus_ctrl &= ~SASI_REQ_BIT;
-                dma->bus_ctrl &= ~(SASI_CTL_BIT | SASI_INP_BIT | SASI_MSG_BIT | SASI_ACK_BIT | SASI_BSY_BIT);
-                cached_status_sync_from_bus(dma);
-            }
+            // STATUS register reads do NOT advance bus phases - they just return current status.
+            // Phase transitions happen when DATA register (0x10) is read.
+            // The MAME boot log shows:
+            //   1. Host polls STATUS (0x20) -> sees 0x0F (status phase)
+            //   2. Host reads DATA (0x10) -> gets status byte, we advance to message phase
+            //   3. Host polls STATUS (0x20) -> sees 0x1F (message phase)
+            //   4. Host reads DATA (0x10) -> gets message byte, bus released
+            // No action needed here - status is returned from cache by fast handler
             break;
 
         case REG_DATA:
             // Data register read side effects
+            // NOTE: Phase transitions are now handled synchronously in the fast handler
+            // (register_irq_handlers.c) to avoid race conditions. The deferred processor
+            // only handles slow operations like updating dma->state and interrupts.
             if (dma->state.non_dma_req) {
                 if (dma->bus_ctrl & SASI_MSG_BIT) {
-                    // Message phase - clear bus
+                    // Message phase - bus was already released by fast handler
+                    // Just update the slow state here
                     dma->state.non_dma_req = 0;
-                    dma->bus_ctrl &= ~SASI_REQ_BIT;
-                    dma->bus_ctrl &= ~(SASI_CTL_BIT | SASI_INP_BIT | SASI_MSG_BIT |
-                                        SASI_ACK_BIT | SASI_BSY_BIT);
                     dma_update_interrupts(dma, false);
-                    cached_status_sync_from_bus(dma);
                 } else if ((dma->bus_ctrl & (SASI_CTL_BIT | SASI_INP_BIT)) ==
                             (SASI_CTL_BIT | SASI_INP_BIT)) {
-                    // Status phase - only transition to message if status_pending is set
-                    // This ensures we only transition when host intentionally reads status,
-                    // not from stale DATA reads queued during DMA transfer
+                    // Status phase - transition was already done by fast handler
+                    // Just update the slow state here
                     if (dma->state.status_pending) {
-                        dma->state.status_pending = 0;  // Clear the flag
-                        cached_set_data(0x00); // Completion message the host will read next
-                        dma->bus_ctrl |= (SASI_MSG_BIT | SASI_REQ_BIT);
+                        dma->state.status_pending = 0;
                         dma->state.non_dma_req = 1;
                         dma_update_interrupts(dma, true);
-                        cached_status_sync_from_bus(dma);
                     }
-                    // If status_pending is not set, ignore this read (it's stale)
-                } else {
+                } else if ((dma->bus_ctrl & (SASI_CTL_BIT | SASI_INP_BIT)) == SASI_INP_BIT) {
+                    // Data-in phase (CTL=0, INP=1) - clear request after read
                     dma->state.non_dma_req = 0;
+                } else {
+                    // Command phase (CTL=1, INP=0) or Data-out phase (CTL=0, INP=0)
+                    // Reading DATA is unexpected here - don't clear non_dma_req
+                    // to preserve the request state for the next command byte
+                    fast_log("DEFER_READ: DATA read during unexpected phase, bus_ctrl=0x%02X\n", dma->bus_ctrl);
                 }
             }
-            fast_log("DEFER_READ: offset=0x%02x end_status %d (processed side effects, cache already returned)\n", masked_offset, cached_regs.values[REG_STATUS]    );
+            fast_log("DEFER_READ: offset=0x%02x end_status %d (processed side effects, cache already returned)\n", masked_offset, cached_regs.values[REG_STATUS]);
             break;
 
         case REG_ADDR_L:
@@ -216,18 +217,23 @@ void defer_process_write(dma_registers_t *dma, uint32_t raw_value) {
                         dma->bus_ctrl |= SASI_SEL_BIT;
                         dma->selected_target = sasi_extract_target_id(dma->command);
                         dma->bus_ctrl |= SASI_BSY_BIT;
+                        __dmb();  // Ensure Core 0 sees bus_ctrl update
+                        fast_log("DEFER: SELECT asserted, bus_ctrl=0x%02x\n", dma->bus_ctrl);
                     } else if (!now_sel && prev_sel) {
                         // Selection phase ending - enter command phase
                         dma->bus_ctrl &= ~SASI_SEL_BIT;
                         dma->bus_ctrl |= (SASI_BSY_BIT | SASI_REQ_BIT | SASI_CTL_BIT);
                         dma->bus_ctrl &= ~SASI_INP_BIT;
+                        __dmb();  // Ensure Core 0 sees bus_ctrl update
                         dma->state.non_dma_req = 1;
                         dma_update_interrupts(dma, true);
+                        fast_log("DEFER: SELECT released, bus_ctrl=0x%02x (entering cmd phase)\n", dma->bus_ctrl);
                     }
                 }
                 cached_status_sync_from_bus(dma);
+                fast_log("DEFER: Write CONTROL = 0x%02x prev_sel=%d bus_ctrl=0x%02x\n",
+                         write_data, prev_sel, dma->bus_ctrl);
             }
-            fast_log("DEFER: Write CONTROL = 0x%02x\n", write_data);
             break;
 
         case REG_DATA:
@@ -238,8 +244,9 @@ void defer_process_write(dma_registers_t *dma, uint32_t raw_value) {
             if (dma->control & DMA_SELECT_BIT) {
                 // During selection, data contains target ID (SASI selection byte is a bit mask)
                 dma->selected_target = sasi_extract_target_id(write_data);
+                // Note: Don't clear dma->control here - that would break SELECT edge detection
+                // when the actual CONTROL=0x00 write arrives. Only bus_ctrl.SEL is cleared.
                 dma->bus_ctrl &= ~SASI_SEL_BIT;
-                dma->control &= ~DMA_SELECT_BIT;
             }
 
             // Handle command/data byte
@@ -250,14 +257,18 @@ void defer_process_write(dma_registers_t *dma, uint32_t raw_value) {
                 dma->state.non_dma_req = 0;
                 dma->state.asserting_ack = 1;
                 dma->bus_ctrl |= SASI_ACK_BIT;
+                __dmb();  // Ensure Core 0 sees bus_ctrl update before any DATA read
             }
+
+            // Debug: log bus_ctrl to understand command processing
+            fast_log("DEFER: Write DATA = 0x%02x bus_ctrl=0x%02x CTL=%d\n",
+                     write_data, dma->bus_ctrl, !!(dma->bus_ctrl & SASI_CTL_BIT));
 
             if (dma->bus_ctrl & SASI_CTL_BIT) {
                 // Command phase - process SASI command byte
                 handle_sasi_command_byte(dma, write_data);
             }
             cached_status_sync_from_bus(dma);
-            fast_log("DEFER: Write DATA = 0x%02x\n", write_data);
             break;
 
         case REG_ADDR_L:

@@ -186,7 +186,8 @@ typedef struct {
     } buffer;
 
     // Internal state flags (not exposed to CPU)
-    struct {
+    // NOTE: volatile required - accessed by both Core 0 (fast handler) and Core 1 (deferred processor)
+    volatile struct {
         uint8_t dma_enabled : 1;
         uint8_t dma_strobe  : 1;
         uint8_t dma_dir_in  : 1; // 1 = device → RAM (read), 0 = RAM → device
@@ -195,9 +196,10 @@ typedef struct {
         uint8_t non_dma_req : 1;
         uint8_t status_pending : 1; // 1 = waiting for host to read status byte
     } state;
-    
+
     // SASI bus control state (tracks bus signals for status register)
-    uint8_t bus_ctrl;
+    // NOTE: volatile required - accessed by both Core 0 (fast handler) and Core 1 (deferred processor)
+    volatile uint8_t bus_ctrl;
 
     // Selected SASI target ID (from data bus during selection)
     uint8_t selected_target;
@@ -235,6 +237,7 @@ typedef enum {
     SASI_ACK_BIT = 0x40
 } sasi_status_bits_t;
 
+void ontime_pin_setup();
 void debug_dump_pin(uint pin);
 void pio_debug_state();
 void core1_main();

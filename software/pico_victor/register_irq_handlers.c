@@ -7,6 +7,7 @@
 
 #include "pico/stdlib.h"
 #include "hardware/structs/systick.h"
+#include "hardware/sync.h"  // For __dmb() memory barrier
 #include <stdio.h>
 #include <string.h>
 #include "dma.h"
@@ -124,6 +125,38 @@ void __time_critical_func(register_read_irq_isr)() {
                 fast_log("FIFO WARN: Commit without prefetch raw=0x%08x\n", raw_value);
             } else {
                 fifo_pending_prefetch--;
+            }
+
+            // Handle DATA register read phase transitions SYNCHRONOUSLY
+            // This is critical to avoid race conditions - the host will read STATUS
+            // immediately after reading DATA, and must see the updated bus state.
+            // NOTE: No logging in this path - timing critical!
+            uint32_t commit_offset = dma_mask_offset(address - DMA_REGISTER_BASE) & 0xFF;
+            if (commit_offset == REG_DATA) {
+                dma_registers_t *dma = dma_get_registers();
+                // Memory barrier to ensure we see latest bus_ctrl from Core 1
+                __dmb();
+                uint8_t bus = dma->bus_ctrl;
+
+                if (bus & SASI_MSG_BIT) {
+                    // Message phase - release bus immediately
+                    // Host read the message byte (0x00), now transition to bus free
+                    dma->bus_ctrl = 0;  // Clear all bus signals
+                    __dmb();  // Ensure Core 1 sees this write
+                    cached->values[REG_STATUS] = 0x00;
+                    cached->values[0x30] = 0x00;
+                } else if ((bus & (SASI_CTL_BIT | SASI_INP_BIT)) == (SASI_CTL_BIT | SASI_INP_BIT)) {
+                    // Status phase - host read status byte, transition to message phase
+                    // Only transition if status_pending flag is set (prevents stale reads)
+                    if (dma->state.status_pending) {
+                        dma->bus_ctrl |= SASI_MSG_BIT;  // Add MSG bit for message phase
+                        __dmb();  // Ensure Core 1 sees this write
+                        uint8_t new_status = dma->bus_ctrl & 0x1F;
+                        cached->values[REG_STATUS] = new_status;
+                        cached->values[0x30] = new_status;
+                        cached->values[REG_DATA] = 0x00;  // Message byte = Command Complete
+                    }
+                }
             }
 
             uint8_t pending_after = (uint8_t)fifo_pending_prefetch;
