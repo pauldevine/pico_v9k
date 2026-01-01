@@ -161,8 +161,6 @@ int main() {
             printf(".");
         }
 
-        dma_process_deferred_events_cached();
-
         // Process debug queue entries (non-blocking)
         debug_queue_process();    
             

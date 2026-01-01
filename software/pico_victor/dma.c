@@ -393,6 +393,11 @@ void ontime_pin_setup() {
     gpio_pull_up(SSO_PIN);  // SSO is active low, so pull-up
     gpio_pull_up(DLATCH_PIN); // DLATCH is active low, so pull-up
     gpio_pull_up(EXTIO_PIN); // EXTIO is active low, so pull-up
+
+    // DMA IRQ line: drive low by default, assert when interrupts are pending.
+    gpio_set_function(DMA_IRQ_PIN, GPIO_FUNC_SIO);
+    gpio_put(DMA_IRQ_PIN, DMA_IRQ_DEASSERT_LEVEL);
+    gpio_set_dir(DMA_IRQ_PIN, GPIO_OUT);
 }
 
 static inline void setup_pin_dma_control(uint32_t pin, bool is_output, bool preload_level) {
@@ -691,6 +696,7 @@ void dma_device_reset(dma_registers_t *dma) {
 void dma_update_interrupts(dma_registers_t *dma, bool irq_state) {
     if (irq_state != dma->state.interrupt_pending) {
         dma->state.interrupt_pending = irq_state;
+        gpio_put(DMA_IRQ_PIN, irq_state ? DMA_IRQ_ASSERT_LEVEL : DMA_IRQ_DEASSERT_LEVEL);
         // In real implementation, this would trigger actual interrupt to CPU
         printf("DMA interrupt %s\n", irq_state ? "asserted" : "cleared");
     }

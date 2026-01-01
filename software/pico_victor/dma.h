@@ -40,6 +40,11 @@
 #define XACK_PIN 33
 #define IO_M_PIN 34
 #define IR_5_PIN 35
+
+// DMA board IRQ line (IR4 by default; jumperable to IR5 per manual).
+#define DMA_IRQ_PIN IR_4_PIN
+#define DMA_IRQ_ASSERT_LEVEL 1
+#define DMA_IRQ_DEASSERT_LEVEL 0
 #define SSO_PIN 36
 #define DLATCH_PIN 37
 #define CSEN_PIN 38
