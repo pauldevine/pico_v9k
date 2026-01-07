@@ -5,6 +5,10 @@
 #define XEBEC_RAM_DIAG      0xE0
 #define XEBEC_DRIVE_DIAG    0xE3
 
+#ifndef SASI_COMMAND_DELAY_US
+#define SASI_COMMAND_DELAY_US 85000u
+#endif
+
 typedef enum {
     SASI_PHASE_IDLE,
     SASI_PHASE_COMMAND,

@@ -90,6 +90,7 @@ static bool sasi_dma_device_to_ram(dma_registers_t *dma) {
     dma->dma_address.full = addr;
     dma->logical_block.full = lba;
     dma->block_count.full = 0;
+    cached_sync_dma_address(dma);
 
     return true;
 }
@@ -122,6 +123,7 @@ static bool sasi_dma_ram_to_device(dma_registers_t *dma) {
     dma->dma_address.full = addr;
     dma->logical_block.full = lba;
     dma->block_count.full = 0;
+    cached_sync_dma_address(dma);
 
     return true;
 }
@@ -459,6 +461,10 @@ static inline void setup_pins_register_inputs() {
        // printf("PIO_REGISTERS gpio_init %d  ", pin);
         //printf("GPIO%d_CTRL = 0x%08x\n", pin, io_bank0_hw->io[pin].ctrl);
     }
+
+    // Release IO/M so the CPU can drive it during normal register cycles.
+    gpio_set_function(IO_M_PIN, GPIO_FUNC_SIO);
+    gpio_set_dir(IO_M_PIN, GPIO_IN);
     
 } 
 

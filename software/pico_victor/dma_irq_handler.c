@@ -34,7 +34,6 @@ void __time_critical_func(dma_read_isr)() {
 
     // Check if SM1 RX FIFO is actually non-empty - if empty, this is a spurious IRQ
     if (pio_sm_is_rx_fifo_empty(PIO_DMA_MASTER, DMA_SM_CONTROL)) {
-        fast_log("DMA_READ: Spurious IRQ - SM1 RX FIFO empty!\n");
         *(volatile uint32_t *)SIO_GPIO_OUT_CLR_REG = DEBUG_PIN_MASK;
         return;
     }
@@ -59,11 +58,8 @@ void __time_critical_func(dma_read_isr)() {
             data = (raw_value >> 22) & 0xFF;
             // Extract address for logging (bits 2-21 contain the 20-bit address)
             uint32_t dma_address = (raw_value >> 2) & 0xFFFFF;
-            fast_log("DMA_READ: addr=0x%05x data=0x%02x raw=0x%08x\n",
-                     dma_address, data, raw_value);
     } else {
         trace_flags |= FIFO_TRACE_FLAG_ERROR;
-        fast_log("DMA_READ: Unknown payload type: 0x%02x raw=0x%08x\n", payload_type, raw_value);
     }
 
     uint8_t pending_after = (uint8_t)fifo_pending_prefetch;

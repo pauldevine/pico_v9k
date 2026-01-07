@@ -82,6 +82,7 @@ cached_registers_t* defer_get_cached_registers(void);
 // Helpers to keep cached register values aligned with SASI bus state
 void cached_status_sync_from_bus(const dma_registers_t *dma);
 void cached_set_data(uint8_t value);
+void cached_sync_dma_address(const dma_registers_t *dma);
 
 // Update cached register value
 static inline void defer_update_cached(cached_registers_t *cached, uint32_t offset, uint8_t value) {

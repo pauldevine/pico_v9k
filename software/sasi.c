@@ -25,9 +25,25 @@ void sasi_reset_command_state(void) {
     }
 }
 
+static void sasi_apply_command_delay(dma_registers_t *dma) {
+    if (!dma || SASI_COMMAND_DELAY_US == 0) {
+        return;
+    }
+
+    // Hold command phase busy (BSY|CTL, no REQ) while the controller "executes".
+    dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_INP_BIT | SASI_ACK_BIT);
+    dma->bus_ctrl |= (SASI_BSY_BIT | SASI_CTL_BIT);
+    __dmb();  // Ensure Core 0 sees bus_ctrl update
+    cached_status_sync_from_bus(dma);
+
+    sleep_us(SASI_COMMAND_DELAY_US);
+}
+
 static void sasi_request_cmd_byte(dma_registers_t *dma) {
     // Controller requests next command byte: BSY|REQ|CTL, I/O=0 (host->dev)
     uint8_t before = dma->bus_ctrl;
+    // Drop ACK between bytes and ensure we're in command phase.
+    dma->bus_ctrl &= ~(SASI_ACK_BIT | SASI_MSG_BIT);
     dma->bus_ctrl |= (SASI_BSY_BIT | SASI_REQ_BIT | SASI_CTL_BIT);
     dma->bus_ctrl &= ~SASI_INP_BIT; // host -> controller
     __dmb();  // Ensure Core 0 sees bus_ctrl update before any DATA read
@@ -42,6 +58,7 @@ static void sasi_enter_status_phase(dma_registers_t *dma, uint8_t status_byte) {
     fast_log("SASI: entering status phase, status=0x%02X\n", status_byte);
     dma->status = status_byte;
     cached_set_data(status_byte);
+    dma->bus_ctrl &= ~SASI_ACK_BIT;
     dma->bus_ctrl |= (SASI_BSY_BIT | SASI_REQ_BIT | SASI_CTL_BIT | SASI_INP_BIT);
     dma->bus_ctrl &= ~SASI_MSG_BIT;
     __dmb();  // Ensure Core 0 sees bus_ctrl update before any DATA read
@@ -55,6 +72,7 @@ static void sasi_enter_status_phase(dma_registers_t *dma, uint8_t status_byte) {
 static void sasi_enter_message_phase(dma_registers_t *dma) {
     // Move to message in: BSY|REQ|CTL|INP|MSG (single 0x00 completion message)
     cached_set_data(0x00);
+    dma->bus_ctrl &= ~SASI_ACK_BIT;
     dma->bus_ctrl |= (SASI_BSY_BIT | SASI_REQ_BIT | SASI_CTL_BIT | SASI_INP_BIT | SASI_MSG_BIT);
     __dmb();  // Ensure Core 0 sees bus_ctrl update
     dma->state.non_dma_req = 1;
@@ -197,9 +215,11 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
         dma->block_count.full = blocks;
     }
 
-    // Indicate data-in phase: BSY asserted, C/D low, I/O high
-    dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_CTL_BIT);
-    dma->bus_ctrl |= (SASI_BSY_BIT | SASI_INP_BIT);
+    sasi_apply_command_delay(dma);
+
+    // During DMA transfers, keep status at BSY|CTL (command busy) while REQ stays low.
+    dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_INP_BIT);
+    dma->bus_ctrl |= (SASI_BSY_BIT | SASI_CTL_BIT);
     __dmb();  // Ensure Core 0 sees bus_ctrl update
     cached_status_sync_from_bus(dma);
 
@@ -221,6 +241,7 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
     }
 
     // Signal completion to host
+    cached_sync_dma_address(dma);
     signal_command_complete(dma);
 }
 
@@ -236,10 +257,11 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
         dma->block_count.full = blocks;
     }
 
-    // Indicate data-out phase: BSY asserted, C/D low, I/O low
-    dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_CTL_BIT);
-    dma->bus_ctrl |= SASI_BSY_BIT;
-    dma->bus_ctrl &= ~SASI_INP_BIT;
+    sasi_apply_command_delay(dma);
+
+    // During DMA transfers, keep status at BSY|CTL (command busy) while REQ stays low.
+    dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_INP_BIT);
+    dma->bus_ctrl |= (SASI_BSY_BIT | SASI_CTL_BIT);
     __dmb();  // Ensure Core 0 sees bus_ctrl update
     cached_status_sync_from_bus(dma);
 
@@ -263,6 +285,7 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
         dma->block_count.full = 0;
     }
 
+    cached_sync_dma_address(dma);
     signal_command_complete(dma);
 }
 
@@ -284,6 +307,7 @@ void handle_request_sense(dma_registers_t *dma, uint8_t *cmd) {
 
         dma_write_to_victor_ram(sense, sense_len, dma->dma_address.full);
         dma->dma_address.full += sense_len;
+        cached_sync_dma_address(dma);
     }
 
     signal_command_complete(dma);
@@ -305,6 +329,7 @@ void handle_mode_select(dma_registers_t *dma, uint8_t *cmd) {
         // Read parameter list from Victor RAM (ignore content for now)
         dma_read_from_victor_ram(params, param_len, dma->dma_address.full);
         dma->dma_address.full += param_len;
+        cached_sync_dma_address(dma);
     }
 
     // Respond GOOD

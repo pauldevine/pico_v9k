@@ -46,6 +46,7 @@ pico_set_program_version(dma_board "0.2")
 target_sources(dma_board PRIVATE
     logging.c
     sasi.c
+    pico_victor/fifo_helpers.c
     pico_victor/dma.c
     pico_victor/register_cache.c
     pico_victor/reg_queue_processor.c
@@ -87,6 +88,7 @@ add_executable(dma_board_tests
     test/on_device_runner.c
     logging.c
     sasi.c
+    pico_victor/fifo_helpers.c
     ${CMAKE_CURRENT_LIST_DIR}/pico_victor/dma.c
     ${CMAKE_CURRENT_LIST_DIR}/pico_victor/reg_queue_processor.c
     ${CMAKE_CURRENT_LIST_DIR}/pico_fujinet/spi.c)
@@ -120,6 +122,7 @@ pico_add_extra_outputs(dma_board_tests)
 # IRQ Handler Benchmark executable
 add_executable(benchmark_irq
     test/benchmark_irq.c
+    pico_victor/fifo_helpers.c
     pico_victor/dma.c
     pico_victor/register_irq_handlers.c
     pico_victor/dma_irq_handler.c

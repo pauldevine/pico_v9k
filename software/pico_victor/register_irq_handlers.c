@@ -22,6 +22,29 @@
 extern defer_queue_t defer_queue;
 extern cached_registers_t cached_regs;
 
+static inline bool is_valid_reg_offset(uint32_t masked_offset) {
+    switch (masked_offset & 0xFFu) {
+        case REG_CONTROL:
+        case REG_DATA:
+        case REG_STATUS:
+        case 0x30:
+        case REG_ADDR_L:
+        case REG_ADDR_M:
+        case REG_ADDR_H:
+            return true;
+        default:
+            return false;
+    }
+}
+
+static inline void clear_irq_on_status_read(dma_registers_t *dma) {
+    if (!dma->state.interrupt_pending) {
+        return;
+    }
+    dma->state.interrupt_pending = 0;
+    gpio_put(DMA_IRQ_PIN, DMA_IRQ_DEASSERT_LEVEL);
+}
+
 
 
 
@@ -97,7 +120,12 @@ void __time_critical_func(register_read_irq_isr)() {
             masked_offset &= 0xFF;
 
             fifo_pending_prefetch++;
-            data = cached->values[masked_offset];
+            if (!is_valid_reg_offset(masked_offset)) {
+                trace_flags |= FIFO_TRACE_FLAG_ERROR;
+                data = 0xFF;
+            } else {
+                data = cached->values[masked_offset];
+            }
 
             // pio outputs 8 bits of data first then 8 bits of pindirs (0xFF for output)
             uint32_t payload = (0xFF << 8) | (data & 0xFF);
@@ -132,6 +160,9 @@ void __time_critical_func(register_read_irq_isr)() {
             // immediately after reading DATA, and must see the updated bus state.
             // NOTE: No logging in this path - timing critical!
             uint32_t commit_offset = dma_mask_offset(address - DMA_REGISTER_BASE) & 0xFF;
+            if (!is_valid_reg_offset(commit_offset)) {
+                trace_flags |= FIFO_TRACE_FLAG_ERROR;
+            }
             if (commit_offset == REG_DATA) {
                 dma_registers_t *dma = dma_get_registers();
                 // Memory barrier to ensure we see latest bus_ctrl from Core 1
@@ -142,6 +173,8 @@ void __time_critical_func(register_read_irq_isr)() {
                     // Message phase - release bus immediately
                     // Host read the message byte (0x00), now transition to bus free
                     dma->bus_ctrl = 0;  // Clear all bus signals
+                    dma->state.non_dma_req = 0;
+                    dma->state.status_pending = 0;
                     __dmb();  // Ensure Core 1 sees this write
                     cached->values[REG_STATUS] = 0x00;
                     cached->values[0x30] = 0x00;
@@ -149,6 +182,8 @@ void __time_critical_func(register_read_irq_isr)() {
                     // Status phase - host read status byte, transition to message phase
                     // Only transition if status_pending flag is set (prevents stale reads)
                     if (dma->state.status_pending) {
+                        dma->state.status_pending = 0;
+                        dma->state.non_dma_req = 1;
                         dma->bus_ctrl |= SASI_MSG_BIT;  // Add MSG bit for message phase
                         __dmb();  // Ensure Core 1 sees this write
                         uint8_t new_status = dma->bus_ctrl & 0x1F;
@@ -157,6 +192,10 @@ void __time_critical_func(register_read_irq_isr)() {
                         cached->values[REG_DATA] = 0x00;  // Message byte = Command Complete
                     }
                 }
+            } else if (commit_offset == REG_STATUS || commit_offset == 0x30) {
+                // Reading status clears the interrupt latch per DMA board spec.
+                dma_registers_t *dma = dma_get_registers();
+                clear_irq_on_status_read(dma);
             }
 
             uint8_t pending_after = (uint8_t)fifo_pending_prefetch;
@@ -181,6 +220,25 @@ void __time_critical_func(register_read_irq_isr)() {
             if (masked_offset == REG_ADDR_H) {
                 data &= 0x0F;
             }
+            bool valid_offset = is_valid_reg_offset(masked_offset);
+            bool is_addr_reg = valid_offset &&
+                               (masked_offset == REG_ADDR_L || masked_offset == REG_ADDR_M ||
+                                masked_offset == REG_ADDR_H);
+            if (!valid_offset) {
+                trace_flags |= FIFO_TRACE_FLAG_ERROR;
+            }
+
+            if (is_addr_reg) {
+                dma_registers_t *dma = dma_get_registers();
+                if (masked_offset == REG_ADDR_L) {
+                    dma->dma_address.bytes.low = data;
+                } else if (masked_offset == REG_ADDR_M) {
+                    dma->dma_address.bytes.mid = data;
+                } else {
+                    dma->dma_address.bytes.high = data & 0x0F;
+                }
+                __dmb();  // Ensure Core 0 sees updated DMA address bytes promptly
+            }
 
             if (fifo_pending_prefetch == 0) {
                 trace_flags |= FIFO_TRACE_FLAG_ERROR;
@@ -204,15 +262,17 @@ void __time_critical_func(register_read_irq_isr)() {
                 }
             }
 
-            cached->values[masked_offset] = data;
-            if (masked_offset == REG_STATUS) {
-                cached->values[0x30] = data;
+            if (valid_offset) {
+                cached->values[masked_offset] = data;
+                if (masked_offset == REG_STATUS) {
+                    cached->values[0x30] = data;
+                }
             }
             trace_flags |= FIFO_TRACE_FLAG_WRITE;
 
             uint8_t pending_after = (uint8_t)fifo_pending_prefetch;
             fifo_trace_record(raw_value, payload_type, pending_before, pending_after, trace_flags, data);
-            enque_result = true;
+            enque_result = valid_offset && !is_addr_reg;
             break;
         }
 

@@ -36,6 +36,7 @@ class TraceEntry:
     __slots__ = (
         "index",
         "tag",
+        "kind",
         "pending_before",
         "pending_after",
         "flags",
@@ -53,6 +54,7 @@ class TraceEntry:
         *,
         index: int,
         tag: int,
+        kind: str,
         pending_before: int,
         pending_after: int,
         flags: int,
@@ -66,6 +68,7 @@ class TraceEntry:
     ) -> None:
         self.index = index
         self.tag = tag
+        self.kind = kind
         self.pending_before = pending_before
         self.pending_after = pending_after
         self.flags = flags
@@ -78,7 +81,7 @@ class TraceEntry:
         self.in_range = in_range
 
     def describe(self) -> str:
-        tag_name = {0: "REG_READ", 1: "WRITE", 2: "DMA_READ"}.get(self.tag, "UNKNOWN")
+        tag_name = self.kind.upper()
         parts = [
             f"[{self.index:05d}] {tag_name}",
             f"raw=0x{self.raw:08X}",
@@ -99,6 +102,20 @@ class TraceEntry:
         if self.logged_data is not None:
             parts.append(f"log_data=0x{self.logged_data:02X}")
         return " ".join(parts)
+
+
+def decode_register_address(raw: int) -> Tuple[Optional[int], Optional[int], Optional[int], bool]:
+    address = (raw >> 10) & 0xFFFFF  # board_registers address in bits 29-10
+    in_range = DMA_REGISTER_BASE <= address < DMA_REGISTER_BASE + 0x100
+    if not in_range:
+        return None, None, None, False
+    offset = (address - DMA_REGISTER_BASE) & 0xFFFFF
+    masked_offset = dma_mask_offset(offset) & 0xFF
+    return address, offset, masked_offset, True
+
+
+def decode_dma_address(raw: int) -> int:
+    return (raw >> 2) & 0xFFFFF  # DMA read/write address in bits 21-2
 
 
 def parse_trace_lines(lines: Iterable[str]) -> Iterable[TraceEntry]:
@@ -128,33 +145,37 @@ def parse_trace_lines(lines: Iterable[str]) -> Iterable[TraceEntry]:
         masked_offset: Optional[int] = None
         decoded_data: Optional[int] = None
         in_range = False
+        kind = "unknown"
 
-        if tag == 0:  # REG_READ
-            address = (raw >> 10) & 0xFFFFF  # REG_READ: address in bits 29-10 (board_registers uses right-shift ISR)
-            in_range = DMA_REGISTER_BASE <= address < DMA_REGISTER_BASE + 0x100
-            offset = (address - DMA_REGISTER_BASE) & 0xFFFFF
-            if in_range:
-                masked_offset = dma_mask_offset(offset)
-        elif tag == 1:  # WRITE
-            address = (raw >> 2) & 0xFFFFF  # WRITE: address in bits 21-2
-            in_range = DMA_REGISTER_BASE <= address < DMA_REGISTER_BASE + 0x100
-            offset = (address - DMA_REGISTER_BASE) & 0xFFFFF
-            if in_range:
-                masked_offset = dma_mask_offset(offset)
-            decoded_data = (raw >> 22) & 0xFF  # WRITE: data in bits 29-22
-        elif tag == 2:  # DMA_READ
-            # DMA_READ: data in bits 29-22, address in bits 21-2
-            address = (raw >> 2) & 0xFFFFF
+        if tag == 2:
+            # FIFO_REG_WRITE: address in bits 21-2, data in bits 29-22.
+            kind = "reg_write"
+            address = decode_dma_address(raw)
             decoded_data = (raw >> 22) & 0xFF
-            in_range = True  # DMA reads can be anywhere in memory
-            offset = None  # Not a register offset
-
-        if masked_offset is not None:
-            masked_offset &= 0xFF
+            in_range = DMA_REGISTER_BASE <= address < DMA_REGISTER_BASE + 0x100
+            if in_range:
+                offset = (address - DMA_REGISTER_BASE) & 0xFFFFF
+                masked_offset = dma_mask_offset(offset) & 0xFF
+        elif tag in (0, 1):
+            # FIFO_REG_PREFETCH (0) / FIFO_REG_READ_COMMIT (1) if address matches register range.
+            reg_address, reg_offset, reg_masked, reg_in_range = decode_register_address(raw)
+            if reg_in_range:
+                address = reg_address
+                offset = reg_offset
+                masked_offset = reg_masked
+                in_range = True
+                kind = "reg_prefetch" if tag == 0 else "reg_commit"
+            else:
+                # Otherwise treat as DMA read/write (PIO DMA path uses tag 0/1).
+                address = decode_dma_address(raw)
+                decoded_data = (raw >> 22) & 0xFF
+                in_range = True
+                kind = "dma_read" if tag == 0 else "dma_write"
 
         yield TraceEntry(
             index=index,
             tag=tag,
+            kind=kind,
             pending_before=pending_before,
             pending_after=pending_after,
             flags=flags,
@@ -178,50 +199,37 @@ def dma_mask_offset(offset: int) -> int:
 def validate_sequence(entries: Iterable[TraceEntry]) -> Tuple[Counter, Counter, int]:
     summary = Counter()
     anomalies = Counter()
-    tag_names = {0: "reg_read", 1: "write", 2: "dma_read"}
     processed = 0
 
     for entry in entries:
         processed += 1
 
-        tag_name = tag_names.get(entry.tag, "unknown")
-
         if entry.flags & TRACE_FLAG_ERROR:
             anomalies["explicit-error-flagged"] += 1
 
-        if entry.tag == 0:  # REG_READ
+        if entry.kind in ("reg_prefetch", "reg_commit"):
+            summary[(entry.kind, entry.masked_offset)] += 1
+        elif entry.kind == "reg_write":
             if not entry.in_range:
-                anomalies[f"{tag_name}-out-of-range"] += 1
-                continue
-            summary[("reg_read", entry.masked_offset)] += 1
-            if entry.flags & TRACE_FLAG_ERROR:
-                anomalies["reg_read-flag-error"] += 1
-        elif entry.tag == 1:  # WRITE
-            if not entry.in_range:
-                anomalies[f"{tag_name}-out-of-range"] += 1
-                continue
-            summary[("write", entry.masked_offset)] += 1
-            if entry.flags & TRACE_FLAG_ERROR:
-                anomalies["write-flag-error"] += 1
+                anomalies["reg_write-out-of-range"] += 1
+            else:
+                summary[(entry.kind, entry.masked_offset)] += 1
             if (
                 entry.decoded_data is not None
                 and entry.logged_data is not None
                 and entry.decoded_data != entry.logged_data
             ):
-                anomalies["write-data-mismatch"] += 1
-        elif entry.tag == 2:  # DMA_READ
-            # DMA reads can be anywhere in memory, not just register space
-            summary[("dma_read", entry.address)] += 1
-            if entry.flags & TRACE_FLAG_ERROR:
-                anomalies["dma_read-flag-error"] += 1
+                anomalies["reg_write-data-mismatch"] += 1
+        elif entry.kind in ("dma_read", "dma_write"):
+            summary[(entry.kind, entry.address)] += 1
             if (
                 entry.decoded_data is not None
                 and entry.logged_data is not None
                 and entry.decoded_data != entry.logged_data
             ):
-                anomalies["dma_read-data-mismatch"] += 1
+                anomalies[f"{entry.kind}-data-mismatch"] += 1
         else:
-            anomalies["unknown-tag"] += 1
+            anomalies["unknown-kind"] += 1
 
     return summary, anomalies, processed
 
@@ -231,7 +239,7 @@ def print_summary(summary: Counter, limit: Optional[int] = None) -> None:
         print("No trace entries parsed.")
         return
 
-    print("Event summary (type @ masked offset -> count):")
+    print("Event summary (type @ offset -> count):")
     rows = [
         (count, event, offset)
         for (event, offset), count in summary.items()
@@ -242,7 +250,11 @@ def print_summary(summary: Counter, limit: Optional[int] = None) -> None:
     for idx, (count, event, offset) in enumerate(rows, start=1):
         if limit is not None and idx > limit:
             break
-        print(f"  {event:<8} @ 0x{offset:02X} : {count}")
+        if event.startswith("dma_"):
+            offset_str = f"0x{offset:05X}"
+        else:
+            offset_str = f"0x{offset:02X}"
+        print(f"  {event:<12} @ {offset_str} : {count}")
 
 
 def main(argv: Optional[Iterable[str]] = None) -> int:

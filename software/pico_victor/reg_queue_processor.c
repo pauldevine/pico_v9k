@@ -39,6 +39,17 @@ void cached_set_data(uint8_t value) {
     cached_regs.values[REG_DATA] = value;
 }
 
+void cached_sync_dma_address(const dma_registers_t *dma) {
+    if (!dma) {
+        return;
+    }
+
+    cached_regs.values[REG_ADDR_L] = dma->dma_address.bytes.low;
+    cached_regs.values[REG_ADDR_M] = dma->dma_address.bytes.mid;
+    cached_regs.values[REG_ADDR_H] = dma->dma_address.bytes.high & 0x0F;
+    __dmb();  // Ensure other core sees updated cached address bytes
+}
+
 // Initialize the deferred processing system
 void dma_defer_init(void) {
     // Clear the queue
@@ -256,6 +267,8 @@ void defer_process_write(dma_registers_t *dma, uint32_t raw_value) {
             if (pending_non_dma && host_to_device) {
                 dma->state.non_dma_req = 0;
                 dma->state.asserting_ack = 1;
+                // Drop REQ to acknowledge the byte, then assert ACK.
+                dma->bus_ctrl &= ~SASI_REQ_BIT;
                 dma->bus_ctrl |= SASI_ACK_BIT;
                 __dmb();  // Ensure Core 0 sees bus_ctrl update before any DATA read
             }
