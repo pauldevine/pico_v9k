@@ -1,0 +1,6 @@
+(sym_lib_table
+  (version 7)
+  (lib (name "74HCT30")(type "Legacy")(uri "/Users/pauldevine/Documents/Victor9k Stuff/Expansion Boards/Victor9k_kicad_RAM/libraries/74HCT30/CD74HCT30E.lib")(options "")(descr ""))
+  (lib (name "74HCT138n")(type "Legacy")(uri "/Users/pauldevine/Documents/Victor9k Stuff/Expansion Boards/Victor9k_kicad_RAM/libraries/74HCT138N/74HCT138N.lib")(options "")(descr ""))
+  (lib (name "74HCT573")(type "Legacy")(uri "/Users/pauldevine/Documents/Victor9k Stuff/Expansion Boards/Victor9k_kicad_RAM/libraries/74HCT573N/74HCT573N.lib")(options "")(descr ""))
+)
