@@ -58,10 +58,10 @@ T4:
     jmp T0 side 0                        ; jump to T4 for the next clock cycle
 .wrap
 
-T3_WRITE:                              ; 8088 write cycle // pico's reading
-    wait 1 GPIO READY_PIN side 0         ; Wait for CLK5 to go high to allow data to stabilize
-    set x, FIFO_REG_WRITE side 0         ; signal to arm write value payload
-    in pins, DATA_SIZE side 0            ; read data the 8088 is writing max 0xFF
+T3_WRITE:                                ; 8088 write cycle // pico's reading
+    wait 1 GPIO READY_PIN side 1         ; Wait for READY pin to go high to allow data to stabilize
+    set x, FIFO_REG_WRITE side 1         ; signal to arm write value payload
+    in pins, DATA_SIZE side 1            ; read data the 8088 is writing max 0xFF
     in x, 2 side 0                       ; move the WRITE prefetch flag into ISR as MSBs //ISR has 10[data][address]
     jmp T4 side 0                        ; jump to T4 for the next clock cycle
 

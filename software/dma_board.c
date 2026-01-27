@@ -12,6 +12,7 @@
 #include "dma_master.pio.h"
 #include "pico_victor/dma.h"
 #include "pico_victor/debug_queue.h"
+#include "pico_victor/reg_queue_processor.h"
 #include "pico_fujinet/spi.h"
 
 #define UART_ID uart0
@@ -196,6 +197,13 @@ int main() {
                     }
                 }
                 printf("\n");
+            }
+
+            // Check defer queue stats
+            defer_queue_t *q = defer_get_queue();
+            if (q->drops > 0) {
+                printf("DEFER QUEUE: drops=%lu processed=%lu\n",
+                       (unsigned long)q->drops, (unsigned long)q->processed);
             }
 
         }

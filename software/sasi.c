@@ -13,6 +13,23 @@
 #include "sasi.h"
 #include "pico_fujinet/spi.h"
 
+// Set to 1 to enable SASI debug printf (WARNING: slows Core 1 dramatically, causes queue overflow)
+#define SASI_DEBUG_PRINTF 0
+// Set to 1 to enable SASI fast_log tracing (WARNING: causes queue overflow)
+#define SASI_DEBUG_FASTLOG 0
+
+#if SASI_DEBUG_PRINTF
+#define sasi_printf(...) printf(__VA_ARGS__)
+#else
+#define sasi_printf(...) ((void)0)
+#endif
+
+#if SASI_DEBUG_FASTLOG
+#define sasi_fastlog(...) fast_log(__VA_ARGS__)
+#else
+#define sasi_fastlog(...) ((void)0)
+#endif
+
 // SASI command state - file-scope so it can be reset on device reset
 static uint8_t sasi_command_buffer[16];
 static int sasi_cmd_index = 0;
@@ -46,27 +63,34 @@ static void sasi_request_cmd_byte(dma_registers_t *dma) {
     dma->bus_ctrl &= ~(SASI_ACK_BIT | SASI_MSG_BIT);
     dma->bus_ctrl |= (SASI_BSY_BIT | SASI_REQ_BIT | SASI_CTL_BIT);
     dma->bus_ctrl &= ~SASI_INP_BIT; // host -> controller
-    __dmb();  // Ensure Core 0 sees bus_ctrl update before any DATA read
+    __dmb();  // Ensure bus_ctrl update is complete
     dma->state.non_dma_req = 1;
-    dma_update_interrupts(dma, true);
+    // CRITICAL: Update cache BEFORE asserting interrupt!
     cached_status_sync_from_bus(dma);
-    fast_log("SASI: request_cmd_byte done, bus_ctrl 0x%02X->0x%02X\n", before, dma->bus_ctrl);
+    __dmb();  // Ensure cache write is visible to Core 0
+    dma_update_interrupts(dma, true);
+    sasi_fastlog("SASI: request_cmd_byte done, bus_ctrl 0x%02X->0x%02X\n", before, dma->bus_ctrl);
 }
 
 static void sasi_enter_status_phase(dma_registers_t *dma, uint8_t status_byte) {
     // Prepare to send status: BSY|REQ|CTL|INP
-    fast_log("SASI: entering status phase, status=0x%02X\n", status_byte);
+    sasi_fastlog("SASI: entering status phase, status=0x%02X, irq_pend=%d\n",
+             status_byte, dma->state.interrupt_pending);
     dma->status = status_byte;
     cached_set_data(status_byte);
     dma->bus_ctrl &= ~SASI_ACK_BIT;
     dma->bus_ctrl |= (SASI_BSY_BIT | SASI_REQ_BIT | SASI_CTL_BIT | SASI_INP_BIT);
     dma->bus_ctrl &= ~SASI_MSG_BIT;
-    __dmb();  // Ensure Core 0 sees bus_ctrl update before any DATA read
+    __dmb();  // Ensure bus_ctrl update is complete
     dma->state.non_dma_req = 1;
     dma->state.status_pending = 1;  // Mark that we're waiting for host to read status
-    dma_update_interrupts(dma, true);
+    // CRITICAL: Update cache BEFORE asserting interrupt!
+    // Host polls immediately after seeing IR4 - cache must be ready.
     cached_status_sync_from_bus(dma);
-    fast_log("SASI: status phase ready, bus_ctrl=0x%02X\n", dma->bus_ctrl);
+    __dmb();  // Ensure cache write is visible to Core 0
+    dma_update_interrupts(dma, true);
+    sasi_fastlog("SASI: status phase ready, bus_ctrl=0x%02X, irq_pend=%d\n",
+             dma->bus_ctrl, dma->state.interrupt_pending);
 }
 
 static void sasi_enter_message_phase(dma_registers_t *dma) {
@@ -74,10 +98,12 @@ static void sasi_enter_message_phase(dma_registers_t *dma) {
     cached_set_data(0x00);
     dma->bus_ctrl &= ~SASI_ACK_BIT;
     dma->bus_ctrl |= (SASI_BSY_BIT | SASI_REQ_BIT | SASI_CTL_BIT | SASI_INP_BIT | SASI_MSG_BIT);
-    __dmb();  // Ensure Core 0 sees bus_ctrl update
+    __dmb();  // Ensure bus_ctrl update is complete
     dma->state.non_dma_req = 1;
-    dma_update_interrupts(dma, true);
+    // CRITICAL: Update cache BEFORE asserting interrupt!
     cached_status_sync_from_bus(dma);
+    __dmb();  // Ensure cache write is visible to Core 0
+    dma_update_interrupts(dma, true);
 }
 
 static void sasi_release_bus(dma_registers_t *dma) {
@@ -88,13 +114,6 @@ static void sasi_release_bus(dma_registers_t *dma) {
     cached_status_sync_from_bus(dma);
 }
 
-static bool is_request_sense_cdb(const uint8_t *cmd, int len) {
-    if (len < 6) return false;
-    if (cmd[0] != 0x03) return false;
-    // Heuristic: RS has reserved bytes 2/3 = 0, allocation length > 0
-    return (cmd[2] == 0x00 && cmd[3] == 0x00 && cmd[4] > 0);
-}
-
 void route_to_sasi_target(dma_registers_t *dma, uint8_t *cmd, int len) {
     switch (cmd[0]) {
         case 0x00: // Test Unit Ready
@@ -102,7 +121,7 @@ void route_to_sasi_target(dma_registers_t *dma, uint8_t *cmd, int len) {
             break;
 
         case 0x01: // Recalibrate/Rezero Unit - treat same as Test Unit Ready for now
-            printf("SASI: Recalibrate/Rezero Unit\n");
+            sasi_printf("SASI: Recalibrate/Rezero Unit\n");
             handle_test_unit_ready(dma);  // Return GOOD status
             break;
 
@@ -116,12 +135,8 @@ void route_to_sasi_target(dma_registers_t *dma, uint8_t *cmd, int len) {
             handle_read_sectors(dma, cmd);
             break;
 
-        case 0x03: // Either Request Sense or SASI Read
-            if (is_request_sense_cdb(cmd, len)) {
-                handle_request_sense(dma, cmd);
-            } else {
-                handle_read_sectors(dma, cmd); // observed in Victor logs
-            }
+        case 0x03: // Request Sense (BIOS uses 0x08 for READ, 0x03 is always SENSE)
+            handle_request_sense(dma, cmd);
             break;
 
         case 0x0A: // Write(6)
@@ -129,7 +144,7 @@ void route_to_sasi_target(dma_registers_t *dma, uint8_t *cmd, int len) {
             break;
 
         case 0x0C: // Initialize Drive Characteristics
-            printf("SASI: Initialize Drive Characteristics\n");
+            sasi_printf("SASI: Initialize Drive Characteristics\n");
             handle_mode_select(dma, cmd);  // Accept parameters and return GOOD
             break;
 
@@ -139,76 +154,75 @@ void route_to_sasi_target(dma_registers_t *dma, uint8_t *cmd, int len) {
 
         default:
             // Unknown command - return GOOD status anyway to not block boot
-            printf("SASI: Unknown command 0x%02X, returning GOOD status\n", cmd[0]);
+            sasi_printf("SASI: Unknown command 0x%02X, returning GOOD status\n", cmd[0]);
             signal_command_complete(dma);
             break;
     }
 }
 
 void handle_sasi_command_byte(dma_registers_t *dma, uint8_t cmd_byte) {
-    fast_log("SASI: handle_cmd_byte entry idx=%d byte=0x%02X\n", sasi_cmd_index, cmd_byte);
-    printf("SASI CMD[%d] = 0x%02X\n", sasi_cmd_index, cmd_byte);
+    sasi_fastlog("SASI: handle_cmd_byte entry idx=%d byte=0x%02X\n", sasi_cmd_index, cmd_byte);
+    sasi_printf("SASI CMD[%d] = 0x%02X\n", sasi_cmd_index, cmd_byte);
     sasi_command_buffer[sasi_cmd_index++] = cmd_byte;
 
     // First byte is the opcode - log recognized commands
     if (sasi_cmd_index == 1) {
         switch (cmd_byte) {
             case 0x00:
-                printf("SASI: Test Unit Ready\n");
+                sasi_printf("SASI: Test Unit Ready\n");
                 break;
             case 0x01:
-                printf("SASI: Recalibrate/Rezero Unit\n");
+                sasi_printf("SASI: Recalibrate/Rezero Unit\n");
                 break;
             case 0x03:
-                printf("SASI: Request Sense or Read\n");
+                sasi_printf("SASI: Request Sense\n");
                 break;
             case 0x08:
-                printf("SASI: Read(6)\n");
+                sasi_printf("SASI: Read(6)\n");
                 break;
             case 0x0A:
-                printf("SASI: Write(6)\n");
+                sasi_printf("SASI: Write(6)\n");
                 break;
             case 0x0C:
-                printf("SASI: Initialize Drive Characteristics\n");
+                sasi_printf("SASI: Initialize Drive Characteristics\n");
                 break;
             case 0x15:
-                printf("SASI: Mode Select(6)\n");
+                sasi_printf("SASI: Mode Select(6)\n");
                 break;
             case XEBEC_RAM_DIAG:
-                printf("SASI: Xebec RAM Diagnostic 0xE0\n");
+                sasi_printf("SASI: Xebec RAM Diagnostic 0xE0\n");
                 break;
             case XEBEC_DRIVE_DIAG:
-                printf("SASI: Xebec Drive Diagnostic 0xE3\n");
+                sasi_printf("SASI: Xebec Drive Diagnostic 0xE3\n");
                 break;
             case XEBEC_INTERNAL_DIAG:
-                printf("SASI: Xebec Internal Diagnostic 0xE4\n");
+                sasi_printf("SASI: Xebec Internal Diagnostic 0xE4\n");
                 break;
             default:
-                printf("SASI: Unknown opcode 0x%02X\n", cmd_byte);
+                sasi_printf("SASI: Unknown opcode 0x%02X\n", cmd_byte);
                 break;
         }
     }
 
     // When command is complete, route to appropriate handler
     if (command_complete(sasi_command_buffer, sasi_cmd_index)) {
-        fast_log("SASI: command complete, routing opcode=0x%02X\n", sasi_command_buffer[0]);
+        sasi_fastlog("SASI: command complete, routing opcode=0x%02X\n", sasi_command_buffer[0]);
         route_to_sasi_target(dma, sasi_command_buffer, sasi_cmd_index);
         sasi_cmd_index = 0; // Reset for next command
     } else {
         // Request next byte per log sequence (BSY|REQ|CTL)
-        fast_log("SASI: requesting next byte, idx=%d\n", sasi_cmd_index);
+        sasi_fastlog("SASI: requesting next byte, idx=%d\n", sasi_cmd_index);
         sasi_request_cmd_byte(dma);
     }
 }
 
 void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
-    // Parse Read(6)/SASI READ
-    // For Read(6): cmd[1] (5 MSBs), cmd[2], cmd[3], cmd[4]=count
-    // For SASI/Xebec variant in logs (0x03), bytes match 3-byte LBA + count
+    // Parse Read(6) - command 0x08
+    // cmd[1] (5 MSBs), cmd[2], cmd[3] = LBA, cmd[4] = count
     uint32_t sector = ((cmd[1] & 0x1F) << 16) | (cmd[2] << 8) | cmd[3];
     uint16_t blocks = cmd[4] ? cmd[4] : 256; // SASI Read(6): 0 means 256 blocks
 
-    printf("Reading %u sectors starting at %u\n", (unsigned)blocks, (unsigned)sector);
+    sasi_printf("Reading %u sectors starting at %u\n", (unsigned)blocks, (unsigned)sector);
 
     if (dma) {
         dma->logical_block.full = sector;
@@ -250,7 +264,7 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
     uint32_t sector = ((cmd[1] & 0x1F) << 16) | (cmd[2] << 8) | cmd[3];
     uint16_t blocks = cmd[4] ? cmd[4] : 256;
 
-    printf("Writing %u sectors starting at %u\n", (unsigned)blocks, (unsigned)sector);
+    sasi_printf("Writing %u sectors starting at %u\n", (unsigned)blocks, (unsigned)sector);
 
     if (dma) {
         dma->logical_block.full = sector;
@@ -276,7 +290,7 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
         uint8_t device = DEVICE_DISK_BASE + target;
         if (!fujinet_write_sector(device, sector + i, sector_data, 512)) {
             // For now, ignore failures and continue
-            printf("Warning: write sector LBA %lu failed, continuing\n", (unsigned long)(sector + i));
+            sasi_printf("Warning: write sector LBA %lu failed, continuing\n", (unsigned long)(sector + i));
         }
     }
 
@@ -336,7 +350,7 @@ void handle_mode_select(dma_registers_t *dma, uint8_t *cmd) {
     signal_command_complete(dma);
 }
 void handle_xebec_diagnostic(dma_registers_t *dma, uint8_t diagnostic_type) {
-    printf("SASI: Executing diagnostic 0x%02X (opcode 0x%02X)\n", diagnostic_type, sasi_command_buffer[0]);
+    sasi_printf("SASI: Executing diagnostic 0x%02X (opcode 0x%02X)\n", diagnostic_type, sasi_command_buffer[0]);
 
     // Execute diagnostic (always pass for now)
     // Diagnostics are non-data commands that complete immediately with status.

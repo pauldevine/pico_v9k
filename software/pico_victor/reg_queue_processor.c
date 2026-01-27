@@ -13,6 +13,15 @@
 #include "logging.h"
 #include "fifo_helpers.h"
 
+// Set to 1 to enable verbose defer processor logging (WARNING: causes queue overflow)
+#define DEFER_VERBOSE_LOG 0
+
+#if DEFER_VERBOSE_LOG
+#define defer_log(...) defer_log(__VA_ARGS__)
+#else
+#define defer_log(...) ((void)0)
+#endif
+
 // Static instances - place in time_critical section for fast access
 defer_queue_t defer_queue __attribute__((section(".time_critical.defer_queue")));
 cached_registers_t cached_regs __attribute__((section(".time_critical.cached_regs")));
@@ -58,7 +67,10 @@ void dma_defer_init(void) {
     defer_queue.tail = 0;
 
     // Initialize cached registers with default values
-    memset(cached_regs.values, 0xFF, sizeof(cached_regs.values));
+    // Use loop instead of memset for volatile array
+    for (int i = 0; i < 256; i++) {
+        cached_regs.values[i] = 0xFF;
+    }
 
     // Set initial values for specific registers
     cached_regs.values[REG_CONTROL] = 0x00;  // Control must start at 0 for SELECT edge detection
@@ -103,9 +115,9 @@ void defer_process_read(dma_registers_t *dma, uint32_t raw_value) {
     // Extract address FIFO has 00[address] - REG_READ payload
     if (++read_request_counter >= 1000) {
         read_request_counter = 0;
-        //fast_log("1000 READ requests processed\n");
+        //defer_log("1000 READ requests processed\n");
     }
-    //fast_log("RAW=0x%08x\n", raw_value);
+    //defer_log("RAW=0x%08x\n", raw_value);
     uint32_t address = board_fifo_read_address(raw_value);
     uint32_t offset = address - DMA_REGISTER_BASE;
     uint32_t masked_offset = dma_mask_offset(offset);
@@ -117,7 +129,7 @@ void defer_process_read(dma_registers_t *dma, uint32_t raw_value) {
 
     // Bounds check
     if (offset >= 0x100) {
-        fast_log("DEFER_READ: out of range offset=0x%02x\n", offset);
+        defer_log("DEFER_READ: out of range offset=0x%02x\n", offset);
         return;
     }
 
@@ -136,36 +148,42 @@ void defer_process_read(dma_registers_t *dma, uint32_t raw_value) {
             break;
 
         case REG_DATA:
-            // Data register read side effects
-            // NOTE: Phase transitions are now handled synchronously in the fast handler
-            // (register_irq_handlers.c) to avoid race conditions. The deferred processor
-            // only handles slow operations like updating dma->state and interrupts.
-            if (dma->state.non_dma_req) {
-                if (dma->bus_ctrl & SASI_MSG_BIT) {
-                    // Message phase - bus was already released by fast handler
-                    // Just update the slow state here
-                    dma->state.non_dma_req = 0;
-                    dma_update_interrupts(dma, false);
-                } else if ((dma->bus_ctrl & (SASI_CTL_BIT | SASI_INP_BIT)) ==
-                            (SASI_CTL_BIT | SASI_INP_BIT)) {
-                    // Status phase - transition was already done by fast handler
-                    // Just update the slow state here
-                    if (dma->state.status_pending) {
-                        dma->state.status_pending = 0;
-                        dma->state.non_dma_req = 1;
-                        dma_update_interrupts(dma, true);
-                    }
-                } else if ((dma->bus_ctrl & (SASI_CTL_BIT | SASI_INP_BIT)) == SASI_INP_BIT) {
-                    // Data-in phase (CTL=0, INP=1) - clear request after read
-                    dma->state.non_dma_req = 0;
-                } else {
-                    // Command phase (CTL=1, INP=0) or Data-out phase (CTL=0, INP=0)
-                    // Reading DATA is unexpected here - don't clear non_dma_req
-                    // to preserve the request state for the next command byte
-                    fast_log("DEFER_READ: DATA read during unexpected phase, bus_ctrl=0x%02X\n", dma->bus_ctrl);
+            // Data register read - handle phase transitions
+            // Core 1 (deferred processor) is the sole owner of bus_ctrl to avoid race conditions.
+            if (dma->bus_ctrl & SASI_MSG_BIT) {
+                // Message phase - host read the message byte, release bus
+                defer_log("DEFER_READ: Message phase complete, releasing bus\n");
+                dma->bus_ctrl = 0;  // Clear all bus signals (bus free)
+                __dmb();
+                dma->state.non_dma_req = 0;
+                dma->state.status_pending = 0;
+                dma_update_interrupts(dma, false);
+                cached_status_sync_from_bus(dma);
+            } else if ((dma->bus_ctrl & (SASI_CTL_BIT | SASI_INP_BIT)) ==
+                        (SASI_CTL_BIT | SASI_INP_BIT)) {
+                // Status phase - host read status byte, transition to message phase
+                if (dma->state.status_pending) {
+                    defer_log("DEFER_READ: Status phase complete, entering message phase\n");
+                    dma->state.status_pending = 0;
+                    dma->state.non_dma_req = 1;
+                    dma->bus_ctrl |= SASI_MSG_BIT;  // Add MSG bit for message phase (0x0F -> 0x1F)
+                    __dmb();
+                    dma_update_interrupts(dma, true);
+                    cached_status_sync_from_bus(dma);
+                    cached_set_data(0x00);  // Message byte = Command Complete
                 }
+            } else if ((dma->bus_ctrl & (SASI_CTL_BIT | SASI_INP_BIT)) == SASI_INP_BIT) {
+                // Data-in phase (CTL=0, INP=1) - clear request after read
+                dma->state.non_dma_req = 0;
+            } else if (dma->state.non_dma_req) {
+                // Command phase (CTL=1, INP=0) or Data-out phase (CTL=0, INP=0)
+                // Reading DATA is unexpected here
+                defer_log("DEFER_READ: DATA read during unexpected phase, bus_ctrl=0x%02X\n", dma->bus_ctrl);
             }
-            fast_log("DEFER_READ: offset=0x%02x end_status %d (processed side effects, cache already returned)\n", masked_offset, cached_regs.values[REG_STATUS]);
+#if DEFER_VERBOSE_LOG
+            defer_log("DEFER_READ: DATA read complete, bus_ctrl=0x%02X, status_cache=0x%02X\n",
+                     dma->bus_ctrl, cached_regs.values[REG_STATUS]);
+#endif
             break;
 
         case REG_ADDR_L:
@@ -173,12 +191,14 @@ void defer_process_read(dma_registers_t *dma, uint32_t raw_value) {
         case REG_ADDR_H:
             // No side effects for address register reads
             // The cached value was already returned by the fast handler
-            fast_log("DEFER_READ: offset=0x%02x (no action, cache already returned)\n", masked_offset);
+#if DEFER_VERBOSE_LOG
+            defer_log("DEFER_READ: offset=0x%02x (no action, cache already returned)\n", masked_offset);
+#endif
             break;
 
         default:
             // Unknown register
-            fast_log("DEFER_READ: Unknown register offset=0x%02x\n", masked_offset);
+            defer_log("DEFER_READ: Unknown register offset=0x%02x\n", masked_offset);
             break;
     }
 }
@@ -199,7 +219,7 @@ void defer_process_write(dma_registers_t *dma, uint32_t raw_value) {
 
     // Bounds check
     if (offset >= 0x100) {
-        fast_log("DEFER_WRITE: out of range offset=0x%02x\n", offset);
+        defer_log("DEFER_WRITE: out of range offset=0x%02x\n", offset);
         return;
     }
 
@@ -229,7 +249,7 @@ void defer_process_write(dma_registers_t *dma, uint32_t raw_value) {
                         dma->selected_target = sasi_extract_target_id(dma->command);
                         dma->bus_ctrl |= SASI_BSY_BIT;
                         __dmb();  // Ensure Core 0 sees bus_ctrl update
-                        fast_log("DEFER: SELECT asserted, bus_ctrl=0x%02x\n", dma->bus_ctrl);
+                        defer_log("DEFER: SELECT asserted, bus_ctrl=0x%02x\n", dma->bus_ctrl);
                     } else if (!now_sel && prev_sel) {
                         // Selection phase ending - enter command phase
                         dma->bus_ctrl &= ~SASI_SEL_BIT;
@@ -238,12 +258,14 @@ void defer_process_write(dma_registers_t *dma, uint32_t raw_value) {
                         __dmb();  // Ensure Core 0 sees bus_ctrl update
                         dma->state.non_dma_req = 1;
                         dma_update_interrupts(dma, true);
-                        fast_log("DEFER: SELECT released, bus_ctrl=0x%02x (entering cmd phase)\n", dma->bus_ctrl);
+                        defer_log("DEFER: SELECT released, bus_ctrl=0x%02x (entering cmd phase)\n", dma->bus_ctrl);
                     }
                 }
                 cached_status_sync_from_bus(dma);
-                fast_log("DEFER: Write CONTROL = 0x%02x prev_sel=%d bus_ctrl=0x%02x\n",
+#if DEFER_VERBOSE_LOG
+                defer_log("DEFER: Write CONTROL = 0x%02x prev_sel=%d bus_ctrl=0x%02x\n",
                          write_data, prev_sel, dma->bus_ctrl);
+#endif
             }
             break;
 
@@ -274,8 +296,10 @@ void defer_process_write(dma_registers_t *dma, uint32_t raw_value) {
             }
 
             // Debug: log bus_ctrl to understand command processing
-            fast_log("DEFER: Write DATA = 0x%02x bus_ctrl=0x%02x CTL=%d\n",
+#if DEFER_VERBOSE_LOG
+            defer_log("DEFER: Write DATA = 0x%02x bus_ctrl=0x%02x CTL=%d\n",
                      write_data, dma->bus_ctrl, !!(dma->bus_ctrl & SASI_CTL_BIT));
+#endif
 
             if (dma->bus_ctrl & SASI_CTL_BIT) {
                 // Command phase - process SASI command byte
@@ -287,24 +311,30 @@ void defer_process_write(dma_registers_t *dma, uint32_t raw_value) {
         case REG_ADDR_L:
             dma->dma_address.bytes.low = write_data;
             cached_regs.values[REG_ADDR_L] = write_data;
-            fast_log("DEFER: Write ADDR_L = 0x%02x\n", write_data);
+#if DEFER_VERBOSE_LOG
+            defer_log("DEFER: Write ADDR_L = 0x%02x\n", write_data);
+#endif
             break;
 
         case REG_ADDR_M:
             dma->dma_address.bytes.mid = write_data;
             cached_regs.values[REG_ADDR_M] = write_data;
-            fast_log("DEFER: Write ADDR_M = 0x%02x\n", write_data);
+#if DEFER_VERBOSE_LOG
+            defer_log("DEFER: Write ADDR_M = 0x%02x\n", write_data);
+#endif
             break;
 
         case REG_ADDR_H:
             dma->dma_address.bytes.high = write_data & 0x0F;
             cached_regs.values[REG_ADDR_H] = write_data & 0x0F;
-            fast_log("DEFER: Write ADDR_H = 0x%02x\n", write_data & 0x0F);
+#if DEFER_VERBOSE_LOG
+            defer_log("DEFER: Write ADDR_H = 0x%02x\n", write_data & 0x0F);
+#endif
             break;
 
         default:
             // Unknown register
-            fast_log("DEFER_WRITE: Unknown register offset=0x%02x\n", masked_offset);
+            defer_log("DEFER_WRITE: Unknown register offset=0x%02x\n", masked_offset);
             break;
     }
 }
@@ -330,7 +360,7 @@ void defer_process_entry(dma_registers_t *dma, const defer_entry_t *entry) {
             break;
         default:
             // Unknown payload type
-            fast_log("DEFER: Unknown payload type: 0x%02x\n", payload_type);
+            defer_log("DEFER: Unknown payload type: 0x%02x\n", payload_type);
             return;
     }
     defer_queue.processed++;
@@ -341,7 +371,7 @@ void defer_worker_main(void) {
     dma_registers_t *dma = dma_get_registers();
     defer_entry_t entry;
 
-    fast_log("DEFER: Worker starting on Core 1\n");
+    defer_log("DEFER: Worker starting on Core 1\n");
 
     while (1) {
         // Process all pending entries
@@ -350,7 +380,8 @@ void defer_worker_main(void) {
         }
 
         // Emit recorded FIFO tag trace entries for debugging
-        dma_fifo_trace_flush();
+        // DISABLED: causes queue overflow due to fast_log overhead
+        // dma_fifo_trace_flush();
 
         // Keep the loop tight to minimize register latency.
         tight_loop_contents();

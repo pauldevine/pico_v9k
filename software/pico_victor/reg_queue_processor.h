@@ -35,8 +35,9 @@ typedef struct {
 
 // Cached register values for fast reads
 // Aligned to cache line for optimal performance
+// NOTE: values must be volatile - accessed by both Core 0 (fast handler) and Core 1 (deferred processor)
 typedef struct {
-    uint8_t values[256];
+    volatile uint8_t values[256];
     uint32_t last_update;  // Timestamp of last update
 } __attribute__((aligned(64))) cached_registers_t;
 

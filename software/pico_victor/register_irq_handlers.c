@@ -155,43 +155,30 @@ void __time_critical_func(register_read_irq_isr)() {
                 fifo_pending_prefetch--;
             }
 
-            // Handle DATA register read phase transitions SYNCHRONOUSLY
-            // This is critical to avoid race conditions - the host will read STATUS
-            // immediately after reading DATA, and must see the updated bus state.
-            // NOTE: No logging in this path - timing critical!
+            // Validate the register offset
             uint32_t commit_offset = dma_mask_offset(address - DMA_REGISTER_BASE) & 0xFF;
             if (!is_valid_reg_offset(commit_offset)) {
                 trace_flags |= FIFO_TRACE_FLAG_ERROR;
             }
-            if (commit_offset == REG_DATA) {
-                dma_registers_t *dma = dma_get_registers();
-                // Memory barrier to ensure we see latest bus_ctrl from Core 1
-                __dmb();
-                uint8_t bus = dma->bus_ctrl;
 
-                if (bus & SASI_MSG_BIT) {
-                    // Message phase - release bus immediately
-                    // Host read the message byte (0x00), now transition to bus free
-                    dma->bus_ctrl = 0;  // Clear all bus signals
-                    dma->state.non_dma_req = 0;
-                    dma->state.status_pending = 0;
-                    __dmb();  // Ensure Core 1 sees this write
+            // For DATA register reads, update the CACHE to reflect the next phase.
+            // We check the CACHED status (not bus_ctrl) because the cache may already
+            // be ahead of bus_ctrl. The cache represents what the host is seeing.
+            if (commit_offset == REG_DATA) {
+                uint8_t cached_status = cached->values[REG_STATUS] & 0x1F;
+
+                if (cached_status & SASI_MSG_BIT) {
+                    // Message phase (0x1F) - host read message byte, transition to bus free
                     cached->values[REG_STATUS] = 0x00;
                     cached->values[0x30] = 0x00;
-                } else if ((bus & (SASI_CTL_BIT | SASI_INP_BIT)) == (SASI_CTL_BIT | SASI_INP_BIT)) {
-                    // Status phase - host read status byte, transition to message phase
-                    // Only transition if status_pending flag is set (prevents stale reads)
-                    if (dma->state.status_pending) {
-                        dma->state.status_pending = 0;
-                        dma->state.non_dma_req = 1;
-                        dma->bus_ctrl |= SASI_MSG_BIT;  // Add MSG bit for message phase
-                        __dmb();  // Ensure Core 1 sees this write
-                        uint8_t new_status = dma->bus_ctrl & 0x1F;
-                        cached->values[REG_STATUS] = new_status;
-                        cached->values[0x30] = new_status;
-                        cached->values[REG_DATA] = 0x00;  // Message byte = Command Complete
-                    }
+                } else if ((cached_status & (SASI_CTL_BIT | SASI_INP_BIT)) == (SASI_CTL_BIT | SASI_INP_BIT)) {
+                    // Status phase (0x0F) - host read status byte, transition to message phase
+                    uint8_t next_status = cached_status | SASI_MSG_BIT;  // 0x0F -> 0x1F
+                    cached->values[REG_STATUS] = next_status;
+                    cached->values[0x30] = next_status;
+                    cached->values[REG_DATA] = 0x00;  // Message byte = Command Complete
                 }
+                // Note: Core 1 deferred processor will eventually sync bus_ctrl to match
             } else if (commit_offset == REG_STATUS || commit_offset == 0x30) {
                 // Reading status clears the interrupt latch per DMA board spec.
                 dma_registers_t *dma = dma_get_registers();
@@ -292,6 +279,9 @@ void __time_critical_func(register_read_irq_isr)() {
             queue->entries[head].raw_value = raw_value;
             __asm volatile("dmb" ::: "memory");
             queue->head = next;
+        } else {
+            // Queue full - track dropped entries
+            queue->drops++;
         }
     }
 }
