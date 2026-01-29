@@ -83,7 +83,7 @@ static inline void board_registers_program_init(PIO pio, uint sm, uint offset) {
     for (int pin = REG_PIN_FIRST; pin <= REG_PIN_LAST; pin++) {
         pio_gpio_init(pio, pin);
         pio_sm_set_pins_with_mask(pio, sm, 0u, 1u << pin); // preload latch low
-        printf("pio_gpio_init %d\n", pin);
+        //printf("pio_gpio_init %d\n", pin);
     }
     uint pincount = REG_PIN_LAST - REG_PIN_FIRST + 1;
     pio_sm_set_consecutive_pindirs(pio, sm, BD0_PIN, pincount, false);

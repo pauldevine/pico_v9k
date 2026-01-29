@@ -38,6 +38,10 @@ project(dma_board C CXX ASM)
 # Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
 
+# Add no-OS-FatFS-SD-SDIO-SPI-RPi-Pico library
+set(NO_OS_FATFS_PATH "$ENV{HOME}/projects/no-OS-FatFS-SD-SDIO-SPI-RPi-Pico/src")
+add_subdirectory(${NO_OS_FATFS_PATH} no-OS-FatFS)
+
 # Cached/deferred version of dma_board for improved timing
 add_executable(dma_board dma_board.c )
 pico_set_program_name(dma_board "dma_board")
@@ -53,7 +57,10 @@ target_sources(dma_board PRIVATE
     pico_victor/register_irq_handlers.c
     pico_victor/dma_irq_handler.c
     pico_victor/debug_queue.c
-    pico_fujinet/spi.c)
+    pico_fujinet/spi.c
+    pico_storage/storage.c
+    pico_storage/sd_storage.c
+    pico_storage/hw_config.c)
 
 pico_set_binary_type(dma_board default)
 
@@ -69,6 +76,10 @@ target_include_directories(dma_board PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}
         ${CMAKE_CURRENT_LIST_DIR}/pico_victor
         ${CMAKE_CURRENT_LIST_DIR}/pico_fujinet
+        ${CMAKE_CURRENT_LIST_DIR}/pico_storage
+        ${NO_OS_FATFS_PATH}/include
+        ${NO_OS_FATFS_PATH}/ff15/source
+        ${NO_OS_FATFS_PATH}/sd_driver
 )
 
 target_link_libraries(dma_board
@@ -79,6 +90,7 @@ target_link_libraries(dma_board
         hardware_pio
         hardware_spi
         hardware_dma
+        no-OS-FatFS-SD-SDIO-SPI-RPi-Pico
         )
 
 pico_add_extra_outputs(dma_board)

@@ -22,11 +22,11 @@ CFLAGS_DEBUG = -bt=dos -ms -0 -od -zq -za99 -d2 -I$(WATCOM_INC)
 LFLAGS = format dos LIBPATH $(WATCOM_LIB) LIBPATH $(WATCOM_PATH)/rel/lib286
 
 # Target executables
-TARGETS = dmatest.exe addrtest.exe addr_mid.exe minimal.exe read.exe victor_boot_trace.exe sasi_perf_test.exe
+TARGETS = dmatest.exe addrtest.exe addr_mid.exe minimal.exe read.exe victor_boot_trace.exe sasi_perf_test.exe dma_verify.exe
 
 # Source and object files
-SOURCES = dmatest.c addrtest.c addr_mid.c minimal.c read.c victor_boot_trace.c sasi_perf_test.c
-OBJECTS = dmatest.o addrtest.o addr_mid.o minimal.o read.o victor_boot_trace.o sasi_perf_test.o
+SOURCES = dmatest.c addrtest.c addr_mid.c minimal.c read.c victor_boot_trace.c sasi_perf_test.c dma_verify.c
+OBJECTS = dmatest.o addrtest.o addr_mid.o minimal.o read.o victor_boot_trace.o sasi_perf_test.o dma_verify.o
 
 # Default target
 .PHONY: all
@@ -58,6 +58,10 @@ victor_boot_trace.exe: victor_boot_trace.o
 	@$(LINK) $(LFLAGS) name $@ file $<
 
 sasi_perf_test.exe: sasi_perf_test.o
+	@echo "Linking $@..."
+	@$(LINK) $(LFLAGS) name $@ file $<
+
+dma_verify.exe: dma_verify.o
 	@echo "Linking $@..."
 	@$(LINK) $(LFLAGS) name $@ file $<
 
@@ -126,6 +130,7 @@ help:
 	@echo "  minimal.exe  - Minimal single register test (REG_ADDR_H)"
 	@echo "  victor_boot_trace.exe - Replay first 20 BIOS accesses from MAME log"
 	@echo "  sasi_perf_test.exe - SASI state machine perf test (250 ops from MAME)"
+	@echo "  dma_verify.exe - DMA transfer CRC8 verification (10 sectors)"
 	@echo ""
 	@echo "Environment:"
 	@echo "  WATCOM_PATH = $(WATCOM_PATH)"

@@ -170,7 +170,7 @@ void print_segment_offset(uint32_t addr) {
     // Assumes addr < 1MB.
     uint16_t seg = addr >> 4;
     uint16_t off = addr & 0xF;
-    printf("RD %04X:%04X\n", seg, off);
+    printf(" %04X:%04X\n", seg, off);
 }
 
 void dma_write_register(dma_registers_t *dma, dma_reg_offsets_t offset, uint8_t value) {
@@ -379,7 +379,7 @@ void ontime_pin_setup() {
         gpio_put(pin, 0);  // by default drive low
         gpio_set_dir(pin, GPIO_IN); // set as output to assert HOLD/
         
-        printf("ontime gpio_setup %d  ", pin);
+        //printf("ontime gpio_setup %d  ", pin);
     }
 
     // for the bus control pins, to avoid floating pins during DMA handoff to 8088
@@ -447,8 +447,6 @@ static inline void setup_pins_dma_control() {
     gpio_init(IO_M_PIN);
     gpio_put(IO_M_PIN, low); 
     gpio_set_dir(IO_M_PIN, GPIO_OUT);
-
-    printf("dma control setup pins RD:%d WR:%d DTR:%d\n", RD_PIN, WR_PIN, DTR_PIN);
 }   
 
 static inline void setup_pins_register_inputs() {
@@ -529,11 +527,9 @@ static inline void release_dma_master() {
 //  Word 1: bits 0=W/R flag (1=write), bits 1-20=address A0-A19
 //  Word 2: bits 0-7=data byte, bits 8-19=address A8-A19 (MSB)
 void dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_address) {
-    printf("Starting DMA write to Victor RAM\n");
-    printf("Length: %zu\n", length);
+    printf("DMA WR Length: %zu ", length);
     print_segment_offset(start_address);
 
-    printf("write_pio: %p, write_sm: %d\n", PIO_DMA_MASTER, DMA_SM_CONTROL);
     debug_pio_state(PIO_DMA_MASTER, DMA_SM_CONTROL);
 
     uint32_t full_batch_count = length / DMA_BATCH_SIZE;
@@ -548,7 +544,6 @@ void dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_addres
             printf("Failed to obtain DMA master\n");
             return;
         }
-        printf("Starting DMA transfer batch %d\n", batch);
 
         for (size_t i = 0; i < 128; i++) {
             uint32_t addr = (start_address + (batch * 128) + i) & 0xFFFFF;  // 20-bit address
@@ -578,10 +573,8 @@ void dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_addres
         release_dma_master();
         
         // give 8088 time to work background interrupts like serial port or other I/O before resuming DMA
-        printf("DMA master released after batch %d\n", batch);
         sleep_us(DMA_SHARE_WAIT_US);
     }
-    printf("Finished DMA write to Victor RAM\n");
    
     return;
 }
@@ -592,8 +585,7 @@ void dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_addres
 void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_address) {
 
     // Debug logging disabled for performance during DMA
-    printf("Starting DMA read from Victor RAM\n");
-    printf("Length: %zu, start_address: %d ", length, start_address);
+    printf("DMA RD Length: %zu, start_address: %d ", length, start_address);
     print_segment_offset(start_address);
 
     uint8_t *temp = malloc((length + 1) * sizeof(uint8_t));
@@ -602,10 +594,8 @@ void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_addre
         return;
     }
 
-    printf("dma_read_pio: %p, read_sm: %d\n", PIO_DMA_MASTER, DMA_SM_CONTROL);
     debug_pio_state(PIO_DMA_MASTER, DMA_SM_CONTROL);
-    printf("Reading from Victor RAM at address %08X\n", start_address);
-
+    
     uint32_t full_batch_count = length / DMA_BATCH_SIZE;
     uint32_t remainder_bytes = length % DMA_BATCH_SIZE;
 
@@ -618,7 +608,6 @@ void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_addre
             printf("Failed to obtain DMA master\n");
             return;
         }
-        printf("Starting DMA transfer batch %d\n", batch);
 
         for (size_t i = 0; i < 128; i++) {
             uint32_t addr = (start_address + (batch * 128) + i) & 0xFFFFF;  // 20-bit address
@@ -643,13 +632,11 @@ void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_addre
         release_dma_master();
         
         // give 8088 time to work background interrupts like serial port or other I/O before resuming DMA
-        printf("DMA master released after batch %d\n", batch);
         sleep_us(DMA_SHARE_WAIT_US);
     }
 
     memcpy(data, temp, length);
     free(temp);
-    printf("\n\nFinished DMA read from Victor RAM\n");
 }
 #else
 // Unit-test in-memory Victor RAM model (64 KiB to fit SRAM)
@@ -704,7 +691,7 @@ void dma_update_interrupts(dma_registers_t *dma, bool irq_state) {
         dma->state.interrupt_pending = irq_state;
         gpio_put(DMA_IRQ_PIN, irq_state ? DMA_IRQ_ASSERT_LEVEL : DMA_IRQ_DEASSERT_LEVEL);
         // In real implementation, this would trigger actual interrupt to CPU
-        printf("DMA interrupt %s\n", irq_state ? "asserted" : "cleared");
+        //printf("DMA interrupt %s\n", irq_state ? "asserted" : "cleared");
     }
 }
 

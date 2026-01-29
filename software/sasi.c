@@ -11,6 +11,7 @@
 #include "logging.h"
 #include "reg_queue_processor.h"
 #include "sasi.h"
+#include "pico_storage/storage.h"
 #include "pico_fujinet/spi.h"
 
 // Set to 1 to enable SASI debug printf (WARNING: slows Core 1 dramatically, causes queue overflow)
@@ -222,7 +223,7 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
     uint32_t sector = ((cmd[1] & 0x1F) << 16) | (cmd[2] << 8) | cmd[3];
     uint16_t blocks = cmd[4] ? cmd[4] : 256; // SASI Read(6): 0 means 256 blocks
 
-    sasi_printf("Reading %u sectors starting at %u\n", (unsigned)blocks, (unsigned)sector);
+    sasi_printf("RD sectors:%u starting: %u\n", (unsigned)blocks, (unsigned)sector);
 
     if (dma) {
         dma->logical_block.full = sector;
@@ -264,7 +265,7 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
     uint32_t sector = ((cmd[1] & 0x1F) << 16) | (cmd[2] << 8) | cmd[3];
     uint16_t blocks = cmd[4] ? cmd[4] : 256;
 
-    sasi_printf("Writing %u sectors starting at %u\n", (unsigned)blocks, (unsigned)sector);
+    sasi_printf("WR sectors:%u starting: %u\n", (unsigned)blocks, (unsigned)sector);
 
     if (dma) {
         dma->logical_block.full = sector;
@@ -279,18 +280,26 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
     __dmb();  // Ensure Core 0 sees bus_ctrl update
     cached_status_sync_from_bus(dma);
 
+    uint8_t target = dma ? (dma->selected_target & 0x07) : 0;
+
     for (uint16_t i = 0; i < blocks; i++) {
         uint8_t sector_data[512];
         // Read from Victor RAM into local buffer
         dma_read_from_victor_ram(sector_data, 512, dma->dma_address.full);
         dma->dma_address.full += 512;
 
-        // Write to disk via FujiNet
-        uint8_t target = dma ? (dma->selected_target & 0x07) : 0;
-        uint8_t device = DEVICE_DISK_BASE + target;
-        if (!fujinet_write_sector(device, sector + i, sector_data, 512)) {
-            // For now, ignore failures and continue
-            sasi_printf("Warning: write sector LBA %lu failed, continuing\n", (unsigned long)(sector + i));
+        // Try storage abstraction layer first (handles SD card, FujiNet, etc.)
+        bool write_ok = false;
+        if (storage_is_mounted(target)) {
+            write_ok = storage_write_sector(target, sector + i, sector_data, 512);
+        }
+
+        // Fall back to FujiNet direct access if storage layer not available
+        if (!write_ok) {
+            uint8_t device = DEVICE_DISK_BASE + target;
+            if (!fujinet_write_sector(device, sector + i, sector_data, 512)) {
+                sasi_printf("Warning: write sector LBA %lu failed, continuing\n", (unsigned long)(sector + i));
+            }
         }
     }
 
@@ -403,12 +412,22 @@ void handle_test_unit_ready(dma_registers_t *dma) {
 }
 
 void read_sector_from_disk(dma_registers_t *dma, uint32_t sector, uint8_t *buffer) {
-    // Map selected target to FujiNet device
     uint8_t target = dma ? (dma->selected_target & 0x07) : 0;
-    uint8_t device = DEVICE_DISK_BASE + target;
 
-    // Try FujiNet; fall back to deterministic data if not available
+    // Try storage abstraction layer first (handles SD card, FujiNet, etc.)
+    if (storage_is_mounted(target)) {
+        if (storage_read_sector(target, sector, buffer, 512)) {
+            return;
+        }
+        sasi_printf("Warning: storage_read_sector failed for target %d, LBA %lu\n",
+                    target, (unsigned long)sector);
+    }
+
+    // Fall back to FujiNet direct access if storage layer not available
+    uint8_t device = DEVICE_DISK_BASE + target;
     if (!fujinet_read_sector(device, sector, buffer, 512)) {
+        // Last resort: generate deterministic test data
         for (int i = 0; i < 512; i++) buffer[i] = (uint8_t)((sector + i) & 0xFF);
     }
+    sasi_printf("RD sector %lu target %d\n", (unsigned long)sector, target);
 }

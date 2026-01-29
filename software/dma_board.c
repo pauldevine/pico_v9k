@@ -14,9 +14,22 @@
 #include "pico_victor/debug_queue.h"
 #include "pico_victor/reg_queue_processor.h"
 #include "pico_fujinet/spi.h"
+#include "pico_storage/storage.h"
+#include "pico_storage/sd_storage.h"
+
+// Storage backend selection
+// Set to 1 to use SD card, 0 to use FujiNet
+#ifndef USE_SD_STORAGE
+#define USE_SD_STORAGE 1
+#endif
+
+// Default disk image filename on SD card
+#ifndef SD_DISK_IMAGE
+#define SD_DISK_IMAGE "victor.img"
+#endif
 
 #define UART_ID uart0
-#define BAUD_RATE 115200
+#define BAUD_RATE 230400
 #define UART_TX_PIN 0
 #define UART_RX_PIN 45
 
@@ -61,10 +74,49 @@ int main() {
 
     printf("\n=== DMA Board Initialization ===\n");
     printf("Sleeping for %d seconds\n", seconds);
-    sleep_ms(timeout);
+    //sleep_ms(timeout);
     printf("Awake!\n");
 
-    // Initialize SPI bus for FujiNet storage
+    // Initialize storage backend
+#if USE_SD_STORAGE
+    printf("Initializing SD card storage backend...\n");
+    sd_storage_register();
+    if (storage_init(STORAGE_BACKEND_SDCARD)) {
+        // Check for discovered disk images
+        int image_count = sd_storage_get_image_count();
+        if (image_count > 0) {
+            // Mount first discovered image on target 0
+            const char *first_image = sd_storage_get_image_name(0);
+            if (first_image) {
+                printf("SD Storage: Auto-mounting first image '%s'\n", first_image);
+                if (!storage_mount(0, first_image, false)) {
+                    printf("SD Storage: failed to mount '%s' on target 0\n", first_image);
+                }
+            }
+        } else {
+            // No images discovered, try default filename
+            printf("SD Storage: No images found, trying default '%s'\n", SD_DISK_IMAGE);
+            if (!storage_mount(0, SD_DISK_IMAGE, false)) {
+                printf("SD Storage: failed to mount '%s' on target 0\n", SD_DISK_IMAGE);
+            }
+        }
+    } else {
+        printf("SD Storage: initialization failed, falling back to FujiNet\n");
+        // Fall through to FujiNet initialization
+        spi_bus_init();
+        if (!fujinet_config_boot(false)) {
+            printf("FujiNet: failed to clear boot config\n");
+        }
+        if (!fujinet_mount_host(0, FUJINET_DISK_ACCESS_READ)) {
+            printf("FujiNet: failed to mount host slot 0\n");
+        }
+        if (!fujinet_mount_disk_slot(0, FUJINET_DISK_ACCESS_READ)) {
+            printf("FujiNet: failed to mount disk slot 0\n");
+        }
+    }
+#else
+    // Use FujiNet as primary storage
+    printf("Initializing FujiNet storage backend...\n");
     spi_bus_init();
     if (!fujinet_config_boot(false)) {
         printf("FujiNet: failed to clear boot config\n");
@@ -75,6 +127,7 @@ int main() {
     if (!fujinet_mount_disk_slot(0, FUJINET_DISK_ACCESS_READ)) {
         printf("FujiNet: failed to mount disk slot 0\n");
     }
+#endif
 
     //setup our debug pin
     gpio_init(DEBUG_PIN);

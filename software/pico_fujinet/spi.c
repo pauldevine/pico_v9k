@@ -8,6 +8,8 @@
 #include "spi.h"
 #include "fujiCmd.h"
 
+#define SPI_DEBUG 1
+
 #define SPI_PHASE_TIMEOUT_US 10000000
 #define VICTOR_SECTOR_COUNT_SINGLE 1
 #define SPI_PHASE_GUARD_US 1500
@@ -48,7 +50,9 @@ uint8_t *pad_to_4(const uint8_t *in, size_t len, size_t *out_len) {
 
 static bool spi_start_transaction_phase(const char *phase, uint32_t timeout_us)
 {
+#if SPI_DEBUG
     printf("Pico SPI [%s]: CS LOW\n", phase);
+#endif
     gpio_put(PIN_CS, 0);
 
     uint32_t waited = 0;
@@ -62,7 +66,9 @@ static bool spi_start_transaction_phase(const char *phase, uint32_t timeout_us)
         }
     }
 
+#if SPI_DEBUG
     printf("Pico SPI [%s]: handshake low after %u us\n", phase, waited);
+#endif
     return true;
 }
 
@@ -88,8 +94,10 @@ static void spi_end_transaction_phase(const char *phase)
      */
     sleep_us(SPI_PHASE_GUARD_US);
 
+#if SPI_DEBUG
     printf("Pico SPI [%s]: CS HIGH (handshake=%d, wait=%u us)\n",
            phase, gpio_get(PIN_SPI_HANDSHAKE), waited);
+#endif
 }
 
 static inline bool ack_is_success(uint8_t ack_byte) {
@@ -115,7 +123,9 @@ static bool receive_status_byte(const char *label, uint8_t *status_out) {
         return false;
     }
 
+#if SPI_DEBUG
     printf("%s: 0x%02X\n", label, *status_out);
+#endif
     return true;
 }
 
@@ -138,35 +148,44 @@ static bool finish_simple_command(const char *label) {
         return false;
     }
 
+#if SPI_DEBUG
     printf("%s: COMPLETE\n", label);
+#endif
     return true;
 }
 
 // Send a command frame to ESP32
 spi_transaction_result send_command_frame(cmdFrame_t cmd) {
-    
+
     cmd.sync1 = 0xAA;  // Sync byte 1
     cmd.sync2 = 0x55;  // Sync byte 2
     cmd.cksum = calculate_checksum_cmd(&cmd);  // Calculate checksum
+#if SPI_DEBUG
     printf("Command frame: sync1=0x%02X, sync2=0x%02X, device=0x%02X, command=0x%02X, aux1=0x%02X, aux2=0x%02X, aux3=0x%02X, aux4=0x%02X, checksum=0x%02X\n",
            cmd.sync1, cmd.sync2, cmd.device, cmd.comnd, cmd.aux1, cmd.aux2, cmd.aux3, cmd.aux4, cmd.cksum);
+#endif
     uint8_t frame[sizeof(cmdFrame_t)] = {0};
     memcpy(frame, &cmd, sizeof(cmdFrame_t));
 
+#if SPI_DEBUG
     printf("Sending command frame: ");
     for (int i = 0; i < sizeof(frame); i++) {
         printf("%02X ", frame[i]);
     }
     printf("\n");
-    
+#endif
+
     if (!spi_start_transaction_phase("CMD_TX", SPI_PHASE_TIMEOUT_US)) {
         return SPI_GENERAL_ERROR;
     }
 
     int bytes_written = spi_write_blocking(SPI_PORT, frame, sizeof(frame));
+    (void)bytes_written;  // suppress unused warning when debug off
 
     spi_end_transaction_phase("CMD_TX");
+#if SPI_DEBUG
     printf("Bytes written: %d\n", bytes_written);
+#endif
 
      // now immediately read the ACK
     if (!spi_start_transaction_phase("CMD_ACK_RX", SPI_PHASE_TIMEOUT_US)) {
@@ -177,14 +196,18 @@ spi_transaction_result send_command_frame(cmdFrame_t cmd) {
 
     //end transaction
     spi_end_transaction_phase("CMD_ACK_RX");
+#if SPI_DEBUG
     printf("ACK received: %02X\n", ack_byte);
+#endif
     if (!ack_is_success(ack_byte)) {
         printf("Error: Received ACK 0x%02X instead of expected 0x%02X/0x%02X\n",
                ack_byte, SPI_ACK, FUJICMD_DEVICE_READY);
         return (spi_transaction_result)ack_byte;
     }
 
+#if SPI_DEBUG
     printf("Command frame sent successfully, ACK received: %02X\n", ack_byte);
+#endif
     return SPI_ACK;
 }
 
@@ -215,14 +238,17 @@ spi_transaction_result send_data_frame(const uint8_t *data, size_t len) {
         return SPI_GENERAL_ERROR;
     }
 
+#if SPI_DEBUG
     printf("Sending data frame (%zu bytes, padded to %zu), checksum: 0x%02X\n",
            len, padded_len, checksum);
+#endif
 
     if (!spi_start_transaction_phase("DATA_TX", SPI_PHASE_TIMEOUT_US)) {
         free(padded_frame);
         return SPI_GENERAL_ERROR;
     }
     int bytes_written = spi_write_blocking(SPI_PORT, padded_frame, padded_len);
+    (void)bytes_written;  // suppress unused warning when debug off
     spi_end_transaction_phase("DATA_TX");
 
     free(padded_frame);
@@ -234,7 +260,9 @@ spi_transaction_result send_data_frame(const uint8_t *data, size_t len) {
     spi_read_blocking(SPI_PORT, 0x00, &ack, 1);
     spi_end_transaction_phase("DATA_ACK_RX");
 
+#if SPI_DEBUG
     printf("Data sent: %d bytes (padded), ACK received: 0x%02X\n", bytes_written, ack);
+#endif
 
     if (!ack_is_success(ack)) {
         printf("Error: Received ACK 0x%02X instead of expected 0x%02X/0x%02X\n",
@@ -254,32 +282,34 @@ bool read_data_frame(uint8_t *buffer, size_t expected_len) {
 
     // Read data
     int data_read = spi_read_blocking(SPI_PORT, 0x00, buffer, expected_len);
-    
+
     // Read checksum
     uint8_t received_checksum;
     int chk_read = spi_read_blocking(SPI_PORT, 0x00, &received_checksum, 1);
-    
+
     spi_end_transaction_phase("DATA_RX");
-    
-    if (data_read != expected_len || chk_read != 1) {
-        printf("Read failed: data=%d/%d, checksum=%d/1\n", data_read, expected_len, chk_read);
+
+    if (data_read != (int)expected_len || chk_read != 1) {
+        printf("Read failed: data=%d/%zu, checksum=%d/1\n", data_read, expected_len, chk_read);
         return false;
     }
-    
+
     // Verify checksum
     uint8_t calculated_checksum = calculate_checksum_buf(buffer, expected_len);
     if (received_checksum != calculated_checksum) {
-        printf("Checksum mismatch: received=0x%02X, calculated=0x%02X\n", 
+        printf("Checksum mismatch: received=0x%02X, calculated=0x%02X\n",
                received_checksum, calculated_checksum);
         return false;
     }
-    
+
+#if SPI_DEBUG
     printf("Received data (%zu bytes): ", expected_len);
     for (size_t i = 0; i < expected_len; i++) {
         printf("%02X ", buffer[i]);
     }
     printf(" checksum: 0x%02X\n", received_checksum);
-    
+#endif
+
     return true;
 }
 
@@ -289,8 +319,10 @@ static bool send_sector_payload(uint8_t device, uint8_t command, const uint8_t *
     payload_cmd.comnd = command;
     payload_cmd.aux = (uint32_t)len;
 
+#if SPI_DEBUG
     printf("Queueing sector payload: device=0x%02X command=0x%02X length=%zu\n",
            device, command, len);
+#endif
 
     spi_transaction_result ack = send_command_frame(payload_cmd);
     if (ack != SPI_ACK) {
@@ -309,9 +341,12 @@ static bool send_sector_payload(uint8_t device, uint8_t command, const uint8_t *
 
 // Simple hello world transaction
 void hello_world_transaction() {
-    printf("\n=== Starting Hello World Transaction ===\n");
+
     const char *hello_msg = "Hello World!";
+#if SPI_DEBUG
+    printf("\n=== Starting Hello World Transaction ===\n");
     printf("Sending message: '%s'\n", hello_msg);
+#endif
 
     cmdFrame_t cmd={0};
     cmd.device = 0x01;
@@ -323,7 +358,7 @@ void hello_world_transaction() {
         printf("Failed to send command frame\n");
         return;
     }
-    
+
     // Step 3: Send data frame
 
     if (send_data_frame((const uint8_t *)hello_msg, strlen(hello_msg)) != SPI_ACK) {
@@ -334,9 +369,12 @@ void hello_world_transaction() {
 
 // Test bidirectional communication
 void echo_test() {
-    printf("\n=== Starting Echo Test ===\n");
+
     const char *test_data = "ANOTHER TEST!";
+#if SPI_DEBUG
+    printf("\n=== Starting Echo Test ===\n");
     printf("Sending message: '%s'\n", test_data);
+#endif
 
     cmdFrame_t cmd={0};
     cmd.device = 0x31;  // Device ID for ESP32
@@ -349,7 +387,7 @@ void echo_test() {
         printf("Failed to send echo command\n");
         return;
     }
-    
+
     // Send test data
 
     if (send_data_frame((const uint8_t *)test_data, strlen(test_data)) != SPI_ACK) {
@@ -400,13 +438,13 @@ bool fujinet_read_sector(uint8_t device, uint32_t lba, uint8_t *buffer, size_t l
 
     spi_transaction_result ack = send_command_frame(cmd);
     if (ack != SPI_ACK) {
-        printf("FujiNet read command NAK: 0x%02X\n", ack);
+        printf("FujiNet read command NAK: 0x%02X LBA %lu\n", ack, (unsigned long)lba);
         return false;
     }
 
     ack = send_data_frame((const uint8_t *)&header, sizeof(header));
     if (ack != SPI_ACK) {
-        printf("FujiNet read payload NAK: 0x%02X\n", ack);
+        printf("FujiNet read payload NAK: 0x%02X LBA %lu\n", ack, (unsigned long)lba);
         return false;
     }
 
@@ -420,16 +458,17 @@ bool fujinet_read_sector(uint8_t device, uint32_t lba, uint8_t *buffer, size_t l
         }
     }
     if (!status_is_success(status)) {
-        printf("FujiNet reported error status 0x%02X\n", status);
+        printf("FujiNet read error status 0x%02X LBA %lu\n", status, (unsigned long)lba);
         return false;
     }
 
     // Read back 512 bytes + checksum
     if (!read_data_frame(buffer, len)) {
-        printf("FujiNet read data failed for LBA %lu\n", (unsigned long)lba);
+        printf("FujiNet read data failed LBA %lu\n", (unsigned long)lba);
         return false;
     }
 
+    printf("FujiNet: Read LBA %lu\n", (unsigned long)lba);
     return true;
 }
 bool fujinet_write_sector(uint8_t device, uint32_t lba, const uint8_t *buffer, size_t len) {
@@ -451,18 +490,18 @@ bool fujinet_write_sector(uint8_t device, uint32_t lba, const uint8_t *buffer, s
 
     spi_transaction_result ack = send_command_frame(cmd);
     if (ack != SPI_ACK) {
-        printf("FujiNet write command NAK: 0x%02X\n", ack);
+        printf("FujiNet write command NAK: 0x%02X LBA %lu\n", ack, (unsigned long)lba);
         return false;
     }
 
     ack = send_data_frame((const uint8_t *)&header, sizeof(header));
     if (ack != SPI_ACK) {
-        printf("FujiNet write header NAK for LBA %lu, ack=0x%02X\n", (unsigned long)lba, ack);
+        printf("FujiNet write header NAK: 0x%02X LBA %lu\n", ack, (unsigned long)lba);
         return false;
     }
 
     if (!send_sector_payload(device, CMD_DISK_WRITE, buffer, len)) {
-        printf("FujiNet write sector payload failed for LBA %lu\n", (unsigned long)lba);
+        printf("FujiNet write sector payload failed LBA %lu\n", (unsigned long)lba);
         return false;
     }
 
@@ -476,9 +515,11 @@ bool fujinet_write_sector(uint8_t device, uint32_t lba, const uint8_t *buffer, s
         }
     }
     if (!status_is_success(status)) {
-        printf("FujiNet write status 0x%02X for LBA %lu\n", status, (unsigned long)lba);
+        printf("FujiNet write error status 0x%02X LBA %lu\n", status, (unsigned long)lba);
         return false;
     }
+
+    printf("FujiNet: Write LBA %lu\n", (unsigned long)lba);
     return true;
 }
 
