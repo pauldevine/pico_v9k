@@ -6,7 +6,7 @@
 #define XEBEC_DRIVE_DIAG    0xE3
 
 #ifndef SASI_COMMAND_DELAY_US
-#define SASI_COMMAND_DELAY_US 85000u
+#define SASI_COMMAND_DELAY_US 2u
 #endif
 
 typedef enum {

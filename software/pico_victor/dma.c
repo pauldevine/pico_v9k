@@ -549,9 +549,6 @@ void dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_addres
             uint32_t addr = (start_address + (batch * 128) + i) & 0xFFFFF;  // 20-bit address
             uint8_t byte = data[(batch * 128) + i];                         // Data byte to write
 
-            // printf("Writing %02X to Victor RAM at address %08X ", byte, addr);
-            // print_segment_offset(addr);
-
             // Send two FIFO payloads per memory address =  the PIO protocol
             uint32_t fifo_t1 = ((addr & 0xFFFFFu) << 1) | 1;                // T1: [20 bit address][1-bit write=1 flag in LSB] 
             pio_sm_put_blocking(PIO_DMA_MASTER, DMA_SM_CONTROL, fifo_t1);

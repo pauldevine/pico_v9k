@@ -50,7 +50,7 @@
 #define CSEN_PIN 38
 #define PHASE_2_PIN 39
 
-#define DEBUG_PIN 45 //TODO: After debugging completes move back to pin 45.
+#define DEBUG_PIN 46 // Was 45, but that conflicts with SDIO D3!
 
 #define ADDRESS_DIR_PINCNT 2
 #define DMA_READ 1
