@@ -284,8 +284,8 @@ static bool sd_storage_read_sector(uint8_t target_id, uint32_t lba, uint8_t *buf
         memset(buffer + bytes_read, 0, read_len - bytes_read);
     }
 
-    printf("SD Storage: Read LBA %lu from target %d (%u bytes)\n",
-           (unsigned long)lba, target_id, bytes_read);
+    printf("SD RD LBA %lu t %d\n",
+           (unsigned long)lba, target_id);
     return true;
 }
 

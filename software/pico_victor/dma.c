@@ -527,10 +527,10 @@ static inline void release_dma_master() {
 //  Word 1: bits 0=W/R flag (1=write), bits 1-20=address A0-A19
 //  Word 2: bits 0-7=data byte, bits 8-19=address A8-A19 (MSB)
 void dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_address) {
-    printf("DMA WR Length: %zu ", length);
+    printf("DMA WR ");
     print_segment_offset(start_address);
 
-    debug_pio_state(PIO_DMA_MASTER, DMA_SM_CONTROL);
+   // debug_pio_state(PIO_DMA_MASTER, DMA_SM_CONTROL);
 
     uint32_t full_batch_count = length / DMA_BATCH_SIZE;
     uint32_t remainder_bytes = length % DMA_BATCH_SIZE;
