@@ -21,6 +21,15 @@
 #include "sd_storage.h"
 #include "storage.h"
 
+// Set to 1 to enable debug printf during sector I/O (WARNING: breaks timing-critical DMA operations)
+#define SD_DEBUG_PRINTF 0
+
+#if SD_DEBUG_PRINTF
+#define sd_printf(...) printf(__VA_ARGS__)
+#else
+#define sd_printf(...) ((void)0)
+#endif
+
 // Maximum number of disk image files to scan
 #define MAX_IMG_FILES 8
 #define FILENAME_MAX_LENGTH 64
@@ -284,7 +293,7 @@ static bool sd_storage_read_sector(uint8_t target_id, uint32_t lba, uint8_t *buf
         memset(buffer + bytes_read, 0, read_len - bytes_read);
     }
 
-    printf("SD RD LBA %lu t %d\n",
+    sd_printf("SD RD LBA %lu t %d\n",
            (unsigned long)lba, target_id);
     return true;
 }

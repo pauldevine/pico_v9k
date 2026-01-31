@@ -14,6 +14,15 @@
 #include "reg_queue_processor.h"
 #include "pico_fujinet/spi.h"
 
+// Set to 1 to enable debug printf during DMA operations (WARNING: breaks timing-critical bus operations)
+#define DMA_DEBUG_PRINTF 0
+
+#if DMA_DEBUG_PRINTF
+#define dma_printf(...) printf(__VA_ARGS__)
+#else
+#define dma_printf(...) ((void)0)
+#endif
+
 #define SASI_SECTOR_SIZE 512
 
 void debug_dump_pin(uint pin) {
@@ -210,7 +219,7 @@ void dma_write_register(dma_registers_t *dma, dma_reg_offsets_t offset, uint8_t 
             if (now_sel && !prev_sel) {
                 // Assert SEL
                 dma->bus_ctrl |= SASI_SEL_BIT;
-                printf("SASI SEL asserted\n");
+                dma_printf("SASI SEL asserted\n");
                 // Latch target ID from last data bus value (SASI selection byte is a bit mask)
                 dma->selected_target = sasi_extract_target_id(dma->command);
                 // Target responds busy after selection (matches log: status 0x04)
@@ -527,8 +536,10 @@ static inline void release_dma_master() {
 //  Word 1: bits 0=W/R flag (1=write), bits 1-20=address A0-A19
 //  Word 2: bits 0-7=data byte, bits 8-19=address A8-A19 (MSB)
 void dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_address) {
-    printf("DMA WR ");
+#if DMA_DEBUG_PRINTF
+    dma_printf("DMA WR ");
     print_segment_offset(start_address);
+#endif
 
    // debug_pio_state(PIO_DMA_MASTER, DMA_SM_CONTROL);
 
@@ -550,7 +561,7 @@ void dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_addres
             uint8_t byte = data[(batch * 128) + i];                         // Data byte to write
 
             // Send two FIFO payloads per memory address =  the PIO protocol
-            uint32_t fifo_t1 = ((addr & 0xFFFFFu) << 1) | 1;                // T1: [20 bit address][1-bit write=1 flag in LSB] 
+            uint32_t fifo_t1 = ((addr & 0xFFFFFu) << 1) | 1;                // T1: [20 bit address][1-bit write=1 flag in LSB]
             pio_sm_put_blocking(PIO_DMA_MASTER, DMA_SM_CONTROL, fifo_t1);
 
             uint32_t fifo_t2 = (addr & 0xFFF00u) | byte;                    // T2: [12 bits address A19-A8][8 bits data byte]
@@ -581,9 +592,10 @@ void dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_addres
 //  Word 2: pindirs control value 0xFFF00 (A8-A19 outputs, BD0-BD7 inputs)
 void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_address) {
 
-    // Debug logging disabled for performance during DMA
-    printf("DMA RD Length: %zu, start_address: %d ", length, start_address);
+#if DMA_DEBUG_PRINTF
+    dma_printf("DMA RD Length: %zu, start_address: %d ", length, start_address);
     print_segment_offset(start_address);
+#endif
 
     uint8_t *temp = malloc((length + 1) * sizeof(uint8_t));
     if (!temp) {
@@ -591,7 +603,9 @@ void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_addre
         return;
     }
 
+#if DMA_DEBUG_PRINTF
     debug_pio_state(PIO_DMA_MASTER, DMA_SM_CONTROL);
+#endif
     
     uint32_t full_batch_count = length / DMA_BATCH_SIZE;
     uint32_t remainder_bytes = length % DMA_BATCH_SIZE;
@@ -619,7 +633,8 @@ void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_addre
 
             // Get the data byte that was read
             uint32_t char_data = pio_sm_get_blocking(PIO_DMA_MASTER, DMA_SM_CONTROL);
-            temp[i] = char_data & 0xFF;
+            temp[(batch * 128) + i] = char_data & 0xFF;
+            
             if ((batch * 128) + i + 1 >= length) {
                 break; // Exit if we've read all requested bytes
             }
@@ -701,15 +716,15 @@ void dma_handle_sasi_req(dma_registers_t *dma) {
             if (dma->state.dma_dir_in) {
                 // Device → Victor RAM
                 ok = sasi_dma_device_to_ram(dma);
-                printf("DMA write to RAM at 0x%06X\n", dma->dma_address.full);
+                dma_printf("DMA write to RAM at 0x%06X\n", dma->dma_address.full);
             } else {
                 // Victor RAM → Device
                 ok = sasi_dma_ram_to_device(dma);
-                printf("DMA read from RAM at 0x%06X\n", dma->dma_address.full);
+                dma_printf("DMA read from RAM at 0x%06X\n", dma->dma_address.full);
             }
 
             if (!ok) {
-                printf("Warning: SASI DMA transfer failed\n");
+                dma_printf("Warning: SASI DMA transfer failed\n");
             }
             
             // Auto-increment address after each transfer (key missing piece!)

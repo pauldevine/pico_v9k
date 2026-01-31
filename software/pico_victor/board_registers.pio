@@ -74,7 +74,9 @@ T3_WRITE:                                ; 8088 write cycle // pico's reading
 #define REG_PIN_LAST CLOCK_15B_PIN
 
 static inline void board_registers_program_init(PIO pio, uint sm, uint offset) {
+#ifdef DEBUG_GPIO    
     pio_debug_state();
+#endif
     debug_dump_pin(BD0_PIN);
     printf("starting to configure board_registers_program_init\n");
     pio_sm_config c = board_registers_program_get_default_config(offset);
@@ -141,7 +143,11 @@ static inline void board_registers_program_init(PIO pio, uint sm, uint offset) {
     printf("RD_PIN Pin %d func: %d, dir: %d\n", RD_PIN, gpio_get_function(RD_PIN), gpio_get_dir(RD_PIN));
     printf("WR_PIN Pin %d func: %d, dir: %d\n", WR_PIN, gpio_get_function(WR_PIN), gpio_get_dir(WR_PIN));
 
+    
+#if DEBUG_GPIO
     pio_debug_state();
+#endif
+
     debug_dump_pin(BD0_PIN);
 }
 %}

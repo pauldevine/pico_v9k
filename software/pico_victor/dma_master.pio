@@ -43,6 +43,7 @@
 T0:                                ; Prepare for DMA read/write cycle
     pull block                     ; Block if FIFO empty 
     out x, 1                       ; Get W/R bit from LSB (1=Write, 0=Read)
+    mov pindirs, ~null             ; Set A0-A19 pins to output for address bus
     out pins, ADDRESS_BUS_SIZE     ; Output A0-A19 on bus, we're driving A0-A19 for ALE in T1
     pull block                     ; Pull next word from FIFO WR: data byte + MSB address or RD: pindirs value 0xFFF00
     wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
@@ -72,13 +73,13 @@ T3:
 
 T3_READ_DATA:                      ; DMA Read, pico reading from bus
     in pins, DATA_SIZE             ; Read data from bus
-    push block                     ; Push data to FIFO for ARM to read
+    ;push block                     ; Push data to FIFO for ARM to read
 
 T4:
-    wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go low
-    wait 1 GPIO CLOCK_15B_PIN      ; Wait for CLK15B to go high
+    wait 1 GPIO CLOCK_5_PIN        ; T4 start (~600ns)
+    wait 0 GPIO CLOCK_5_PIN        ; mid-T4 (~700ns)
+    wait 1 GPIO CLOCK_5_PIN        ; T5 start (~800ns) - expansion RAM latches HERE
     set pins, 0b00111              ; Set control pins to T4 close, DEN=0, ALE=0, DT/R=1, WR=1, RD=1  // WR/ and RD/ high to end cycle
-    wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high  
     set pins, 0b10111              ; Set control pins to T4 close, DEN=1, ALE=0, DT/R=1, WR=1, RD=1  // DEN high to end cycle
 .wrap
 

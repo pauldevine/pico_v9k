@@ -32,6 +32,7 @@
 #define BAUD_RATE 230400
 #define UART_TX_PIN 0
 #define UART_RX_PIN 45
+#define DEBUG_GPIO 0
 
 extern queue_t log_queue;
 
@@ -201,8 +202,10 @@ int main() {
      
     dma_device_reset(dma_get_registers());
     printf("DMA device reset complete\n");
+    
+#if DEBUG_GPIO
     pio_debug_state();
-    debug_dump_pin(BD0_PIN);
+#endif
 
 
     printf("waiting for DMA register access...\n");
