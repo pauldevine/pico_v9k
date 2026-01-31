@@ -57,10 +57,14 @@ target_sources(dma_board PRIVATE
     pico_victor/register_irq_handlers.c
     pico_victor/dma_irq_handler.c
     pico_victor/debug_queue.c
+    pico_victor/psram_trace.c
     pico_fujinet/spi.c
     pico_storage/storage.c
     pico_storage/sd_storage.c
     pico_storage/hw_config.c)
+
+# Disable PSRAM trace - no PSRAM hardware on this board
+target_compile_definitions(dma_board PRIVATE PSRAM_TRACE_DISABLED)
 
 pico_set_binary_type(dma_board default)
 

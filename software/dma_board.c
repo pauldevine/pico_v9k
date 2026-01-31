@@ -12,6 +12,7 @@
 #include "dma_master.pio.h"
 #include "pico_victor/dma.h"
 #include "pico_victor/debug_queue.h"
+#include "pico_victor/psram_trace.h"
 #include "pico_victor/reg_queue_processor.h"
 #include "pico_fujinet/spi.h"
 #include "pico_storage/storage.h"
@@ -31,7 +32,7 @@
 #define UART_ID uart0
 #define BAUD_RATE 230400
 #define UART_TX_PIN 0
-#define UART_RX_PIN 45
+#define UART_RX_PIN -1
 #define DEBUG_GPIO 0
 
 extern queue_t log_queue;
@@ -45,7 +46,7 @@ void initialize_uart() {
     // Initialize UART hardware
     uart_init(UART_ID, BAUD_RATE);
     uart_set_fifo_enabled(UART_ID, false);
-    stdio_uart_init_full(UART_ID, BAUD_RATE, UART_TX_PIN, -1);
+    stdio_uart_init_full(UART_ID, BAUD_RATE, UART_TX_PIN, UART_RX_PIN);
 
     //clear BD0_PIN (GPIO1) - ensure it's not claimed by stdio/UART and ready for PIO
     gpio_disable_pulls(BD0_PIN);                     // clear PUE/PDE (kills bus-keep)
@@ -67,6 +68,11 @@ int main() {
     // Debug output is disabled by default for minimal performance impact
     // Uncomment the next line to enable debug output
     debug_queue_enable(true);
+
+    // Initialize PSRAM trace buffer (L2 tier for debug_queue overflow)
+    if (!psram_trace_init()) {
+        printf("Warning: PSRAM trace init failed - L2 logging disabled\n");
+    }
 
     int ch=0;
     uint32_t millis_per_second = 1000;
@@ -209,6 +215,13 @@ int main() {
 
 
     printf("waiting for DMA register access...\n");
+    printf("PSRAM trace: Auto-dump to SD every 10 seconds\n");
+
+    // Auto-dump timer for PSRAM trace
+    absolute_time_t last_trace_dump = get_absolute_time();
+    const uint32_t TRACE_DUMP_INTERVAL_MS = 10000;  // 10 seconds
+    static uint32_t trace_file_counter = 0;
+
     uint64_t iterations = INT64_MAX;
     for (uint64_t i = 0; i<INT64_MAX; i++) {
         char buffer[256];
@@ -218,9 +231,35 @@ int main() {
             printf(".");
         }
 
+        // Handle UART commands for PSRAM trace (non-blocking)
+        int ch = getchar_timeout_us(0);
+        if (ch != PICO_ERROR_TIMEOUT) {
+            switch (ch) {
+                case 'd': psram_trace_dump_uart(100); break;
+                case 'D': psram_trace_dump_uart(0); break;  // 0 = dump all
+                case 'c': psram_trace_clear(); break;
+                case 's': psram_trace_status(); break;
+                case 'p': psram_trace_toggle_pause(); break;
+                default: break;
+            }
+        }
+
         // Process debug queue entries (non-blocking)
-        debug_queue_process();    
-            
+        debug_queue_process();
+
+        // Drain debug_queue (L1) to PSRAM trace buffer (L2) during idle time
+        psram_trace_drain();
+
+        // Auto-dump PSRAM trace to SD card every 10 seconds (if there's data)
+        if (absolute_time_diff_us(last_trace_dump, get_absolute_time()) >= TRACE_DUMP_INTERVAL_MS * 1000) {
+            last_trace_dump = get_absolute_time();
+            if (psram_trace_count() > 0) {
+                char filename[32];
+                snprintf(filename, sizeof(filename), "trace_%03lu.bin", (unsigned long)(trace_file_counter++ % 1000));
+                psram_trace_dump_sd(filename);
+            }
+        }
+
         // Every 10M iterations, check PIO state
         if (i % 10000000 == 0) {
             // Check board_registers state machine (PIO0)

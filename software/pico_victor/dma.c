@@ -12,6 +12,7 @@
 #include "sasi.h"
 #include "logging.h"
 #include "reg_queue_processor.h"
+#include "psram_trace.h"
 #include "pico_fujinet/spi.h"
 
 // Set to 1 to enable debug printf during DMA operations (WARNING: breaks timing-critical bus operations)
@@ -516,6 +517,9 @@ static inline bool start_dma_control() {
 
 
 static inline void release_dma_master() {
+    // HLDA is still asserted - safe to do housekeeping before releasing bus
+    psram_trace_drain();
+
     //turn off DMA PIO and give back control to register PIO
     pio_sm_clear_fifos(PIO_DMA_MASTER, DMA_SM_CONTROL);
     pio_sm_set_enabled(PIO_DMA_MASTER, DMA_SM_CONTROL, false);

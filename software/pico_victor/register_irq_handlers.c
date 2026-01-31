@@ -146,8 +146,7 @@ void __time_critical_func(register_read_irq_isr)() {
                 return;
             }
 
-            // Default: don't enqueue reads - only DATA reads need deferred processing
-            enque_result = false;
+            enque_result = true;
 
             if (fifo_pending_prefetch == 0) {
                 trace_flags |= FIFO_TRACE_FLAG_ERROR;
@@ -179,15 +178,13 @@ void __time_critical_func(register_read_irq_isr)() {
                     cached->values[0x30] = next_status;
                     cached->values[REG_DATA] = 0x00;  // Message byte = Command Complete
                 }
-                // DATA reads need deferred processing to sync bus_ctrl
-                enque_result = true;
+                // Note: Core 1 deferred processor will eventually sync bus_ctrl to match
             } else if (commit_offset == REG_STATUS || commit_offset == 0x30) {
                 // Reading status clears the interrupt latch per DMA board spec.
-                // All work done here in fast handler - no need to enqueue.
+                // Fast path clears IRQ immediately; deferred processor will also handle it.
                 dma_registers_t *dma = dma_get_registers();
                 clear_irq_on_status_read(dma);
             }
-            // Address register reads have no side effects - don't enqueue
 
             uint8_t pending_after = (uint8_t)fifo_pending_prefetch;
             fifo_trace_record(raw_value, payload_type, pending_before, pending_after, trace_flags, data);
