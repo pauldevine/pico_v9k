@@ -2,6 +2,7 @@
 #define FIFO_HELPERS_H
 
 #include "logging.h"
+#include <stdint.h>
 
 // Trace tagged FIFO payloads to help diagnose sequencing issues
 #define FIFO_TRACE_SIZE 256
@@ -21,10 +22,17 @@ typedef struct {
     uint8_t data;
 } fifo_trace_entry_t;
 
-static fifo_trace_entry_t fifo_trace[FIFO_TRACE_SIZE];
-static volatile uint32_t fifo_trace_head = 0;
-static volatile uint32_t fifo_trace_tail = 0;
-static volatile uint32_t fifo_read_count = 0;
+#ifdef FIFO_HELPERS_IMPLEMENTATION
+fifo_trace_entry_t fifo_trace[FIFO_TRACE_SIZE];
+volatile uint32_t fifo_trace_head = 0;
+volatile uint32_t fifo_trace_tail = 0;
+volatile uint32_t fifo_pending_prefetch = 0;
+#else
+extern fifo_trace_entry_t fifo_trace[FIFO_TRACE_SIZE];
+extern volatile uint32_t fifo_trace_head;
+extern volatile uint32_t fifo_trace_tail;
+extern volatile uint32_t fifo_pending_prefetch;
+#endif
 
 // For pins > 31, we need to use different registers
 #if DEBUG_PIN >= 32

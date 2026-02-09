@@ -19,7 +19,7 @@
 #include "logging.h"
 
 static inline void warmup_read_sequence(PIO pio, int sm, uint32_t address) {
-    // bus_output_helper pushes PREFETCH when handling reads
+    // board_registers pushes READ_COMMIT when handling reads
     if (pio_sm_is_tx_fifo_empty(pio, sm)) {
         pio_sm_put(pio, sm, board_fifo_encode_read(address));
         register_read_irq_isr();
@@ -41,36 +41,44 @@ static inline void warmup_write_sequence(PIO pio, int sm, uint32_t address, uint
 }
 
 void setup_irq_handlers(void) {
-    // Register READ path = 8088 reading from pico registers
-    pio_set_irq0_source_enabled(PIO_OUTPUT, fifo_sources[REG_SM_OUTPUT], true);
-    irq_set_exclusive_handler(PIO1_IRQ_0, register_read_irq_isr);
-    irq_set_priority(PIO1_IRQ_0, 0);   // highest: commits first
-    irq_set_enabled(PIO1_IRQ_0, true);
+    //delete any data that might be in the FIFOs from cache warming
+    pio_sm_clear_fifos(PIO_REGISTERS, REG_SM_CONTROL);
+    pio_sm_clear_fifos(PIO_DMA_MASTER, DMA_SM_CONTROL);
 
-    // Register WRITE path = 8088 writing to pico registers
+    // Register READ/WRITE path = 8088 accessing pico registers (single SM)
+    // MUST have highest priority so cache is updated before any read returns stale data
     pio_set_irq0_source_enabled(PIO_REGISTERS, fifo_sources[REG_SM_CONTROL], true);
-    irq_set_exclusive_handler(PIO0_IRQ_0, register_write_irq_isr);
-    irq_set_priority(PIO0_IRQ_0, 1);          
+    irq_set_exclusive_handler(PIO0_IRQ_0, register_read_irq_isr);
+    irq_set_priority(PIO0_IRQ_0, 0);   // highest priority - updates cache first
     irq_set_enabled(PIO0_IRQ_0, true);
 
     // DMA READ path = pico doing DMA read from 8088 bus
-    pio_set_irq1_source_enabled(PIO_OUTPUT, fifo_sources[DMA_SM_OUTPUT], true);
+    // NOTE: DMA read IRQ is NOT enabled at startup to avoid spurious interrupts
+    // during register-only operations. Enable via enable_dma_read_irq() when DMA is needed.
+    // The current blocking DMA implementation (pio_sm_get_blocking) doesn't need the IRQ anyway.
+    pio_set_irq1_source_enabled(PIO_DMA_MASTER, fifo_sources[DMA_SM_CONTROL], true);
     irq_set_exclusive_handler(PIO1_IRQ_1, dma_read_isr);
     irq_set_priority(PIO1_IRQ_1, 2);
-    irq_set_enabled(PIO1_IRQ_1, true);
+    // irq_set_enabled(PIO1_IRQ_1, true);  // Disabled - enable when DMA is needed
 
     // DMA Write path does not generate IRQs
+}
+
+// Enable DMA read IRQ - call this before starting DMA operations
+void enable_dma_read_irq(void) {
+    irq_set_enabled(PIO1_IRQ_1, true);
+}
+
+// Disable DMA read IRQ - call this when DMA operations are complete
+void disable_dma_read_irq(void) {
+    irq_set_enabled(PIO1_IRQ_1, false);
 }
 
 void warm_caches(void) {
     PIO register_pio = PIO_REGISTERS;
     int register_control = REG_SM_CONTROL;
-    PIO pio_output = PIO_OUTPUT;
-    int reg_sm_output = REG_SM_OUTPUT;
-    PIO dma_ctrl_pio = PIO_DMA_CONTROL;
+    PIO pio_dma_master = PIO_DMA_MASTER;
     int dma_sm_control = DMA_SM_CONTROL;
-    PIO dma_output_pio = PIO_OUTPUT;
-    int dma_sm_output = DMA_SM_OUTPUT;
 
      printf("Pre-warming IRQ handler caches...\n");
 
@@ -79,20 +87,17 @@ void warm_caches(void) {
     irq_set_enabled(PIO1_IRQ_0, false);
     irq_set_enabled(PIO1_IRQ_1, false);
 
-    // Warm up board_registers handler (handles writes only)
+    // Warm up board_registers handler
     for (int warm_iter = 0; warm_iter < 10; warm_iter++) {
+        //writes
         warmup_write_sequence(register_pio, register_control, DMA_REGISTER_BASE + REG_CONTROL, 0x00);
         warmup_write_sequence(register_pio, register_control, DMA_REGISTER_BASE + REG_ADDR_L, 0x00);
         warmup_write_sequence(register_pio, register_control, DMA_REGISTER_BASE + REG_ADDR_M, 0x00);
         warmup_write_sequence(register_pio, register_control, DMA_REGISTER_BASE + REG_ADDR_H, 0x00);
-    }
-
-    // Warm up bus_output_helper handler (handles reads and DMA reads)
-    // Note: bus_output_helper actually processes reads, not board_registers
-    for (int warm_iter = 0; warm_iter < 10; warm_iter++) {
-        warmup_read_sequence(pio_output, reg_sm_output, DMA_REGISTER_BASE + REG_DATA);
-        warmup_read_sequence(pio_output, reg_sm_output, DMA_REGISTER_BASE + REG_STATUS);
-        warmup_read_sequence(pio_output, reg_sm_output, DMA_REGISTER_BASE + REG_ADDR_L);
+        //reads
+        warmup_read_sequence(register_pio, register_control, DMA_REGISTER_BASE + REG_DATA);
+        warmup_read_sequence(register_pio, register_control, DMA_REGISTER_BASE + REG_STATUS);
+        warmup_read_sequence(register_pio, register_control, DMA_REGISTER_BASE + REG_ADDR_L);
     }
 
     printf("Cache pre-warming complete\n");
@@ -110,18 +115,15 @@ void warm_caches(void) {
     pio_sm_clear_fifos(register_pio, register_control);
     pio_sm_set_enabled(register_pio, register_control, true);
 
-    pio_sm_set_enabled(pio_output, reg_sm_output, false);
-    pio_sm_clear_fifos(pio_output, reg_sm_output);
-    pio_sm_set_enabled(pio_output, reg_sm_output, true);
+    pio_sm_set_enabled(pio_dma_master, dma_sm_control, false);
+    pio_sm_clear_fifos(pio_dma_master, dma_sm_control);
+    pio_sm_set_enabled(pio_dma_master, dma_sm_control, true);
 
-    pio_sm_set_enabled(pio_output, dma_sm_output, false);
-    pio_sm_clear_fifos(pio_output, dma_sm_output);
-    pio_sm_set_enabled(pio_output, dma_sm_output, true);
 
-    // Re-enable IRQs
+    // Re-enable IRQs (except DMA read IRQ which stays disabled until DMA is needed)
     irq_set_enabled(PIO0_IRQ_0, true);
     irq_set_enabled(PIO1_IRQ_0, true);
-    irq_set_enabled(PIO1_IRQ_1, true);
+    // irq_set_enabled(PIO1_IRQ_1, true);  // DMA read IRQ stays disabled
 }
 
 // Modified core1_main that uses cached handler and deferred processing
@@ -131,18 +133,12 @@ void core1_main() {
 
     PIO register_pio = PIO_REGISTERS;
     int register_control = REG_SM_CONTROL;
-    PIO pio_output = PIO_OUTPUT;
-    int reg_sm_output = REG_SM_OUTPUT;
-    PIO dma_ctrl_pio = PIO_DMA_CONTROL;
+    PIO pio_dma_master = PIO_DMA_MASTER;
     int dma_sm_control = DMA_SM_CONTROL;
-    PIO dma_output_pio = PIO_OUTPUT;
-    int dma_sm_output = DMA_SM_OUTPUT;
 
     printf("Setting up CACHED IRQ handlers\n");
-    printf("  board_registers_control: PIO%d SM%d\n", pio_get_index(register_pio), register_control);
-    printf("  board_registers_output: PIO%d SM%d\n", pio_get_index(pio_output), reg_sm_output);
-    printf("  dma_rw_control: PIO%d SM%d\n", pio_get_index(dma_ctrl_pio), dma_sm_control);
-    printf("  dma_rw_output: PIO%d SM%d\n", pio_get_index(dma_output_pio), dma_sm_output);
+    printf("  registers_control: PIO%d SM%d\n", pio_get_index(register_pio), register_control);
+    printf("  dma_sm_control: PIO%d SM%d\n", pio_get_index(pio_dma_master), dma_sm_control);
 
     // Initialize the cached/deferred system
     printf("Initializing cached/deferred processing system...\n");
@@ -177,12 +173,11 @@ void core1_main() {
                     pio_sm_get_pc(register_pio, register_control),
                     pio_sm_is_exec_stalled(register_pio, register_control));
 
-    printf("PIO check bus_output_helper: FIFO RX level=%d, TX level=%d, PC=0x%x, stalled=%d\n",
-                    pio_sm_get_rx_fifo_level(pio_output, reg_sm_output),
-                    pio_sm_get_tx_fifo_level(pio_output, reg_sm_output),
-                    pio_sm_get_pc(pio_output, reg_sm_output),
-                    pio_sm_is_exec_stalled(pio_output, reg_sm_output));
-
+    printf("PIO check dma_sm_control: FIFO RX level=%d, TX level=%d, PC=0x%x, stalled=%d\n",
+                    pio_sm_get_rx_fifo_level(pio_dma_master, dma_sm_control),
+                    pio_sm_get_tx_fifo_level(pio_dma_master, dma_sm_control),
+                    pio_sm_get_pc(pio_dma_master, dma_sm_control),
+                    pio_sm_is_exec_stalled(pio_dma_master, dma_sm_control));
     printf("Core1 started with separate CACHED handlers\n");
     printf("  board_registers handler on PIO0_IRQ_0\n");
     printf("  bus_output_helper handler on PIO1_IRQ_0\n");
@@ -214,7 +209,7 @@ void dma_process_deferred_events_cached(void) {
 
     // Log statistics periodically (every 1000 calls)
     static uint32_t call_count = 0;
-    if (++call_count >= 1000) {
+    if (++call_count >= 10000) {
         call_count = 0;
         if (queue->drops > 0 || queue->processed > last_process + 100) {
             fast_log("DEFER_STATS: processed=%u, drops=%u, queue_level=%u\n",

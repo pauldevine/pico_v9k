@@ -22,11 +22,11 @@ CFLAGS_DEBUG = -bt=dos -ms -0 -od -zq -za99 -d2 -I$(WATCOM_INC)
 LFLAGS = format dos LIBPATH $(WATCOM_LIB) LIBPATH $(WATCOM_PATH)/rel/lib286
 
 # Target executables
-TARGETS = dmatest.exe addrtest.exe addr_mid.exe minimal.exe read.exe
+TARGETS = dmatest.exe addrtest.exe addr_mid.exe minimal.exe read.exe victor_boot_trace.exe sasi_perf_test.exe dma_verify.exe boot_sequence_test.exe
 
 # Source and object files
-SOURCES = dmatest.c addrtest.c addr_mid.c minimal.c read.c
-OBJECTS = dmatest.o addrtest.o addr_mid.o minimal.o read.o
+SOURCES = dmatest.c addrtest.c addr_mid.c minimal.c read.c victor_boot_trace.c sasi_perf_test.c dma_verify.c boot_sequence_test.c
+OBJECTS = dmatest.o addrtest.o addr_mid.o minimal.o read.o victor_boot_trace.o sasi_perf_test.o dma_verify.o boot_sequence_test.o
 
 # Default target
 .PHONY: all
@@ -50,6 +50,22 @@ minimal.exe: minimal.o
 	@$(LINK) $(LFLAGS) name $@ file $<
 
 read.exe: read.o
+	@echo "Linking $@..."
+	@$(LINK) $(LFLAGS) name $@ file $<
+
+victor_boot_trace.exe: victor_boot_trace.o
+	@echo "Linking $@..."
+	@$(LINK) $(LFLAGS) name $@ file $<
+
+sasi_perf_test.exe: sasi_perf_test.o
+	@echo "Linking $@..."
+	@$(LINK) $(LFLAGS) name $@ file $<
+
+dma_verify.exe: dma_verify.o
+	@echo "Linking $@..."
+	@$(LINK) $(LFLAGS) name $@ file $<
+
+boot_sequence_test.exe: boot_sequence_test.o
 	@echo "Linking $@..."
 	@$(LINK) $(LFLAGS) name $@ file $<
 
@@ -98,6 +114,12 @@ test-read: read.exe
 	@echo "Read test built: read.exe"
 	@echo "Copy to DOS environment to run"
 
+# Run boot sequence test only
+.PHONY: test-bootseq
+test-bootseq: boot_sequence_test.exe
+	@echo "Boot sequence test built: boot_sequence_test.exe"
+	@echo "Copy to DOS environment to run"
+
 # Show help
 .PHONY: help
 help:
@@ -109,6 +131,7 @@ help:
 	@echo "  debug      - Build with debug symbols"
 	@echo "  test       - Build and show run instructions"
 	@echo "  test-addr  - Build address test only"
+	@echo "  test-bootseq - Build boot sequence harness only"
 	@echo "  help       - Show this help message"
 	@echo ""
 	@echo "Individual programs:"
@@ -116,6 +139,10 @@ help:
 	@echo "  addrtest.exe - Address register focused test"
 	@echo "  addr_mid.exe - Minimal DMA_ADDR_MID write/read tester"
 	@echo "  minimal.exe  - Minimal single register test (REG_ADDR_H)"
+	@echo "  victor_boot_trace.exe - Replay first 20 BIOS accesses from MAME log"
+	@echo "  sasi_perf_test.exe - SASI state machine perf test (250 ops from MAME)"
+	@echo "  dma_verify.exe - DMA transfer CRC8 verification (10 sectors)"
+	@echo "  boot_sequence_test.exe - Replay full observed boot SASI sequence with divergence checks"
 	@echo ""
 	@echo "Environment:"
 	@echo "  WATCOM_PATH = $(WATCOM_PATH)"

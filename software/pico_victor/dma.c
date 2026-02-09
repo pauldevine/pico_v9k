@@ -11,7 +11,17 @@
 #include "dma.h"
 #include "sasi.h"
 #include "logging.h"
+#include "reg_queue_processor.h"
 #include "pico_fujinet/spi.h"
+
+// Set to 1 to enable debug printf during DMA operations (WARNING: breaks timing-critical bus operations)
+#define DMA_DEBUG_PRINTF 0
+
+#if DMA_DEBUG_PRINTF
+#define dma_printf(...) printf(__VA_ARGS__)
+#else
+#define dma_printf(...) ((void)0)
+#endif
 
 #define SASI_SECTOR_SIZE 512
 
@@ -89,6 +99,7 @@ static bool sasi_dma_device_to_ram(dma_registers_t *dma) {
     dma->dma_address.full = addr;
     dma->logical_block.full = lba;
     dma->block_count.full = 0;
+    cached_sync_dma_address(dma);
 
     return true;
 }
@@ -121,6 +132,7 @@ static bool sasi_dma_ram_to_device(dma_registers_t *dma) {
     dma->dma_address.full = addr;
     dma->logical_block.full = lba;
     dma->block_count.full = 0;
+    cached_sync_dma_address(dma);
 
     return true;
 }
@@ -144,7 +156,7 @@ dma_registers_t* dma_get_registers() {
 
 void debug_pio_state(PIO pio, uint sm) {
     // Check FIFO levels
-    printf("pio: %d sm: %d RX FIFO: %d/8 ", pio, sm, pio_sm_get_rx_fifo_level(pio, sm));
+    printf("pio: %d sm: %d RX FIFO: %d/4 ", pio, sm, pio_sm_get_rx_fifo_level(pio, sm));
 
     // Check if the state machine is enabled
     printf("SM stalled: %d  ", pio_sm_is_exec_stalled(pio, sm));
@@ -167,7 +179,7 @@ void print_segment_offset(uint32_t addr) {
     // Assumes addr < 1MB.
     uint16_t seg = addr >> 4;
     uint16_t off = addr & 0xF;
-    printf("RD %04X:%04X\n", seg, off);
+    printf(" %04X:%04X\n", seg, off);
 }
 
 void dma_write_register(dma_registers_t *dma, dma_reg_offsets_t offset, uint8_t value) {
@@ -207,9 +219,9 @@ void dma_write_register(dma_registers_t *dma, dma_reg_offsets_t offset, uint8_t 
             if (now_sel && !prev_sel) {
                 // Assert SEL
                 dma->bus_ctrl |= SASI_SEL_BIT;
-                printf("SASI SEL asserted\n");
-                // Latch target ID from last data bus value
-                dma->selected_target = (dma->command & 0x07);
+                dma_printf("SASI SEL asserted\n");
+                // Latch target ID from last data bus value (SASI selection byte is a bit mask)
+                dma->selected_target = sasi_extract_target_id(dma->command);
                 // Target responds busy after selection (matches log: status 0x04)
                 dma->bus_ctrl |= SASI_BSY_BIT;
             } else if (!now_sel && prev_sel) {
@@ -220,15 +232,17 @@ void dma_write_register(dma_registers_t *dma, dma_reg_offsets_t offset, uint8_t 
                 dma->state.non_dma_req = 1;
                 dma_update_interrupts(dma, true);
             }
+            // Sync cached status after any bus_ctrl changes from SELECT edges
+            cached_status_sync_from_bus(dma);
             break;
         }
 
         case REG_DATA: // 0x10 - Data register
             dma->command = value; // Store last written data value
 
-            // If writing DATA while SELECT is asserted, treat byte as target ID
+            // If writing DATA while SELECT is asserted, treat byte as target ID (bit mask format)
             if (dma->control & DMA_SELECT_BIT) {
-                dma->selected_target = (value & 0x07);
+                dma->selected_target = sasi_extract_target_id(value);
                 // Workaround like MAME: ensure SEL isn't asserted during data bus change
                 dma->bus_ctrl &= ~SASI_SEL_BIT;
                 dma->control &= ~DMA_SELECT_BIT;
@@ -254,6 +268,8 @@ void dma_write_register(dma_registers_t *dma, dma_reg_offsets_t offset, uint8_t 
             if (dma->bus_ctrl & SASI_CTL_BIT) {
                 handle_sasi_command_byte(dma, value);
             }
+            // Sync cached status after any bus_ctrl changes from DATA writes
+            cached_status_sync_from_bus(dma);
             break;
 
         case REG_STATUS: // 0x20 - Status register
@@ -363,88 +379,291 @@ uint8_t dma_read_register(dma_registers_t *dma, dma_reg_offsets_t offset) {
     return data;
 }
 
+void ontime_pin_setup() {
+    //setup pin basics like enable pulls and set slew rate
+    for (int pin = BD0_PIN; pin <= PHASE_2_PIN; ++pin) {
+        gpio_set_drive_strength(pin, GPIO_DRIVE_STRENGTH_12MA);
+        gpio_set_slew_rate(pin, GPIO_SLEW_RATE_SLOW);
+        gpio_pull_down(pin); // enable pull-downs
+        gpio_put(pin, 0);  // by default drive low
+        gpio_set_dir(pin, GPIO_IN); // set as output to assert HOLD/
+        
+        //printf("ontime gpio_setup %d  ", pin);
+    }
+
+    // for the bus control pins, to avoid floating pins during DMA handoff to 8088
+    // we need to set appropriate pull-ups or pull-downs
+    // we defaulted everything to pull low above, so just need to fix the active low pins
+
+    gpio_pull_down(ALE_PIN);  // ALE is active high, so pull-down
+
+    gpio_pull_up(RD_PIN);   // RD is active low, so pull-up
+    gpio_pull_up(WR_PIN);   // WR is active low, so pull-up
+    gpio_pull_up(DTR_PIN);  // DTR is active low, so pull-up 
+    gpio_pull_up(DEN_PIN);  // DEN is active low, so pull-up
+    gpio_pull_up(SSO_PIN);  // SSO is active low, so pull-up
+    gpio_pull_up(DLATCH_PIN); // DLATCH is active low, so pull-up
+    gpio_pull_up(EXTIO_PIN); // EXTIO is active low, so pull-up
+
+    // DMA IRQ line: drive low by default, assert when interrupts are pending.
+    gpio_set_function(DMA_IRQ_PIN, GPIO_FUNC_SIO);
+    gpio_put(DMA_IRQ_PIN, DMA_IRQ_DEASSERT_LEVEL);
+    gpio_set_dir(DMA_IRQ_PIN, GPIO_OUT);
+}
+
+static inline void setup_pin_dma_control(uint32_t pin, bool is_output, bool preload_level) {
+    gpio_set_function(pin, GPIO_FUNC_PIO0 + pio_get_index(PIO_DMA_MASTER));
+    pio_gpio_init(PIO_DMA_MASTER, pin);
+    pio_sm_set_pins_with_mask(PIO_DMA_MASTER, DMA_SM_CONTROL, (preload_level ? 1u : 0u) << pin, 1u << pin); // preload level
+    pio_sm_set_pindirs_with_mask(PIO_DMA_MASTER, DMA_SM_CONTROL, (is_output ? 1u : 0u) << pin, 1u << pin); // direction
+}
+
+static inline void setup_pins_dma_control() {
+    
+    //setup data pins BD0 to A19 to be owned by PIO as inputs
+    uint function = GPIO_FUNC_PIO0 + pio_get_index(PIO_DMA_MASTER);
+    for (int pin = BD0_PIN; pin <= DEN_PIN; ++pin) {
+        gpio_set_function(pin, function);
+        pio_gpio_init(PIO_DMA_MASTER, pin);
+        pio_sm_set_pins_with_mask(PIO_DMA_MASTER, DMA_SM_CONTROL, 0u, 1u << pin); // preload latch low
+        //pio_sm_set_pindirs_with_mask(PIO_DMA_MASTER, DMA_SM_CONTROL, 1u, 1u << pin); // output direction
+
+       // printf("dma gpio_init %d  ", pin);
+        //printf("GPIO%d_CTRL = 0x%08x\n", pin, io_bank0_hw->io[pin].ctrl);
+    }
+
+    pio_sm_set_consecutive_pindirs(PIO_DMA_MASTER, DMA_SM_CONTROL, BD0_PIN, ADDRESS_BUS_SIZE, true); // address pins as outputs
+
+    // Assign control pins to PIO, set direction and preload levels
+    uint32_t high = 1;
+    uint32_t low = 0;
+    setup_pin_dma_control(RD_PIN, GPIO_OUT, high);   // RD/ output, preload high
+    setup_pin_dma_control(WR_PIN, GPIO_OUT, high);   // WR/ output, preload high
+    setup_pin_dma_control(DTR_PIN, GPIO_OUT, high);  // DTR/ output, preload high
+    setup_pin_dma_control(EXTIO_PIN, GPIO_OUT, high);  // EXTIO/ output, preload high
+
+    setup_pin_dma_control(ALE_PIN, GPIO_OUT, low);   // ALE/ output, preload low
+    setup_pin_dma_control(DEN_PIN, GPIO_OUT, low);   // DEN/ output, preload low
+    
+    setup_pin_dma_control(READY_PIN, GPIO_IN, low); // READY/ input, preload low
+    setup_pin_dma_control(CLOCK_5_PIN, GPIO_IN, low); // CLOCK_5 input, preload low
+    setup_pin_dma_control(CLOCK_15B_PIN, GPIO_IN, low); // CLOCK_15B input, preload low
+
+    gpio_init(SSO_PIN);
+    gpio_put(SSO_PIN, low); 
+    gpio_set_dir(SSO_PIN, GPIO_OUT);
+
+    gpio_init(IO_M_PIN);
+    gpio_put(IO_M_PIN, low); 
+    gpio_set_dir(IO_M_PIN, GPIO_OUT);
+}   
+
+static inline void setup_pins_register_inputs() {
+    //setup data pins BD0 to A19 to be owned by board register PIO as inputs
+    pio_sm_set_consecutive_pindirs(PIO_DMA_MASTER, DMA_SM_CONTROL, BD0_PIN, 32, false); // all pins as inputs
+    for (int pin = BD0_PIN; pin <= CLOCK_15B_PIN; ++pin) {
+        uint function = GPIO_FUNC_PIO0 + pio_get_index(PIO_REGISTERS);
+        gpio_set_function(pin, function);
+
+       // printf("PIO_REGISTERS gpio_init %d  ", pin);
+        //printf("GPIO%d_CTRL = 0x%08x\n", pin, io_bank0_hw->io[pin].ctrl);
+    }
+
+    // Release IO/M so the CPU can drive it during normal register cycles.
+    gpio_set_function(IO_M_PIN, GPIO_FUNC_SIO);
+    gpio_set_dir(IO_M_PIN, GPIO_IN);
+    
+} 
+
+
+static inline bool obtain_dma_master() {
+    //wait for low then high so we can sync to CLOCK_5 edge to help meta-stability of board
+    while (gpio_get(CLOCK_5_PIN)) { tight_loop_contents(); } // wait low
+    while (!gpio_get(CLOCK_5_PIN)) { tight_loop_contents(); } // then wait high
+
+    gpio_init(HOLD_PIN);
+    gpio_put(HOLD_PIN, 0);  // sink the line, HOLD/ is open drain on Victor
+    gpio_set_dir(HOLD_PIN, GPIO_OUT); // set as output to assert HOLD/
+    gpio_init(HLDA_PIN);
+    gpio_set_dir(HLDA_PIN, GPIO_IN);
+
+    absolute_time_t deadline = make_timeout_time_us(DMA_TIMEOUT_US);
+    while (!gpio_get(HLDA_PIN)) {
+        if (DMA_TIMEOUT_US && absolute_time_diff_us(get_absolute_time(), deadline) <= 0) {
+            return false;
+        }
+        tight_loop_contents();
+    }
+
+    return true;
+}
+
+static inline bool start_dma_control() {
+    if (!obtain_dma_master()) {
+        printf("Failed to obtain DMA master within timeout\n");
+        return false;
+    }
+    // Quiesce register SM before taking bus, and drain any queued events
+    pio_sm_set_enabled(PIO_REGISTERS, REG_SM_CONTROL, false);
+    pio_sm_clear_fifos(PIO_REGISTERS, REG_SM_CONTROL);
+
+    //setup all the pins to be controlled by PIO DMA SM
+    setup_pins_dma_control();
+    pio_sm_clear_fifos(PIO_DMA_MASTER, DMA_SM_CONTROL);
+    pio_sm_set_enabled(PIO_DMA_MASTER, DMA_SM_CONTROL, true);
+    return true;
+}
+
+
+static inline void release_dma_master() {
+    //turn off DMA PIO and give back control to register PIO
+    pio_sm_clear_fifos(PIO_DMA_MASTER, DMA_SM_CONTROL);
+    pio_sm_set_enabled(PIO_DMA_MASTER, DMA_SM_CONTROL, false);
+    setup_pins_register_inputs();
+    pio_sm_clear_fifos(PIO_REGISTERS, REG_SM_CONTROL);
+    pio_sm_set_enabled(PIO_REGISTERS, REG_SM_CONTROL, true);
+
+    //wait for low then high so we can sync to CLOCK_5 edge to help meta-stability of board
+    while (gpio_get(CLOCK_5_PIN)) { tight_loop_contents(); } // wait low
+    while (!gpio_get(CLOCK_5_PIN)) { tight_loop_contents(); } // then wait high
+    
+    gpio_set_dir(HOLD_PIN, GPIO_IN); // release HOLD/ is open drain on Victor
+}
+
+
 #ifndef UNIT_TEST
 // Write function using two-word FIFO protocol:
 //  Word 1: bits 0=W/R flag (1=write), bits 1-20=address A0-A19
 //  Word 2: bits 0-7=data byte, bits 8-19=address A8-A19 (MSB)
 void dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_address) {
-    PIO write_pio = PIO_OUTPUT;
-    int write_sm = DMA_SM_OUTPUT;
-
-    printf("Starting DMA write to Victor RAM\n");
-    printf("Length: %zu\n", length);
+#if DMA_DEBUG_PRINTF
+    dma_printf("DMA WR ");
     print_segment_offset(start_address);
+#endif
 
-    printf("write_pio: %p, write_sm: %d\n", write_pio, write_sm);
-    debug_pio_state(write_pio, write_sm);
-
-    for (size_t i = 0; i < length; i++) {
-        uint32_t addr = (start_address + i) & 0xFFFFF;  // 20-bit address
-        uint8_t byte = data[i];                         // Data byte to write
-
-        printf("Writing %02X to Victor RAM at address %08X ", byte, addr);
-        print_segment_offset(addr);
-
-        // Send two FIFO words per the PIO protocol
-        // Word 1: address shifted left with write 2-bit flag in LSB
-        pio_sm_put_blocking(write_pio, write_sm, (addr << 2) | 3);
-        // Word 2: address MSB (A8-A19) in upper bits, data byte in lower bits
-        pio_sm_put_blocking(write_pio, write_sm, (addr & 0xFFF00) | byte);
+    if (!data || length == 0) {
+        return;
     }
-    printf("Finished DMA write to Victor RAM\n");
+
+    // debug_pio_state(PIO_DMA_MASTER, DMA_SM_CONTROL);
+
+    // Use ceiling division to get correct batch count.
+    uint32_t full_batch_count = (length + (DMA_BATCH_SIZE - 1)) / DMA_BATCH_SIZE;
+
+    for (uint32_t batch = 0; batch < full_batch_count; batch++) {
+        if (!start_dma_control()) {
+            printf("Failed to obtain DMA master\n");
+            return;
+        }
+
+        for (size_t i = 0; i < DMA_BATCH_SIZE; i++) {
+            size_t index = (batch * DMA_BATCH_SIZE) + i;
+            if (index >= length) {
+                break; // Never access/write beyond requested length
+            }
+
+            uint32_t addr = (start_address + index) & 0xFFFFF;  // 20-bit address
+            uint8_t byte = data[index];                          // Data byte to write
+
+            // Send two FIFO payloads per memory address =  the PIO protocol
+            uint32_t fifo_t1 = ((addr & 0xFFFFFu) << 1) | 1;                // T1: [20 bit address][1-bit write=1 flag in LSB]
+            pio_sm_put_blocking(PIO_DMA_MASTER, DMA_SM_CONTROL, fifo_t1);
+
+            uint32_t fifo_t2 = (addr & 0xFFF00u) | byte;                    // T2: [12 bits address A19-A8][8 bits data byte]
+            pio_sm_put_blocking(PIO_DMA_MASTER, DMA_SM_CONTROL, fifo_t2);
+        }
+
+        // Wait for TX FIFO to empty before releasing DMA master
+        while (pio_sm_get_tx_fifo_level(PIO_DMA_MASTER, DMA_SM_CONTROL) > 0) {
+            tight_loop_contents();
+        }
+        sleep_us(3); // small delay to ensure last data is processed
+
+        release_dma_master();
+        
+        // give 8088 time to work background interrupts like serial port or other I/O before resuming DMA
+        sleep_us(DMA_SHARE_WAIT_US);
+    }
+   
+    return;
 }
 
 // Read function (PIO-based) using two-word FIFO protocol:
 //  Word 1: bits 0=W/R flag (0=read), bits 1-20=address A0-A19
 //  Word 2: pindirs control value 0xFFF00 (A8-A19 outputs, BD0-BD7 inputs)
 void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_address) {
-    PIO read_pio = PIO_OUTPUT;
-    int read_sm = DMA_SM_OUTPUT;
 
-    printf("Starting DMA read from Victor RAM\n");
-    printf("Length: %zu, start_address: %d ", length, start_address);
+#if DMA_DEBUG_PRINTF
+    dma_printf("DMA RD Length: %zu, start_address: %d ", length, start_address);
     print_segment_offset(start_address);
+#endif
 
-    uint8_t *temp = malloc((length + 1) * sizeof(uint8_t));
+    if (!data || length == 0) {
+        return;
+    }
+
+    uint8_t *temp = malloc(length);
     if (!temp) {
         printf("Failed to allocate memory for DMA transfer\n");
         return;
     }
 
-    debug_pio_state(read_pio, read_sm);
-    printf("Reading from Victor RAM at address %08X\n", start_address);
-    for (size_t i = 0; i < length; i++) {
-        uint32_t addr = (start_address + i) & 0xFFFFF;  // 20-bit address
+#if DMA_DEBUG_PRINTF
+    debug_pio_state(PIO_DMA_MASTER, DMA_SM_CONTROL);
+#endif
+    
+    // Use ceiling division to get correct batch count.
+    uint32_t full_batch_count = (length + (DMA_BATCH_SIZE - 1)) / DMA_BATCH_SIZE;
 
-        // Send two FIFO words per the PIO protocol
-        // Word 1: address shifted left with read 2-bit flag (0) in LSB
-        pio_sm_put_blocking(read_pio, read_sm, (addr << 2) | 0);
-        // Word 2: pindirs value to set BD0-BD7 as inputs, A8-A19 as outputs
-        pio_sm_put_blocking(read_pio, read_sm, 0xFFF00);
+    for (uint32_t batch = 0; batch < full_batch_count; batch++) {
+        if (!start_dma_control()) {
+            printf("Failed to obtain DMA master\n");
+            free(temp);
+            return;
+        }
 
-        // Get the data byte that was read
-        uint32_t char_data = pio_sm_get_blocking(read_pio, read_sm);
-        temp[i] = char_data & 0xFF;
+        for (size_t i = 0; i < DMA_BATCH_SIZE; i++) {
+            size_t index = (batch * DMA_BATCH_SIZE) + i;
+            if (index >= length) {
+                break; // Never access/read beyond requested length
+            }
+
+            uint32_t addr = (start_address + index) & 0xFFFFF;  // 20-bit address
+
+            // Send two FIFO words per the PIO protocol
+            uint32_t fifo_t1 = ((addr & 0xFFFFFu) << 1) | 0; // T1: [20 bit address][1-bit read=0 flag in LSB]
+            pio_sm_put_blocking(PIO_DMA_MASTER, DMA_SM_CONTROL, fifo_t1);
+
+            uint32_t fifo_t2 = 0xFFF00; // pindirs value only, no data or address T2: [A8-A19 remain outputs][BD0-BD7 inputs]
+            pio_sm_put_blocking(PIO_DMA_MASTER, DMA_SM_CONTROL, fifo_t2);
+
+            // Get the data byte that was read
+            uint32_t char_data = pio_sm_get_blocking(PIO_DMA_MASTER, DMA_SM_CONTROL);
+            temp[index] = char_data & 0xFF;
+        }
+
+        release_dma_master();
+        
+        // give 8088 time to work background interrupts like serial port or other I/O before resuming DMA
+        sleep_us(DMA_SHARE_WAIT_US);
     }
+
     memcpy(data, temp, length);
     free(temp);
-    printf("\n\nFinished DMA read from Victor RAM\n");
 }
 #else
 // Unit-test in-memory Victor RAM model (64 KiB to fit SRAM)
 static uint8_t test_victor_ram[1 << 16];
 static const size_t TEST_VICTOR_RAM_SIZE = (1 << 16);
 
-void dma_write_to_victor_ram(PIO write_pio, int write_sm, uint8_t *data, size_t length, uint32_t start_address) {
-    (void)write_pio; (void)write_sm;
+void dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_address) {
     for (size_t i = 0; i < length; i++) {
         uint32_t addr = (start_address + i) & 0xFFFFF;
         if (addr < TEST_VICTOR_RAM_SIZE) test_victor_ram[addr] = data[i];
     }
 }
 
-void dma_read_from_victor_ram(PIO read_pio, int read_sm, uint8_t *data, size_t length, uint32_t start_address) {
-    (void)read_pio; (void)read_sm;
+void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_address) {
     for (size_t i = 0; i < length; i++) {
         uint32_t addr = (start_address + i) & 0xFFFFF;
         data[i] = (addr < TEST_VICTOR_RAM_SIZE) ? test_victor_ram[addr] : 0x00;
@@ -459,9 +678,11 @@ size_t test_get_victor_ram_size() { return TEST_VICTOR_RAM_SIZE; }
 void dma_device_reset(dma_registers_t *dma) {
     dma->state.dma_enabled = 0;
     dma->state.dma_dir_in = 0;
+    dma->state.data_out_expected = 0;
     dma->dma_address.full = 0;
     dma->state.asserting_ack = 0;
     dma->state.non_dma_req = 0;
+    dma->state.status_pending = 0;
     dma->command = 0;
     dma->bus_ctrl = 0;
     dma->control = 0;
@@ -471,6 +692,12 @@ void dma_device_reset(dma_registers_t *dma) {
 
     // Clear interrupt
     dma_update_interrupts(dma, false);
+    // Ensure cached status reflects bus-free after reset
+    cached_status_sync_from_bus(dma);
+    cached_set_data(0x00);
+
+    // Reset SASI command accumulator state
+    sasi_reset_command_state();
 
     printf("DMA device reset\n");
 }
@@ -479,8 +706,9 @@ void dma_device_reset(dma_registers_t *dma) {
 void dma_update_interrupts(dma_registers_t *dma, bool irq_state) {
     if (irq_state != dma->state.interrupt_pending) {
         dma->state.interrupt_pending = irq_state;
+        gpio_put(DMA_IRQ_PIN, irq_state ? DMA_IRQ_ASSERT_LEVEL : DMA_IRQ_DEASSERT_LEVEL);
         // In real implementation, this would trigger actual interrupt to CPU
-        printf("DMA interrupt %s\n", irq_state ? "asserted" : "cleared");
+        //printf("DMA interrupt %s\n", irq_state ? "asserted" : "cleared");
     }
 }
 
@@ -493,15 +721,15 @@ void dma_handle_sasi_req(dma_registers_t *dma) {
             if (dma->state.dma_dir_in) {
                 // Device → Victor RAM
                 ok = sasi_dma_device_to_ram(dma);
-                printf("DMA write to RAM at 0x%06X\n", dma->dma_address.full);
+                dma_printf("DMA write to RAM at 0x%06X\n", dma->dma_address.full);
             } else {
                 // Victor RAM → Device
                 ok = sasi_dma_ram_to_device(dma);
-                printf("DMA read from RAM at 0x%06X\n", dma->dma_address.full);
+                dma_printf("DMA read from RAM at 0x%06X\n", dma->dma_address.full);
             }
 
             if (!ok) {
-                printf("Warning: SASI DMA transfer failed\n");
+                dma_printf("Warning: SASI DMA transfer failed\n");
             }
             
             // Auto-increment address after each transfer (key missing piece!)

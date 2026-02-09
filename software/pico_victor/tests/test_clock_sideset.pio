@@ -105,7 +105,14 @@ static inline void test_clock_sideset_program_init(PIO pio, uint sm, uint offset
     printf("Initial CLOCK_5 state: %d\n", gpio_get(CLOCK_5_PIN));
     printf("Initial CLOCK_15B state: %d\n", gpio_get(CLOCK_15B_PIN));
 
-    pio_sm_set_enabled(pio, sm, true);
+    // Load our configuration, and jump to the start of the program
+    int init_rc = pio_sm_init(pio, sm, offset, &c);
+    printf("test_clock_sideset pio_sm_init rc=%d, SM%d execctrl after init=0x%08x\n", init_rc, sm, pio->sm[sm].execctrl);
+    if (init_rc == PICO_OK) {
+        pio_sm_set_enabled(pio, sm, true);
+    } else {
+        printf("WARNING: pio_sm_init failed; SM%d not enabled\n", sm);
+    }
 
     printf("Test program running. Monitor DEN_PIN (%d) and IO_M_PIN (%d) for output.\n", DEN_PIN, IO_M_PIN);
 }

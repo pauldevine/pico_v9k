@@ -6,13 +6,8 @@
 #define PIO_REGISTERS   pio0
 #define REG_SM_CONTROL  0   
 
-#define PIO_OUTPUT      pio1
-#define REG_SM_OUTPUT   0
-#define DMA_SM_OUTPUT   1
-
-#define PIO_DMA_CONTROL pio2
+#define PIO_DMA_MASTER pio1
 #define DMA_SM_CONTROL  0
-#define IOM_SM          1
 
 #define ADDR_START_PIN 1 // DMA address output
 #define LOWER_PIN_BASE 0
@@ -24,7 +19,12 @@
 #define ADDRESS_DATA_CONBIT_SIZE 29  // 20-bit address, 8-bit data, 1-bit control
 #define PIO_FULL_SIZE 32
 
+#define DMA_BATCH_SIZE 128  // Number of bytes per DMA batch transfer
+#define DMA_SHARE_WAIT_US 40   // Wait time after releasing bus before re-acquiring (in microseconds)
+#define DMA_TIMEOUT_US 2000  // Timeout for DMA master acquisition (in microseconds)
+
 #define BD0_PIN 1
+#define A19_PIN 20
 #define RD_PIN 21
 #define WR_PIN 22
 #define DTR_PIN 23       
@@ -40,21 +40,41 @@
 #define XACK_PIN 33
 #define IO_M_PIN 34
 #define IR_5_PIN 35
+
+// DMA board IRQ line (IR4 by default; jumperable to IR5 per manual).
+#define DMA_IRQ_PIN IR_4_PIN
+#define DMA_IRQ_ASSERT_LEVEL 1
+#define DMA_IRQ_DEASSERT_LEVEL 0
 #define SSO_PIN 36
 #define DLATCH_PIN 37
 #define CSEN_PIN 38
 #define PHASE_2_PIN 39
 
-#define DEBUG_PIN 45 //TODO: After debugging completes move back to pin 45.
+#define DEBUG_PIN 46 // Was 45, but that conflicts with SDIO D3!
 
 #define ADDRESS_DIR_PINCNT 2
 #define DMA_READ 1
 #define DMA_WRITE 0
 
+// Extract target ID from SASI selection byte (bit mask format)
+// In SASI selection, the data byte is a bit mask where each bit represents an ID:
+// - Bit 7 (0x80) = Initiator (typically ID 7)
+// - Bits 0-6 = Target IDs (one bit set for the selected target)
+// Example: 0x81 = initiator 7 + target 0, 0x82 = initiator 7 + target 1
+static inline uint8_t sasi_extract_target_id(uint8_t selection_byte) {
+    uint8_t target_mask = selection_byte & 0x7F;  // Remove initiator bit (bit 7)
+    if (target_mask == 0) return 0;
+    // Find lowest set bit (target ID) using builtin
+    return (uint8_t)__builtin_ctz(target_mask);
+}
+
 // FIFO operation types, defines for the 2-bit pio payload type flag
-#define FIFO_REG_READ    0x00
-#define FIFO_WRITE_VALUE 0x01
-#define FIFO_DMA_READ    0x02
+#define FIFO_REG_PREFETCH    0x00
+#define FIFO_REG_READ_COMMIT 0x01
+#define FIFO_REG_WRITE       0x02
+
+#define FIFO_DMA_READ        0x00
+#define FIFO_DMA_WRITE       0x01
 
 static inline uint32_t fifo_payload_type(uint32_t raw_value) {
     // PIO encoding varies by operation type, but payload-type identifier is always in bits 31-30
@@ -81,13 +101,13 @@ static inline uint32_t dma_mask_offset(uint32_t offset) {
 }
 
 static inline uint32_t board_fifo_encode_read(uint32_t address) {
-    return ((address & 0xFFFFFu) << 10) | ((uint32_t)FIFO_REG_READ << 30);
+    return ((address & 0xFFFFFu) << 10) | ((uint32_t) FIFO_REG_READ_COMMIT << 30);
 }
 
 static inline uint32_t dma_fifo_encode_write(uint32_t address, uint8_t data) {
     return ((address & 0xFFFFFu) << 2) |       // Address in bits 21-2
            (((uint32_t)data & 0xFFu) << 22) |  // Data in bits 29-22
-           ((uint32_t)FIFO_WRITE_VALUE << 30); // Type in bits 31-30
+           ((uint32_t)FIFO_REG_WRITE << 30); // Type in bits 31-30
 }
 
 
@@ -171,17 +191,21 @@ typedef struct {
     } buffer;
 
     // Internal state flags (not exposed to CPU)
-    struct {
+    // NOTE: volatile required - accessed by both Core 0 (fast handler) and Core 1 (deferred processor)
+    volatile struct {
         uint8_t dma_enabled : 1;
         uint8_t dma_strobe  : 1;
         uint8_t dma_dir_in  : 1; // 1 = device → RAM (read), 0 = RAM → device
         uint8_t interrupt_pending : 1;
         uint8_t asserting_ack : 1;
         uint8_t non_dma_req : 1;
+        uint8_t status_pending : 1; // 1 = waiting for host to read status byte
+        uint8_t data_out_expected; // Non-zero = expecting this many data-out bytes (e.g., for 0x0C params)
     } state;
-    
+
     // SASI bus control state (tracks bus signals for status register)
-    uint8_t bus_ctrl;
+    // NOTE: volatile required - accessed by both Core 0 (fast handler) and Core 1 (deferred processor)
+    volatile uint8_t bus_ctrl;
 
     // Selected SASI target ID (from data bus during selection)
     uint8_t selected_target;
@@ -219,6 +243,7 @@ typedef enum {
     SASI_ACK_BIT = 0x40
 } sasi_status_bits_t;
 
+void ontime_pin_setup();
 void debug_dump_pin(uint pin);
 void pio_debug_state();
 void core1_main();
@@ -234,6 +259,10 @@ uint8_t dma_read_register(dma_registers_t *dma, dma_reg_offsets_t offset);
 void dma_device_reset(dma_registers_t *dma);
 void dma_update_interrupts(dma_registers_t *dma, bool irq_state);
 void dma_handle_sasi_req(dma_registers_t *dma);
+
+// DMA read IRQ control - enable when DMA is active, disable when idle
+void enable_dma_read_irq(void);
+void disable_dma_read_irq(void);
 
 
 #ifdef UNIT_TEST

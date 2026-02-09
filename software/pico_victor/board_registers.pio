@@ -10,23 +10,23 @@
 .define REGISTER_SIZE 12
 .define DATA_SIZE 8
 
-.define FIFO_REG_READ    0x00
-.define FIFO_WRITE_VALUE 0x01
-.define FIFO_DMA_READ    0x02
-
+.define FIFO_REG_PREFETCH    0x00
+.define FIFO_REG_READ_COMMIT 0x01
+.define FIFO_REG_WRITE       0x02
 
 .program board_registers
-.side_set 1 
+.side_set 1 pindirs
 
 ; --- Pre-amble ---
-; This code runs once at the start for each state machine initialization
-; It expects a bitmask of the 12 MSBs of the address to target for the board registers
-pull block side 0        ; Pull bitmask for the 0xEF300 MSB that I'll match against later
-out y, 12 side 0        ; Store bitmask in Y register for 12 MSB address comparison later
+; This code runs once at the start of state machine initialization
+; It stores a bitmask of the 12 MSBs (0xEF3) that we'll compare against later as our target address
+pull block side 0         ; Pull bitmask 
+out y, 12 side 0          ; Store bitmask in Y register
 
 .wrap_target
 T0:
     mov isr, null side 0                 ; clear ISR
+    mov pindirs, null side 0             ; set bus control pins to input
     wait 0 GPIO CLOCK_5_PIN side 0       ; Wait for CLK5 to go low
     
 T1:   
@@ -34,32 +34,35 @@ T1:
     wait 1 GPIO ALE_PIN [9] side 0       ; wait for ALE to go high = T1 start & wait for address to stabilize
     in pins, ADDRESS_BUS_SIZE side 0     ; shift 12 bits of address into ISR
     mov osr, isr side 0                  ; use OSR to store full 20-bit address for later
-    in null, 20 side 0                   ; move the address into the lower 12 bits of the register, dropping 8 LSB to compare against 12 MSB bitmask
-    mov x, isr side 0                    ; x = 12 MSB address bits
+    in null, 20 side 0                   ; move the address into the lower 12 bits of the register, dropping 8 LSB to leave us with 12 MSB
+    mov x, isr side 0                    ; set X = 12 MSB address bits for comparison to 0xEF3 bitmask
     jmp x!=y, T0 side 0                  ; if we're not at 0xEF300, restart T0 to try again
-    mov isr, osr side 0                  ; restore full 20-bit address into ISR    // ISR has [20 bits address]
-    set x, FIFO_REG_READ side 0          ; set x to REG_READ flag
-    in x, 2 side 0 [10]                  ; move the REG_READ flag into ISR as MSBs // ISR has [00 payload flag][20 bits address]
+    mov isr, osr side 0                  ; restore full 20-bit address into ISR
+    set x, FIFO_REG_PREFETCH side 0      ; signal to arm prefetch address payload
+    in x, 2 side 0                       ; move the prefetch flag into ISR as MSBs // ISR has 00[address]
 
 T2:
-    nop side 0 [15]                      ; delay for 1 cycle
-    nop side 0 [15]                      ; delay for 1 cycle
+    push side 0                          ; Push the current ISR address + read signal onto RX FIFO
+    mov isr, osr side 0                  ; restore full 20-bit address into ISR
+    pull block side 0                    ; Pull data to send to 8088 from TX FIFO
     jmp pin T3_WRITE side 0              ; if RD pin is high 8088 is writing, if low 8088 is reading
 
-T3_READ:                                 ; 8088 read cycle // pico's writing (bus_output_helper handles the push)
-    wait 1 GPIO READY_PIN side 1 [15]    ; Wait for READY - gives ARM 800ns window to push data to bus_output_helper
+T3_READ:                               ; 8088 read cycle // pico's writing
+    out pins, DATA_SIZE side 1           ; drive BD0-BD7 with data for 8088 to read
+    out pindirs, DATA_SIZE side 1        ; set BD0-BD7 as outputs
     wait 1 GPIO RD_PIN side 1            ; wait for RD to go high (end of read cycle)
+    set x, FIFO_REG_READ_COMMIT [12] side 1  ; signal to arm commit earlier read // wait for 12 cycles to allow for data hold time
+    in x, 2 side 0                       ; move the read commit flag into ISR as MSBs // ISR has 01[address]
 T4:
-    nop side 0 [1]                      ; wait for next cycle
+    push [11] side 0                     ; send commit signal to arm
+    jmp T0 side 0                        ; jump to T4 for the next clock cycle
 .wrap
 
 T3_WRITE:                                ; 8088 write cycle // pico's reading
-    wait 1 GPIO READY_PIN side 0         ; Wait for CLK5 to go high to allow data to stabilize
-    mov isr, osr side 0                  ; restore full 20-bit address into ISR       // ISR has [20 bits address]
-    set x, FIFO_WRITE_VALUE side 0 [15]  ; set x to WRITE_VALUE flag
-    in pins, DATA_SIZE side 0            ; read data the 8088 is writing max 0xFF     // ISR has [8 bits data][20 bits address]
-    in x, 2 side 0                       ; move the WRITE_VALUE flag into ISR as MSBs // ISR has [01 payload flag][8 bits data][20 bits address]
-    push side 1                          ; send data to write to arm [payload flag 2 bits][data 8 bits][address 20 bits]
+    wait 1 GPIO READY_PIN side 1         ; Wait for READY pin to go high to allow data to stabilize
+    set x, FIFO_REG_WRITE side 1         ; signal to arm write value payload
+    in pins, DATA_SIZE side 1            ; read data the 8088 is writing max 0xFF
+    in x, 2 side 0                       ; move the WRITE prefetch flag into ISR as MSBs //ISR has 10[data][address]
     jmp T4 side 0                        ; jump to T4 for the next clock cycle
 
 % c-sdk {
@@ -69,29 +72,41 @@ T3_WRITE:                                ; 8088 write cycle // pico's reading
 #define ADDRESS_RD_WR_SIZE 22 
 #define REG_PIN_FIRST BD0_PIN
 #define REG_PIN_LAST CLOCK_15B_PIN
-#define TEMP_DEBUG_PIN HOLD_PIN
 
 static inline void board_registers_program_init(PIO pio, uint sm, uint offset) {
+#ifdef DEBUG_GPIO    
     pio_debug_state();
+#endif
     debug_dump_pin(BD0_PIN);
     printf("starting to configure board_registers_program_init\n");
     pio_sm_config c = board_registers_program_get_default_config(offset);
-
+    
     // init all the pins i'll be using as output
     for (int pin = REG_PIN_FIRST; pin <= REG_PIN_LAST; pin++) {
-        gpio_set_drive_strength(pin, GPIO_DRIVE_STRENGTH_2MA);
-        gpio_disable_pulls(pin);
         pio_gpio_init(pio, pin);
-        gpio_pull_down(pin);
-        gpio_set_slew_rate(pin, GPIO_SLEW_RATE_SLOW);
         pio_sm_set_pins_with_mask(pio, sm, 0u, 1u << pin); // preload latch low
-        printf("pio_gpio_init %d\n", pin);
+        //printf("pio_gpio_init %d\n", pin);
     }
     uint pincount = REG_PIN_LAST - REG_PIN_FIRST + 1;
     pio_sm_set_consecutive_pindirs(pio, sm, BD0_PIN, pincount, false);
 
+    // Configure OUT pins for BD0-BD7 (8 pins starting at BD0_PIN)
+    sm_config_set_out_pins(&c, BD0_PIN, 8);
+
     sm_config_set_in_pins(&c, BD0_PIN);
     sm_config_set_in_pin_count(&c, ADDRESS_BUS_SIZE);
+
+    // Initialize the input/output shift register settings
+    // We are reading 20 bits of address from pins, and writing 8 bits of data to pins
+    uint32_t out_shift_length = 16; // 8 bits data + 8 bits pindirs for data bus
+    sm_config_set_out_shift(&c, 
+        true, // shift out right
+        false, // don't autopull
+        out_shift_length);  // 8 bits for data bus + 8 bits for pindirs
+    sm_config_set_in_shift(&c, 
+        true,  // shift in right
+        false,  // don't autopull
+        ADDRESS_BUS_SIZE); // 20 bits address
     
     sm_config_set_jmp_pin(&c, RD_PIN); // RD pin is the pin we check for write vs read cycle
 
@@ -111,14 +126,6 @@ static inline void board_registers_program_init(PIO pio, uint sm, uint offset) {
     printf("EXTIO_PIN Pin %d func: %d, dir: %d\n", 
            EXTIO_PIN, gpio_get_function(EXTIO_PIN), gpio_get_dir(EXTIO_PIN));
     pio_sm_set_pindirs_with_mask(pio, sm, 0, 1u << EXTIO_PIN); // preload value low
-    
-    //setup shift Registers
-    sm_config_set_in_shift(&c, true, false, ADDRESS_BUS_SIZE);
-    printf("Config execctrl before init: 0x%08x pinhi:0x%08x pinctrl:0x%08x\n",
-            (uint32_t)c.execctrl, (uint32_t)c.pinhi, (uint32_t)c.pinctrl);
-
-    
-    sm_config_set_clkdiv(&c, 1.0f);  
 
     pio_sm_clear_fifos(pio, sm);
 
@@ -131,12 +138,16 @@ static inline void board_registers_program_init(PIO pio, uint sm, uint offset) {
         printf("WARNING: pio_sm_init failed; SM%d not enabled\n", sm);
     }
 
-    printf("finished configuring board_registers_program_init\n");
+    printf("finished configuring dma_registers_program_init\n");
     printf("HOLD_PIN Pin %d func: %d, dir: %d\n", HOLD_PIN, gpio_get_function(HOLD_PIN), gpio_get_dir(HOLD_PIN));
     printf("RD_PIN Pin %d func: %d, dir: %d\n", RD_PIN, gpio_get_function(RD_PIN), gpio_get_dir(RD_PIN));
     printf("WR_PIN Pin %d func: %d, dir: %d\n", WR_PIN, gpio_get_function(WR_PIN), gpio_get_dir(WR_PIN));
 
+    
+#if DEBUG_GPIO
     pio_debug_state();
+#endif
+
     debug_dump_pin(BD0_PIN);
 }
 %}

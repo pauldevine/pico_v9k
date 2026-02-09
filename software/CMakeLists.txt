@@ -38,6 +38,10 @@ project(dma_board C CXX ASM)
 # Initialise the Raspberry Pi Pico SDK
 pico_sdk_init()
 
+# Add no-OS-FatFS-SD-SDIO-SPI-RPi-Pico library
+set(NO_OS_FATFS_PATH "$ENV{HOME}/projects/no-OS-FatFS-SD-SDIO-SPI-RPi-Pico/src")
+add_subdirectory(${NO_OS_FATFS_PATH} no-OS-FatFS)
+
 # Cached/deferred version of dma_board for improved timing
 add_executable(dma_board dma_board.c )
 pico_set_program_name(dma_board "dma_board")
@@ -46,22 +50,24 @@ pico_set_program_version(dma_board "0.2")
 target_sources(dma_board PRIVATE
     logging.c
     sasi.c
+    pico_victor/fifo_helpers.c
     pico_victor/dma.c
     pico_victor/register_cache.c
     pico_victor/reg_queue_processor.c
     pico_victor/register_irq_handlers.c
     pico_victor/dma_irq_handler.c
     pico_victor/debug_queue.c
-    pico_fujinet/spi.c)
+    pico_fujinet/spi.c
+    pico_storage/storage.c
+    pico_storage/sd_storage.c
+    pico_storage/hw_config.c)
 
 pico_set_binary_type(dma_board default)
 
 # Generate PIO headers for cached version
-pico_generate_pio_header(dma_board ${CMAKE_CURRENT_LIST_DIR}/pico_victor/board_registers_control.pio)
-pico_generate_pio_header(dma_board ${CMAKE_CURRENT_LIST_DIR}/pico_victor/board_registers_output.pio)
-pico_generate_pio_header(dma_board ${CMAKE_CURRENT_LIST_DIR}/pico_victor/dma_rw_control.pio)
-pico_generate_pio_header(dma_board ${CMAKE_CURRENT_LIST_DIR}/pico_victor/dma_rw_output.pio)
-pico_generate_pio_header(dma_board ${CMAKE_CURRENT_LIST_DIR}/pico_victor/iom_helper.pio)
+pico_generate_pio_header(dma_board ${CMAKE_CURRENT_LIST_DIR}/pico_victor/board_registers.pio)
+pico_generate_pio_header(dma_board ${CMAKE_CURRENT_LIST_DIR}/pico_victor/dma_master.pio)
+
 
 pico_enable_stdio_uart(dma_board 1)
 pico_enable_stdio_usb(dma_board 0)
@@ -70,6 +76,10 @@ target_include_directories(dma_board PRIVATE
         ${CMAKE_CURRENT_LIST_DIR}
         ${CMAKE_CURRENT_LIST_DIR}/pico_victor
         ${CMAKE_CURRENT_LIST_DIR}/pico_fujinet
+        ${CMAKE_CURRENT_LIST_DIR}/pico_storage
+        ${NO_OS_FATFS_PATH}/include
+        ${NO_OS_FATFS_PATH}/ff15/source
+        ${NO_OS_FATFS_PATH}/sd_driver
 )
 
 target_link_libraries(dma_board
@@ -80,6 +90,7 @@ target_link_libraries(dma_board
         hardware_pio
         hardware_spi
         hardware_dma
+        no-OS-FatFS-SD-SDIO-SPI-RPi-Pico
         )
 
 pico_add_extra_outputs(dma_board)
@@ -89,7 +100,9 @@ add_executable(dma_board_tests
     test/on_device_runner.c
     logging.c
     sasi.c
+    pico_victor/fifo_helpers.c
     ${CMAKE_CURRENT_LIST_DIR}/pico_victor/dma.c
+    ${CMAKE_CURRENT_LIST_DIR}/pico_victor/reg_queue_processor.c
     ${CMAKE_CURRENT_LIST_DIR}/pico_fujinet/spi.c)
 
 target_compile_definitions(dma_board_tests PRIVATE UNIT_TEST=1)
@@ -121,6 +134,7 @@ pico_add_extra_outputs(dma_board_tests)
 # IRQ Handler Benchmark executable
 add_executable(benchmark_irq
     test/benchmark_irq.c
+    pico_victor/fifo_helpers.c
     pico_victor/dma.c
     pico_victor/register_irq_handlers.c
     pico_victor/dma_irq_handler.c

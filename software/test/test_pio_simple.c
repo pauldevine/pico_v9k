@@ -60,7 +60,7 @@ int main() {
 
     // Put data and enable
     pio_sm_put_blocking(pio, sm, 0x12345678);
-    printf("Data loaded, FIFO level: %d/8\n",
+    printf("Data loaded, FIFO level: %d/4\n",
            pio_sm_get_tx_fifo_level(pio, sm));
 
     pio_sm_set_enabled(pio, sm, true);
@@ -69,7 +69,7 @@ int main() {
     // Monitor
     for (int i = 0; i < 10; i++) {
         sleep_ms(100);
-        printf("PC=0x%x, FIFO=%d/8, HOLD=%d, stalled=%d\n",
+        printf("PC=0x%x, FIFO=%d/4, HOLD=%d, stalled=%d\n",
                pio_sm_get_pc(pio, sm),
                pio_sm_get_tx_fifo_level(pio, sm),
                gpio_get(HOLD_PIN),
