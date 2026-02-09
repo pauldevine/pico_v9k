@@ -22,6 +22,132 @@
 extern defer_queue_t defer_queue;
 extern cached_registers_t cached_regs;
 
+#ifndef REG_IRQ_FAST_TRACE_ENABLE
+#define REG_IRQ_FAST_TRACE_ENABLE 0
+#endif
+
+#define REG_IRQ_TRACE_SIZE 128u
+#define REG_IRQ_TRACE_MASK (REG_IRQ_TRACE_SIZE - 1u)
+
+enum {
+    REG_IRQ_TRACE_ANOM_STATUS_DATA = 0x01u,
+    REG_IRQ_TRACE_ANOM_MSG_DATA    = 0x02u,
+};
+
+typedef struct {
+    uint32_t seq;
+    uint8_t status_before;
+    uint8_t data_before;
+    uint8_t status_after;
+    uint8_t data_after;
+    uint8_t bus_ctrl;
+    uint8_t flags;
+    uint8_t reserved;
+} reg_irq_trace_entry_t;
+
+typedef struct {
+    volatile uint32_t head;
+    volatile uint32_t seq;
+    volatile uint32_t anomaly_count;
+    reg_irq_trace_entry_t entries[REG_IRQ_TRACE_SIZE];
+} reg_irq_trace_t;
+
+static reg_irq_trace_t reg_irq_trace __attribute__((section(".time_critical.reg_irq_trace")));
+static uint32_t reg_irq_trace_last_dumped_anomaly = 0;
+
+static inline uint8_t reg_irq_trace_anomaly_flags(uint8_t status_before, uint8_t data_before) {
+    uint8_t flags = 0;
+    uint8_t phase = status_before & (SASI_CTL_BIT | SASI_INP_BIT | SASI_MSG_BIT);
+
+    // In status and message phases, host must read 0x00 from DATA for this implementation.
+    if (phase == (SASI_CTL_BIT | SASI_INP_BIT) && data_before != 0x00) {
+        flags |= REG_IRQ_TRACE_ANOM_STATUS_DATA;
+    } else if (phase == (SASI_CTL_BIT | SASI_INP_BIT | SASI_MSG_BIT) && data_before != 0x00) {
+        flags |= REG_IRQ_TRACE_ANOM_MSG_DATA;
+    }
+
+    return flags;
+}
+
+static inline void reg_irq_trace_record_data_commit(uint8_t status_before,
+                                                    uint8_t data_before,
+                                                    uint8_t status_after,
+                                                    uint8_t data_after,
+                                                    uint8_t bus_ctrl) {
+    uint32_t idx = reg_irq_trace.head & REG_IRQ_TRACE_MASK;
+    uint8_t flags = reg_irq_trace_anomaly_flags(status_before, data_before);
+
+    reg_irq_trace.entries[idx].seq = reg_irq_trace.seq++;
+    reg_irq_trace.entries[idx].status_before = status_before;
+    reg_irq_trace.entries[idx].data_before = data_before;
+    reg_irq_trace.entries[idx].status_after = status_after;
+    reg_irq_trace.entries[idx].data_after = data_after;
+    reg_irq_trace.entries[idx].bus_ctrl = bus_ctrl;
+    reg_irq_trace.entries[idx].flags = flags;
+    reg_irq_trace.entries[idx].reserved = 0;
+    reg_irq_trace.head++;
+
+    if (flags) {
+        reg_irq_trace.anomaly_count++;
+    }
+}
+
+void register_irq_trace_init(void) {
+    memset(&reg_irq_trace, 0, sizeof(reg_irq_trace));
+    reg_irq_trace_last_dumped_anomaly = 0;
+}
+
+uint32_t register_irq_trace_anomaly_count(void) {
+    return reg_irq_trace.anomaly_count;
+}
+
+void register_irq_trace_dump(const char *reason) {
+    uint32_t head = reg_irq_trace.head;
+    uint32_t count = (head > REG_IRQ_TRACE_SIZE) ? REG_IRQ_TRACE_SIZE : head;
+    uint32_t start = head - count;
+
+    if (reason && reason[0]) {
+        printf("\n=== FAST IRQ DATA TRACE (%s) ===\n", reason);
+    } else {
+        printf("\n=== FAST IRQ DATA TRACE ===\n");
+    }
+    printf("entries=%lu anomalies=%lu\n",
+           (unsigned long)count, (unsigned long)reg_irq_trace.anomaly_count);
+    printf("Seq   S0  D0  S1  D1  BC  Flg\n");
+    printf("----  --  --  --  --  --  ---\n");
+
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t idx = (start + i) & REG_IRQ_TRACE_MASK;
+        const reg_irq_trace_entry_t *e = &reg_irq_trace.entries[idx];
+        printf("%4lu  %02X  %02X  %02X  %02X  %02X  %02X\n",
+               (unsigned long)e->seq,
+               e->status_before,
+               e->data_before,
+               e->status_after,
+               e->data_after,
+               e->bus_ctrl,
+               e->flags);
+    }
+    printf("=== END FAST IRQ DATA TRACE ===\n\n");
+
+    reg_irq_trace_last_dumped_anomaly = reg_irq_trace.anomaly_count;
+}
+
+void register_irq_trace_note_reset(const char *reason) {
+#if !REG_IRQ_FAST_TRACE_ENABLE
+    (void)reason;
+    return;
+#else
+    if (reg_irq_trace.anomaly_count == 0) {
+        return;
+    }
+    if (reg_irq_trace.anomaly_count == reg_irq_trace_last_dumped_anomaly) {
+        return;
+    }
+    register_irq_trace_dump(reason);
+#endif
+}
+
 static inline bool is_valid_reg_offset(uint32_t masked_offset) {
     switch (masked_offset & 0xFFu) {
         case REG_CONTROL:
@@ -52,6 +178,7 @@ static inline void clear_irq_on_status_read(dma_registers_t *dma) {
 void init_register_irq_handlers(void) {
     // Initialize deferred processing system
     dma_defer_init();
+    register_irq_trace_init();
 
     // Get cached registers and pre-warm
     cached_registers_t *cached = defer_get_cached_registers();
@@ -124,7 +251,23 @@ void __time_critical_func(register_read_irq_isr)() {
                 trace_flags |= FIFO_TRACE_FLAG_ERROR;
                 data = 0xFF;
             } else {
-                data = cached->values[masked_offset];
+                if (masked_offset == REG_DATA) {
+                    uint8_t phase = cached->values[REG_STATUS] & (SASI_CTL_BIT | SASI_INP_BIT | SASI_MSG_BIT);
+                    if (phase == (SASI_CTL_BIT | SASI_INP_BIT | SASI_MSG_BIT)) {
+                        // Message byte is always Command Complete (0x00).
+                        data = 0x00;
+                        cached->values[REG_DATA] = 0x00;
+                    } else if (phase == (SASI_CTL_BIT | SASI_INP_BIT)) {
+                        // Serve status byte from authoritative controller state.
+                        dma_registers_t *dma = dma_get_registers();
+                        data = dma ? dma->status : cached->values[REG_DATA];
+                        cached->values[REG_DATA] = data;
+                    } else {
+                        data = cached->values[REG_DATA];
+                    }
+                } else {
+                    data = cached->values[masked_offset];
+                }
             }
 
             // pio outputs 8 bits of data first then 8 bits of pindirs (0xFF for output)
@@ -167,9 +310,13 @@ void __time_critical_func(register_read_irq_isr)() {
             // be ahead of bus_ctrl. The cache represents what the host is seeing.
             if (commit_offset == REG_DATA) {
                 uint8_t cached_status = cached->values[REG_STATUS] & 0x1F;
+#if REG_IRQ_FAST_TRACE_ENABLE
+                uint8_t cached_data_before = cached->values[REG_DATA];
+#endif
 
                 if (cached_status & SASI_MSG_BIT) {
                     // Message phase (0x1F) - host read message byte, transition to bus free
+                    cached->values[REG_DATA] = 0x00;  // Ensure message byte is 0x00
                     cached->values[REG_STATUS] = 0x00;
                     cached->values[0x30] = 0x00;
                 } else if ((cached_status & (SASI_CTL_BIT | SASI_INP_BIT)) == (SASI_CTL_BIT | SASI_INP_BIT)) {
@@ -179,6 +326,16 @@ void __time_critical_func(register_read_irq_isr)() {
                     cached->values[0x30] = next_status;
                     cached->values[REG_DATA] = 0x00;  // Message byte = Command Complete
                 }
+
+#if REG_IRQ_FAST_TRACE_ENABLE
+                dma_registers_t *dma = dma_get_registers();
+                uint8_t bus_ctrl_snapshot = dma ? dma->bus_ctrl : 0;
+                reg_irq_trace_record_data_commit(cached_status,
+                                                 cached_data_before,
+                                                 cached->values[REG_STATUS] & 0x1F,
+                                                 cached->values[REG_DATA],
+                                                 bus_ctrl_snapshot);
+#endif
                 // DATA reads need deferred processing to sync bus_ctrl
                 enque_result = true;
             } else if (commit_offset == REG_STATUS || commit_offset == 0x30) {
@@ -246,17 +403,21 @@ void __time_critical_func(register_read_irq_isr)() {
                 if (now_sel && !prev_sel) {
                     cached->values[REG_STATUS] = SASI_BSY_BIT;
                     cached->values[0x30] = SASI_BSY_BIT;
+                    cached->values[REG_DATA] = 0x00;
                 } else if (!now_sel && prev_sel) {
                     uint8_t cmd_phase = SASI_BSY_BIT | SASI_REQ_BIT | SASI_CTL_BIT;
                     cached->values[REG_STATUS] = cmd_phase;
                     cached->values[0x30] = cmd_phase;
+                    cached->values[REG_DATA] = 0x00;
                 }
             }
 
             if (valid_offset) {
-                cached->values[masked_offset] = data;
-                if (masked_offset == REG_STATUS) {
-                    cached->values[0x30] = data;
+                if (masked_offset != REG_DATA) {
+                    cached->values[masked_offset] = data;
+                    if (masked_offset == REG_STATUS) {
+                        cached->values[0x30] = data;
+                    }
                 }
             }
             trace_flags |= FIFO_TRACE_FLAG_WRITE;

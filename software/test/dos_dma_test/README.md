@@ -56,6 +56,7 @@ This allows manual register reads/writes for debugging.
 - `ADDR_MID.EXE` focuses solely on the mid byte, writing 0x55 and 0xAA and reporting the readback for each.
 - `MINIMAL.EXE` performs a single read of DMA_ADDR_HIGH.
 - `READ.EXE` reproduces the minimal DMA_ADDR_HIGH read used for timing bring-up.
+- `BOOT_SEQUENCE_TEST.EXE` replays the observed Victor boot SASI command sequence and reports the first divergence.
 
 ## Test Coverage
 

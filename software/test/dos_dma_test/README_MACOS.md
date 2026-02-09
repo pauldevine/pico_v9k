@@ -20,6 +20,7 @@ source mysetvars.sh`
 ./build.sh dmatest
 ./build.sh addrtest
 ./build.sh addr_mid
+./build.sh bootseq
 
 # Build with debug symbols
 ./build.sh debug
@@ -41,6 +42,7 @@ make
 make dmatest.exe
 make addrtest.exe
 make addr_mid.exe
+make boot_sequence_test.exe
 
 # Build with debug symbols
 make debug
@@ -119,6 +121,7 @@ After building, copy the `.exe` files to your DOS environment:
 - **dmatest.exe**  - Comprehensive DMA board test suite
 - **addrtest.exe** - Focused address register span test
 - **addr_mid.exe** - Minimal DMA_ADDR_MID write/read isolation
+- **boot_sequence_test.exe** - Replays observed Victor boot SASI command sequence and reports first divergence
 
 ## Notes
 

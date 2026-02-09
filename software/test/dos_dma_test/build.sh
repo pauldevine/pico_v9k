@@ -134,6 +134,15 @@ build_all() {
         success=false
     fi
 
+    # Build boot_sequence_test.exe
+    if compile boot_sequence_test.c; then
+        if ! link boot_sequence_test.exe boot_sequence_test.o; then
+            success=false
+        fi
+    else
+        success=false
+    fi
+
     if $success; then
         print_status "Build complete! DOS executables ready:"
         ls -la *.exe
@@ -214,6 +223,11 @@ main() {
                 link read.exe read.o
             fi
             ;;
+        bootseq|boot_sequence_test)
+            if compile boot_sequence_test.c; then
+                link boot_sequence_test.exe boot_sequence_test.o
+            fi
+            ;;
         help|--help|-h)
             echo "Usage: $0 [command]"
             echo ""
@@ -226,6 +240,7 @@ main() {
             echo "  addr_mid - Build only addr_mid.exe"
             echo "  minimal  - Build only minimal.exe (multi-operation test)"
             echo "  read     - Build only read.exe (single read test)"
+            echo "  bootseq  - Build only boot_sequence_test.exe"
             echo "  help     - Show this help message"
             echo ""
             echo "Environment:"

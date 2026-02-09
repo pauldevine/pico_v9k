@@ -200,6 +200,7 @@ typedef struct {
         uint8_t asserting_ack : 1;
         uint8_t non_dma_req : 1;
         uint8_t status_pending : 1; // 1 = waiting for host to read status byte
+        uint8_t data_out_expected; // Non-zero = expecting this many data-out bytes (e.g., for 0x0C params)
     } state;
 
     // SASI bus control state (tracks bus signals for status register)

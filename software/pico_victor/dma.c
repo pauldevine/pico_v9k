@@ -541,14 +541,14 @@ void dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_addres
     print_segment_offset(start_address);
 #endif
 
-   // debug_pio_state(PIO_DMA_MASTER, DMA_SM_CONTROL);
-
-    uint32_t full_batch_count = length / DMA_BATCH_SIZE;
-    uint32_t remainder_bytes = length % DMA_BATCH_SIZE;
-
-    if (remainder_bytes > 0) {
-        full_batch_count += 1;
+    if (!data || length == 0) {
+        return;
     }
+
+    // debug_pio_state(PIO_DMA_MASTER, DMA_SM_CONTROL);
+
+    // Use ceiling division to get correct batch count.
+    uint32_t full_batch_count = (length + (DMA_BATCH_SIZE - 1)) / DMA_BATCH_SIZE;
 
     for (uint32_t batch = 0; batch < full_batch_count; batch++) {
         if (!start_dma_control()) {
@@ -556,9 +556,14 @@ void dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_addres
             return;
         }
 
-        for (size_t i = 0; i < 128; i++) {
-            uint32_t addr = (start_address + (batch * 128) + i) & 0xFFFFF;  // 20-bit address
-            uint8_t byte = data[(batch * 128) + i];                         // Data byte to write
+        for (size_t i = 0; i < DMA_BATCH_SIZE; i++) {
+            size_t index = (batch * DMA_BATCH_SIZE) + i;
+            if (index >= length) {
+                break; // Never access/write beyond requested length
+            }
+
+            uint32_t addr = (start_address + index) & 0xFFFFF;  // 20-bit address
+            uint8_t byte = data[index];                          // Data byte to write
 
             // Send two FIFO payloads per memory address =  the PIO protocol
             uint32_t fifo_t1 = ((addr & 0xFFFFFu) << 1) | 1;                // T1: [20 bit address][1-bit write=1 flag in LSB]
@@ -566,10 +571,6 @@ void dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_addres
 
             uint32_t fifo_t2 = (addr & 0xFFF00u) | byte;                    // T2: [12 bits address A19-A8][8 bits data byte]
             pio_sm_put_blocking(PIO_DMA_MASTER, DMA_SM_CONTROL, fifo_t2);
-
-            if ((batch * 128) + i + 1 >= length) {
-                break; // Exit if we've written all requested bytes
-            }
         }
 
         // Wait for TX FIFO to empty before releasing DMA master
@@ -597,7 +598,11 @@ void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_addre
     print_segment_offset(start_address);
 #endif
 
-    uint8_t *temp = malloc((length + 1) * sizeof(uint8_t));
+    if (!data || length == 0) {
+        return;
+    }
+
+    uint8_t *temp = malloc(length);
     if (!temp) {
         printf("Failed to allocate memory for DMA transfer\n");
         return;
@@ -607,22 +612,23 @@ void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_addre
     debug_pio_state(PIO_DMA_MASTER, DMA_SM_CONTROL);
 #endif
     
-    uint32_t full_batch_count = length / DMA_BATCH_SIZE;
-    uint32_t remainder_bytes = length % DMA_BATCH_SIZE;
+    // Use ceiling division to get correct batch count.
+    uint32_t full_batch_count = (length + (DMA_BATCH_SIZE - 1)) / DMA_BATCH_SIZE;
 
-    if (remainder_bytes > 0) {
-        full_batch_count += 1;
-    }
-
-     for (uint32_t batch = 0; batch < full_batch_count; batch++) {
+    for (uint32_t batch = 0; batch < full_batch_count; batch++) {
         if (!start_dma_control()) {
             printf("Failed to obtain DMA master\n");
+            free(temp);
             return;
         }
 
-        for (size_t i = 0; i < 128; i++) {
-            uint32_t addr = (start_address + (batch * 128) + i) & 0xFFFFF;  // 20-bit address
+        for (size_t i = 0; i < DMA_BATCH_SIZE; i++) {
+            size_t index = (batch * DMA_BATCH_SIZE) + i;
+            if (index >= length) {
+                break; // Never access/read beyond requested length
+            }
 
+            uint32_t addr = (start_address + index) & 0xFFFFF;  // 20-bit address
 
             // Send two FIFO words per the PIO protocol
             uint32_t fifo_t1 = ((addr & 0xFFFFFu) << 1) | 0; // T1: [20 bit address][1-bit read=0 flag in LSB]
@@ -633,12 +639,7 @@ void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_addre
 
             // Get the data byte that was read
             uint32_t char_data = pio_sm_get_blocking(PIO_DMA_MASTER, DMA_SM_CONTROL);
-            temp[(batch * 128) + i] = char_data & 0xFF;
-            
-            if ((batch * 128) + i + 1 >= length) {
-                break; // Exit if we've read all requested bytes
-            }
-
+            temp[index] = char_data & 0xFF;
         }
 
         release_dma_master();
@@ -677,6 +678,7 @@ size_t test_get_victor_ram_size() { return TEST_VICTOR_RAM_SIZE; }
 void dma_device_reset(dma_registers_t *dma) {
     dma->state.dma_enabled = 0;
     dma->state.dma_dir_in = 0;
+    dma->state.data_out_expected = 0;
     dma->dma_address.full = 0;
     dma->state.asserting_ack = 0;
     dma->state.non_dma_req = 0;
@@ -690,6 +692,9 @@ void dma_device_reset(dma_registers_t *dma) {
 
     // Clear interrupt
     dma_update_interrupts(dma, false);
+    // Ensure cached status reflects bus-free after reset
+    cached_status_sync_from_bus(dma);
+    cached_set_data(0x00);
 
     // Reset SASI command accumulator state
     sasi_reset_command_state();

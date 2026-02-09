@@ -82,12 +82,65 @@ static uint8_t compute_expected_pattern_crc(uint32_t lba) {
 static uint8_t sasi_command_buffer[16];
 static int sasi_cmd_index = 0;
 
+// Diagnostic trace buffer - records last N events for post-mortem debugging
+static sasi_trace_t sasi_trace;
+
+void sasi_trace_init(void) {
+    memset(&sasi_trace, 0, sizeof(sasi_trace));
+}
+
+void sasi_trace_event(sasi_trace_type_t type, uint8_t value, uint8_t cmd_idx, uint8_t bus_ctrl) {
+    uint32_t idx = sasi_trace.head & (SASI_TRACE_SIZE - 1);
+    sasi_trace.entries[idx].type = (uint8_t)type;
+    sasi_trace.entries[idx].value = value;
+    sasi_trace.entries[idx].cmd_index = cmd_idx;
+    sasi_trace.entries[idx].bus_ctrl = bus_ctrl;
+    sasi_trace.entries[idx].seq = sasi_trace.seq++;
+    sasi_trace.head++;
+}
+
+void sasi_trace_dump(void) {
+    static const char *type_names[] = {
+        "CMD_BYTE", "CMD_DONE", "STATUS", "MSG", "BUS_FREE",
+        "DMA_RD", "DMA_WR", "RESET", "SELECT", "DATA_RD", "STAT_RD", "DATA_OUT", "DO_SETUP"
+    };
+
+    printf("\n=== SASI TRACE (last %d events) ===\n", SASI_TRACE_SIZE);
+    printf("Seq   Type      Val  Idx  BusCtrl\n");
+    printf("----  --------  ---  ---  -------\n");
+
+    // Find oldest entry
+    uint32_t start = (sasi_trace.head >= SASI_TRACE_SIZE) ?
+                     sasi_trace.head - SASI_TRACE_SIZE : 0;
+    uint32_t count = (sasi_trace.head >= SASI_TRACE_SIZE) ?
+                     SASI_TRACE_SIZE : sasi_trace.head;
+
+    for (uint32_t i = 0; i < count; i++) {
+        uint32_t idx = (start + i) & (SASI_TRACE_SIZE - 1);
+        sasi_trace_entry_t *e = &sasi_trace.entries[idx];
+        const char *name = (e->type < 13) ? type_names[e->type] : "???";
+        printf("%4lu  %-8s  %02X   %d    %02X\n",
+               (unsigned long)e->seq, name, e->value, e->cmd_index, e->bus_ctrl);
+    }
+    printf("=== END TRACE ===\n\n");
+}
+
 void sasi_reset_command_state(void) {
+    // Auto-dump trace on reset if we've seen any commands
+    // This helps debug when Victor retries initialization
+    static int reset_count = 0;
+    reset_count++;
+    if (sasi_trace.head > 0 && reset_count > 1) {
+        printf("\n!!! SASI RESET #%d - Auto-dumping trace !!!\n", reset_count);
+        sasi_trace_dump();
+    }
+
     sasi_cmd_index = 0;
     // Optionally clear buffer for cleaner debugging
     for (int i = 0; i < 16; i++) {
         sasi_command_buffer[i] = 0;
     }
+    sasi_trace_event(TRACE_RESET, 0, 0, 0);
 }
 
 static void sasi_apply_command_delay(dma_registers_t *dma) {
@@ -124,6 +177,7 @@ static void sasi_enter_status_phase(dma_registers_t *dma, uint8_t status_byte) {
     // Prepare to send status: BSY|REQ|CTL|INP
     sasi_fastlog("SASI: entering status phase, status=0x%02X, irq_pend=%d\n",
              status_byte, dma->state.interrupt_pending);
+    sasi_trace_event(TRACE_STATUS_PHASE, status_byte, 0, dma ? dma->bus_ctrl : 0);
     dma->status = status_byte;
     cached_set_data(status_byte);
     dma->bus_ctrl &= ~SASI_ACK_BIT;
@@ -143,6 +197,7 @@ static void sasi_enter_status_phase(dma_registers_t *dma, uint8_t status_byte) {
 
 static void sasi_enter_message_phase(dma_registers_t *dma) {
     // Move to message in: BSY|REQ|CTL|INP|MSG (single 0x00 completion message)
+    sasi_trace_event(TRACE_MSG_PHASE, 0x00, 0, dma ? dma->bus_ctrl : 0);
     cached_set_data(0x00);
     dma->bus_ctrl &= ~SASI_ACK_BIT;
     dma->bus_ctrl |= (SASI_BSY_BIT | SASI_REQ_BIT | SASI_CTL_BIT | SASI_INP_BIT | SASI_MSG_BIT);
@@ -156,10 +211,12 @@ static void sasi_enter_message_phase(dma_registers_t *dma) {
 
 static void sasi_release_bus(dma_registers_t *dma) {
     // Drop REQ/BSY and clear control lines to idle
+    sasi_trace_event(TRACE_BUS_FREE, 0, 0, dma ? dma->bus_ctrl : 0);
     dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_BSY_BIT | SASI_CTL_BIT | SASI_INP_BIT | SASI_MSG_BIT | SASI_ACK_BIT);
     __dmb();  // Ensure Core 0 sees bus_ctrl cleared
     dma_update_interrupts(dma, false);
     cached_status_sync_from_bus(dma);
+    cached_set_data(0x00);  // Avoid stale DATA reads after bus free
 }
 
 void route_to_sasi_target(dma_registers_t *dma, uint8_t *cmd, int len) {
@@ -191,9 +248,39 @@ void route_to_sasi_target(dma_registers_t *dma, uint8_t *cmd, int len) {
             handle_write_sectors(dma, cmd);
             break;
 
-        case 0x0C: // Initialize Drive Characteristics
-            sasi_printf("SASI: Initialize Drive Characteristics\n");
-            handle_mode_select(dma, cmd);  // Accept parameters and return GOOD
+        case 0x0C: // Initialize Drive Characteristics (Xebec SET DRIVE PARAMS)
+            // Victor 9000 boot expects an 8-byte data-out parameter list (boot label ctlprm).
+            // RaSCSI Victor9k fork accepts 8 bytes during DATA OUT for this opcode.
+            // Prefer DMA-based transfer when DMA is enabled; otherwise fall back to DATA register writes.
+            sasi_printf("SASI: Initialize Drive Characteristics (Set Drive Params)\n");
+            if (dma && dma->state.dma_enabled) {
+                uint8_t params[8];
+                // Enter DATA OUT phase: BSY asserted, CTL=0, INP=0.
+                dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_CTL_BIT | SASI_INP_BIT | SASI_ACK_BIT);
+                dma->bus_ctrl |= SASI_BSY_BIT;
+                __dmb();
+                cached_status_sync_from_bus(dma);
+
+                // Read parameter bytes from Victor RAM via DMA.
+                dma_read_from_victor_ram(params, sizeof(params), dma->dma_address.full);
+                dma->dma_address.full += sizeof(params);
+                cached_sync_dma_address(dma);
+
+                // Complete with GOOD status.
+                signal_command_complete(dma);
+            } else if (dma) {
+                // Non-DMA path: request 8 data-out bytes via DATA register.
+                dma->buffer.index = 0;
+                dma->state.data_out_expected = 8;
+                dma->bus_ctrl &= ~(SASI_MSG_BIT | SASI_CTL_BIT | SASI_INP_BIT | SASI_ACK_BIT);
+                dma->bus_ctrl |= (SASI_BSY_BIT | SASI_REQ_BIT);
+                __dmb();
+                dma->state.non_dma_req = 1;
+                cached_status_sync_from_bus(dma);
+                dma_update_interrupts(dma, true);
+            } else {
+                signal_command_complete(dma);
+            }
             break;
 
         case 0x15: // Mode Select(6)
@@ -211,6 +298,7 @@ void route_to_sasi_target(dma_registers_t *dma, uint8_t *cmd, int len) {
 void handle_sasi_command_byte(dma_registers_t *dma, uint8_t cmd_byte) {
     sasi_fastlog("SASI: handle_cmd_byte entry idx=%d byte=0x%02X\n", sasi_cmd_index, cmd_byte);
     sasi_printf("SASI CMD[%d] = 0x%02X\n", sasi_cmd_index, cmd_byte);
+    sasi_trace_event(TRACE_CMD_BYTE, cmd_byte, sasi_cmd_index, dma ? dma->bus_ctrl : 0);
     sasi_command_buffer[sasi_cmd_index++] = cmd_byte;
 
     // First byte is the opcode - log recognized commands
@@ -255,6 +343,7 @@ void handle_sasi_command_byte(dma_registers_t *dma, uint8_t cmd_byte) {
     // When command is complete, route to appropriate handler
     if (command_complete(sasi_command_buffer, sasi_cmd_index)) {
         sasi_fastlog("SASI: command complete, routing opcode=0x%02X\n", sasi_command_buffer[0]);
+        sasi_trace_event(TRACE_CMD_COMPLETE, sasi_command_buffer[0], sasi_cmd_index, dma ? dma->bus_ctrl : 0);
         route_to_sasi_target(dma, sasi_command_buffer, sasi_cmd_index);
         sasi_cmd_index = 0; // Reset for next command
     } else {
@@ -264,6 +353,53 @@ void handle_sasi_command_byte(dma_registers_t *dma, uint8_t cmd_byte) {
     }
 }
 
+// Handle a data-out phase byte (e.g., drive parameters for 0x0C)
+// Returns true if more bytes expected, false if data-out phase complete
+bool handle_sasi_data_out_byte(dma_registers_t *dma, uint8_t data_byte) {
+    // Trace the data-out byte for debugging
+    sasi_trace_event(TRACE_DATA_OUT, data_byte, dma ? dma->state.data_out_expected : 0, dma ? dma->bus_ctrl : 0);
+
+    if (!dma || dma->state.data_out_expected == 0) {
+        sasi_printf("SASI: Unexpected data-out byte 0x%02X\n", data_byte);
+        return false;
+    }
+
+    // Store the byte in the buffer
+    if (dma->buffer.index < 16) {
+        dma->buffer.data[dma->buffer.index++] = data_byte;
+    }
+    dma->state.data_out_expected--;
+
+    sasi_printf("SASI: Data-out byte[%d]=0x%02X, %d remaining\n",
+               dma->buffer.index - 1, data_byte, dma->state.data_out_expected);
+
+    if (dma->state.data_out_expected > 0) {
+        // More bytes expected - request next byte (data-out phase: BSY|REQ, CTL=0, INP=0)
+        dma->bus_ctrl &= ~(SASI_MSG_BIT | SASI_CTL_BIT | SASI_INP_BIT | SASI_ACK_BIT);
+        dma->bus_ctrl |= (SASI_BSY_BIT | SASI_REQ_BIT);
+        __dmb();
+        dma->state.non_dma_req = 1;
+        cached_status_sync_from_bus(dma);
+        dma_update_interrupts(dma, true);
+        return true;
+    }
+
+    // All bytes received - log the parameters and complete
+    sasi_printf("SASI: Drive params complete (%d bytes):", dma->buffer.index);
+    for (int i = 0; i < dma->buffer.index && i < 16; i++) {
+        sasi_printf(" %02X", dma->buffer.data[i]);
+    }
+    sasi_printf("\n");
+
+    // Clear the data-out state
+    dma->buffer.index = 0;
+    dma->buffer.length = 0;
+
+    // Complete with GOOD status
+    signal_command_complete(dma);
+    return false;
+}
+
 void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
     // Parse Read(6) - command 0x08
     // cmd[1] (5 MSBs), cmd[2], cmd[3] = LBA, cmd[4] = count
@@ -271,6 +407,7 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
     uint16_t blocks = cmd[4] ? cmd[4] : 256; // SASI Read(6): 0 means 256 blocks
 
     sasi_printf("RD sectors:%u starting: %u\n", (unsigned)blocks, (unsigned)sector);
+    sasi_trace_event(TRACE_DMA_READ, (uint8_t)(sector & 0xFF), blocks, dma ? dma->bus_ctrl : 0);
 
     if (dma) {
         dma->logical_block.full = sector;
@@ -279,8 +416,8 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
 
     sasi_apply_command_delay(dma);
 
-    // During DMA transfers, keep status at BSY|CTL (command busy) while REQ stays low.
-    dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_INP_BIT);
+    // During command processing, reflect COMMAND busy (BSY|CTL) like MAME traces.
+    dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_INP_BIT | SASI_ACK_BIT);
     dma->bus_ctrl |= (SASI_BSY_BIT | SASI_CTL_BIT);
     __dmb();  // Ensure Core 0 sees bus_ctrl update
     cached_status_sync_from_bus(dma);
@@ -294,11 +431,25 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
         uint8_t sector_data[512];
         read_sector_from_disk(dma, sector + i, sector_data);
 
+        // Switch to DATA IN just before DMA transfer
+        dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_CTL_BIT | SASI_ACK_BIT);
+        dma->bus_ctrl |= (SASI_BSY_BIT | SASI_INP_BIT);
+        __dmb();
+        cached_status_sync_from_bus(dma);
+
         // DMA transfer to system RAM
         dma_write_to_victor_ram(sector_data, 512, dma->dma_address.full);
 
         // Auto-increment DMA address
         dma->dma_address.full += 512;
+
+        // If more sectors remain, return to COMMAND busy while processing next sector
+        if (i + 1 < blocks) {
+            dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_INP_BIT | SASI_ACK_BIT);
+            dma->bus_ctrl |= (SASI_BSY_BIT | SASI_CTL_BIT);
+            __dmb();
+            cached_status_sync_from_bus(dma);
+        }
     }
 
 #if SASI_DMA_WRITE_VERIFY
@@ -354,6 +505,7 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
     uint16_t blocks = cmd[4] ? cmd[4] : 256;
 
     sasi_printf("WR sectors:%u starting: %u\n", (unsigned)blocks, (unsigned)sector);
+    sasi_trace_event(TRACE_DMA_WRITE, (uint8_t)(sector & 0xFF), blocks, dma ? dma->bus_ctrl : 0);
 
     if (dma) {
         dma->logical_block.full = sector;
@@ -362,8 +514,8 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
 
     sasi_apply_command_delay(dma);
 
-    // During DMA transfers, keep status at BSY|CTL (command busy) while REQ stays low.
-    dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_INP_BIT);
+    // During command processing, reflect COMMAND busy (BSY|CTL).
+    dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_INP_BIT | SASI_ACK_BIT);
     dma->bus_ctrl |= (SASI_BSY_BIT | SASI_CTL_BIT);
     __dmb();  // Ensure Core 0 sees bus_ctrl update
     cached_status_sync_from_bus(dma);
@@ -372,6 +524,12 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
 
     for (uint16_t i = 0; i < blocks; i++) {
         uint8_t sector_data[512];
+        // Switch to DATA OUT just before DMA read from Victor RAM
+        dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_CTL_BIT | SASI_INP_BIT | SASI_ACK_BIT);
+        dma->bus_ctrl |= SASI_BSY_BIT;
+        __dmb();
+        cached_status_sync_from_bus(dma);
+
         // Read from Victor RAM into local buffer
         dma_read_from_victor_ram(sector_data, 512, dma->dma_address.full);
 
@@ -393,6 +551,14 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
 #endif // SASI_DMA_READ_VERIFY
 
         dma->dma_address.full += 512;
+
+        // If more sectors remain, return to COMMAND busy while processing next sector
+        if (i + 1 < blocks) {
+            dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_INP_BIT | SASI_ACK_BIT);
+            dma->bus_ctrl |= (SASI_BSY_BIT | SASI_CTL_BIT);
+            __dmb();
+            cached_status_sync_from_bus(dma);
+        }
 
         // Try storage abstraction layer first (handles SD card, FujiNet, etc.)
         bool write_ok = false;
@@ -419,26 +585,47 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
 }
 
 void handle_request_sense(dma_registers_t *dma, uint8_t *cmd) {
-    uint8_t alloc_len = cmd[4];
-    uint8_t sense_len = alloc_len ? alloc_len : 0; // if 0, return nothing
-    if (sense_len > 18) sense_len = 18; // minimal fixed format sense
+    // Request Sense returns error information about the last command.
+    // Per SASI specification (Shugart Associates System Interface):
+    // - cmd[4] contains allocation length
+    // - If allocation length is 0, transfer 4 bytes (SASI default)
+    // - Data is transferred via DMA in Data-In phase
+    //
+    // SASI sense format (4 bytes minimum):
+    //   Byte 0: Error code (upper byte of status code, 0x00 = no error)
+    //   Byte 1: LUN (bits 7-5) | Logical block address MSB (bits 4-0)
+    //   Byte 2: Logical block address middle byte
+    //   Byte 3: Logical block address LSB
 
-    uint8_t sense[18] = {0};
-    // Minimal sense: all zeros indicates no error for old SASI targets
-
-    // Data-in transfer to Victor RAM
-    if (sense_len) {
-        // Data-in phase for sense data: BSY asserted, I/O high, C/D low
-        dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_CTL_BIT);
-        dma->bus_ctrl |= (SASI_BSY_BIT | SASI_INP_BIT);
-        __dmb();  // Ensure Core 0 sees bus_ctrl update
-        cached_status_sync_from_bus(dma);
-
-        dma_write_to_victor_ram(sense, sense_len, dma->dma_address.full);
-        dma->dma_address.full += sense_len;
-        cached_sync_dma_address(dma);
+    int size = cmd[4];
+    if (size == 0) {
+        size = 4;  // SASI spec: 0 means transfer 4 bytes
+    }
+    if (size > 4) {
+        size = 4;  // SASI only uses 4 bytes (SCSI uses more)
     }
 
+    // Build sense data - no error condition
+    uint8_t sense_data[4] = {0};
+    sense_data[0] = 0x00;  // No error
+    sense_data[1] = 0x00;  // LUN 0, no address
+    sense_data[2] = 0x00;
+    sense_data[3] = 0x00;
+
+    sasi_printf("SASI: Request Sense, transferring %d bytes\n", size);
+
+    // Enter Data-In phase: BSY asserted, I/O high (device->host), C/D low
+    dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_CTL_BIT);
+    dma->bus_ctrl |= (SASI_BSY_BIT | SASI_INP_BIT);  // INP=1 for data-in
+    __dmb();
+    cached_status_sync_from_bus(dma);
+
+    // Transfer sense data to host via DMA
+    dma_write_to_victor_ram(sense_data, size, dma->dma_address.full);
+    dma->dma_address.full += size;
+    cached_sync_dma_address(dma);
+
+    // Complete with GOOD status
     signal_command_complete(dma);
 }
 
@@ -510,6 +697,7 @@ bool command_complete(uint8_t *command_buffer, int cmd_index) {
 void signal_command_complete(dma_registers_t *dma) {
     // After data/command phase, send GOOD status then message-in 0x00
     sasi_enter_status_phase(dma, 0x00);
+    __dmb();  // Ensure bus_ctrl update is visible
 }
 
 void handle_test_unit_ready(dma_registers_t *dma) {

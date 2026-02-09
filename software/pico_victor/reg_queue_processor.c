@@ -139,20 +139,17 @@ void defer_process_read(dma_registers_t *dma, uint32_t raw_value) {
             dma_update_interrupts(dma, false);
             // STATUS register reads do NOT advance bus phases - they just return current status.
             // Phase transitions happen when DATA register (0x10) is read.
-            // The MAME boot log shows:
-            //   1. Host polls STATUS (0x20) -> sees 0x0F (status phase)
-            //   2. Host reads DATA (0x10) -> gets status byte, we advance to message phase
-            //   3. Host polls STATUS (0x20) -> sees 0x1F (message phase)
-            //   4. Host reads DATA (0x10) -> gets message byte, bus released
-            // No action needed here - status is returned from cache by fast handler
+            sasi_trace_event(TRACE_STATUS_READ, dma->bus_ctrl, 0, cached_regs.values[REG_STATUS]);
             break;
 
         case REG_DATA:
             // Data register read - handle phase transitions
             // Core 1 (deferred processor) is the sole owner of bus_ctrl to avoid race conditions.
+            sasi_trace_event(TRACE_DATA_READ, dma->bus_ctrl, dma->state.status_pending, cached_regs.values[REG_DATA]);
             if (dma->bus_ctrl & SASI_MSG_BIT) {
                 // Message phase - host read the message byte, release bus
                 defer_log("DEFER_READ: Message phase complete, releasing bus\n");
+                sasi_trace_event(TRACE_BUS_FREE, dma->bus_ctrl, 0, 0);
                 dma->bus_ctrl = 0;  // Clear all bus signals (bus free)
                 __dmb();
                 dma->state.non_dma_req = 0;
@@ -164,6 +161,7 @@ void defer_process_read(dma_registers_t *dma, uint32_t raw_value) {
                 // Status phase - host read status byte, transition to message phase
                 if (dma->state.status_pending) {
                     defer_log("DEFER_READ: Status phase complete, entering message phase\n");
+                    sasi_trace_event(TRACE_MSG_PHASE, dma->bus_ctrl, 1, 0);
                     dma->state.status_pending = 0;
                     dma->state.non_dma_req = 1;
                     dma->bus_ctrl |= SASI_MSG_BIT;  // Add MSG bit for message phase (0x0F -> 0x1F)
@@ -235,6 +233,7 @@ void defer_process_write(dma_registers_t *dma, uint32_t raw_value) {
                     // Reset cached status
                     cached_regs.values[REG_STATUS] = 0x00;
                     cached_regs.values[0x30] = 0x00;
+                    cached_regs.values[REG_DATA] = 0x00;
                 } else {
                     if (write_data & DMA_ON_LATCH_BIT) {
                         dma->state.dma_enabled = (write_data & DMA_ON_VALUE_BIT) != 0;
@@ -272,7 +271,9 @@ void defer_process_write(dma_registers_t *dma, uint32_t raw_value) {
         case REG_DATA:
             // Data register write
             dma->command = write_data;
-            cached_regs.values[REG_DATA] = write_data;
+            // Do not mirror host DATA writes into cached REG_DATA.
+            // Cached REG_DATA must represent target->host status/message bytes,
+            // otherwise command bytes can leak into status/message reads.
 
             if (dma->control & DMA_SELECT_BIT) {
                 // During selection, data contains target ID (SASI selection byte is a bit mask)
@@ -293,6 +294,11 @@ void defer_process_write(dma_registers_t *dma, uint32_t raw_value) {
                 dma->bus_ctrl &= ~SASI_REQ_BIT;
                 dma->bus_ctrl |= SASI_ACK_BIT;
                 __dmb();  // Ensure Core 0 sees bus_ctrl update before any DATA read
+                // CRITICAL: Sync cache IMMEDIATELY after bus_ctrl change.
+                // If we wait until after command processing, the host might poll
+                // status and see stale cached data (timing race that causes DATA_RD
+                // during what appears to be wrong phase).
+                cached_status_sync_from_bus(dma);
             }
 
             // Debug: log bus_ctrl to understand command processing
@@ -301,10 +307,29 @@ void defer_process_write(dma_registers_t *dma, uint32_t raw_value) {
                      write_data, dma->bus_ctrl, !!(dma->bus_ctrl & SASI_CTL_BIT));
 #endif
 
-            if (dma->bus_ctrl & SASI_CTL_BIT) {
+            // Command phase detection must be specific:
+            // - Command phase: CTL=1, INP=0, MSG=0 (bus_ctrl & 0x13 == 0x02)
+            // - Status phase:  CTL=1, INP=1, MSG=0 (bus_ctrl & 0x13 == 0x03)
+            // - Message phase: CTL=1, INP=1, MSG=1 (bus_ctrl & 0x13 == 0x13)
+            // Previously only checked CTL bit, which incorrectly matched status/message phases
+            // and caused command bytes to be processed during wrong phases (protocol desync).
+            uint8_t phase_bits = dma->bus_ctrl & (SASI_CTL_BIT | SASI_INP_BIT | SASI_MSG_BIT);
+            bool is_command_phase = (phase_bits == SASI_CTL_BIT);  // CTL=1, INP=0, MSG=0
+
+            if (is_command_phase) {
                 // Command phase - process SASI command byte
                 handle_sasi_command_byte(dma, write_data);
+            } else if (dma->state.data_out_expected > 0) {
+                // Data-out phase - receiving parameter bytes (e.g., for 0x0C SET DRIVE PARAMS)
+                // CTL=0, INP=0 indicates data-out phase
+                handle_sasi_data_out_byte(dma, write_data);
+            } else if (dma->bus_ctrl != 0) {
+                // DATA write during unexpected phase (status, message, or data-in)
+                // This indicates protocol desync - host sent data when it shouldn't
+                defer_log("DEFER: DATA write 0x%02X during wrong phase, bus_ctrl=0x%02X (ignored)\n",
+                         write_data, dma->bus_ctrl);
             }
+            // Note: bus_ctrl==0 means bus free, write is ignored (host preparing for next cmd)
             cached_status_sync_from_bus(dma);
             break;
 

@@ -14,6 +14,7 @@
 #include "pico_victor/debug_queue.h"
 #include "pico_victor/reg_queue_processor.h"
 #include "pico_fujinet/spi.h"
+#include "sasi.h"
 #include "pico_storage/storage.h"
 #include "pico_storage/sd_storage.h"
 
@@ -31,7 +32,6 @@
 #define UART_ID uart0
 #define BAUD_RATE 230400
 #define UART_TX_PIN 0
-#define UART_RX_PIN 45
 #define DEBUG_GPIO 0
 
 extern queue_t log_queue;
@@ -201,6 +201,7 @@ int main() {
            pio_sm_get_pc(register_pio, reg_sm_control));
      
     dma_device_reset(dma_get_registers());
+    sasi_trace_init();  // Initialize diagnostic trace buffer
     printf("DMA device reset complete\n");
     
 #if DEBUG_GPIO

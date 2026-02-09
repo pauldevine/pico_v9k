@@ -45,6 +45,7 @@ T0:                                ; Prepare for DMA read/write cycle
     out x, 1                       ; Get W/R bit from LSB (1=Write, 0=Read)
     mov pindirs, ~null             ; Set A0-A19 pins to output for address bus
     out pins, ADDRESS_BUS_SIZE     ; Output A0-A19 on bus, we're driving A0-A19 for ALE in T1
+    mov pindirs, ~null             ; Set all pins to output for address phase 0xFFF00
     pull block                     ; Pull next word from FIFO WR: data byte + MSB address or RD: pindirs value 0xFFF00
     wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
     wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go low
