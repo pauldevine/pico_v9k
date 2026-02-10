@@ -22,6 +22,10 @@
 extern defer_queue_t defer_queue;
 extern cached_registers_t cached_regs;
 
+// PIO FSTAT bit for checking if the register SM's RX FIFO is empty.
+// Bit (PIO_FSTAT_RXEMPTY_LSB + N) is 1 when SM N's RX FIFO is empty.
+#define REG_FIFO_RXEMPTY_BIT (1u << (PIO_FSTAT_RXEMPTY_LSB + REG_SM_CONTROL))
+
 #ifndef REG_IRQ_FAST_TRACE_ENABLE
 #define REG_IRQ_FAST_TRACE_ENABLE 0
 #endif
@@ -226,235 +230,241 @@ void init_register_irq_handlers(void) {
 
 // IRQ handler for board_registers_output handles FIFO_REG_READ
 void __time_critical_func(register_read_irq_isr)() {
-    uint32_t raw_value;
     static uint32_t masked_offset;
-    uint8_t data = 0;
-    uint8_t trace_flags = 0;
-    uint8_t pending_before = (uint8_t)fifo_pending_prefetch;
 
-    // Get value from bus_output_helper PIO FIFO
-    raw_value = PIO_REGISTERS->rxf[REG_SM_CONTROL];
+    // Drain all pending FIFO entries in a single ISR invocation.
+    // This avoids tail-chain overhead (~30ns per re-entry) and ensures
+    // write-then-read sequences respond within the 530ns timing budget.
+    while (!(PIO_REGISTERS->fstat & REG_FIFO_RXEMPTY_BIT)) {
+        uint32_t raw_value;
+        uint8_t data = 0;
+        uint8_t trace_flags = 0;
+        uint8_t pending_before = (uint8_t)fifo_pending_prefetch;
 
-    // Extract 2-bit payload type flag
-    uint32_t payload_type = fifo_payload_type(raw_value);
+        // Get value from bus_output_helper PIO FIFO
+        raw_value = PIO_REGISTERS->rxf[REG_SM_CONTROL];
 
-    // Get cached registers pointer
-    cached_registers_t *cached = &cached_regs;
+        // Extract 2-bit payload type flag
+        uint32_t payload_type = fifo_payload_type(raw_value);
 
-    bool enque_result = false;
-    switch (payload_type) {
-        case FIFO_REG_PREFETCH: {
-            // Prefetch cached value in case of a register read, need to respond immediately to hit timing
-            uint32_t address = board_fifo_read_address(raw_value);
+        // Get cached registers pointer
+        cached_registers_t *cached = &cached_regs;
 
-            if (address < DMA_REGISTER_BASE || address >= (DMA_REGISTER_BASE + 0x100)) {
-                trace_flags |= FIFO_TRACE_FLAG_ERROR;
-                fifo_trace_record(raw_value, payload_type, pending_before, (uint8_t)fifo_pending_prefetch, trace_flags, 0);
-                return;
-            }
+        bool enque_result = false;
+        switch (payload_type) {
+            case FIFO_REG_PREFETCH: {
+                // Prefetch cached value in case of a register read, need to respond immediately to hit timing
+                uint32_t address = board_fifo_read_address(raw_value);
 
-            masked_offset = dma_mask_offset(address - DMA_REGISTER_BASE);
-            masked_offset &= 0xFF;
+                if (address < DMA_REGISTER_BASE || address >= (DMA_REGISTER_BASE + 0x100)) {
+                    trace_flags |= FIFO_TRACE_FLAG_ERROR;
+                    fifo_trace_record(raw_value, payload_type, pending_before, (uint8_t)fifo_pending_prefetch, trace_flags, 0);
+                    continue;
+                }
 
-            fifo_pending_prefetch++;
-            if (!is_valid_reg_offset(masked_offset)) {
-                trace_flags |= FIFO_TRACE_FLAG_ERROR;
-                data = 0xFF;
-            } else {
-                if (masked_offset == REG_DATA) {
-                    uint8_t phase = cached->values[REG_STATUS] & (SASI_CTL_BIT | SASI_INP_BIT | SASI_MSG_BIT);
-                    if (phase == (SASI_CTL_BIT | SASI_INP_BIT | SASI_MSG_BIT)) {
-                        // Message byte is always Command Complete (0x00).
-                        data = 0x00;
-                        cached->values[REG_DATA] = 0x00;
-                    } else if (phase == (SASI_CTL_BIT | SASI_INP_BIT)) {
-                        // Serve status byte from authoritative controller state.
-                        dma_registers_t *dma = &dma_registers;
-                        data = dma ? dma->status : cached->values[REG_DATA];
-                        cached->values[REG_DATA] = data;
+                masked_offset = dma_mask_offset(address - DMA_REGISTER_BASE);
+                masked_offset &= 0xFF;
+
+                fifo_pending_prefetch++;
+                if (!is_valid_reg_offset(masked_offset)) {
+                    trace_flags |= FIFO_TRACE_FLAG_ERROR;
+                    data = 0xFF;
+                } else {
+                    if (masked_offset == REG_DATA) {
+                        uint8_t phase = cached->values[REG_STATUS] & (SASI_CTL_BIT | SASI_INP_BIT | SASI_MSG_BIT);
+                        if (phase == (SASI_CTL_BIT | SASI_INP_BIT | SASI_MSG_BIT)) {
+                            // Message byte is always Command Complete (0x00).
+                            data = 0x00;
+                            cached->values[REG_DATA] = 0x00;
+                        } else if (phase == (SASI_CTL_BIT | SASI_INP_BIT)) {
+                            // Serve status byte from authoritative controller state.
+                            dma_registers_t *dma = &dma_registers;
+                            data = dma ? dma->status : cached->values[REG_DATA];
+                            cached->values[REG_DATA] = data;
+                        } else {
+                            data = cached->values[REG_DATA];
+                        }
                     } else {
-                        data = cached->values[REG_DATA];
+                        data = cached->values[masked_offset];
                     }
-                } else {
-                    data = cached->values[masked_offset];
                 }
+
+                // pio outputs 8 bits of data first then 8 bits of pindirs (0xFF for output)
+                uint32_t payload = (0xFF << 8) | (data & 0xFF);
+                pio_sm_put_blocking(PIO_REGISTERS, REG_SM_CONTROL, payload);
+
+                uint8_t pending_after = (uint8_t)fifo_pending_prefetch;
+                fifo_trace_record(raw_value, payload_type, pending_before, pending_after, trace_flags, data);
+                break;
             }
 
-            // pio outputs 8 bits of data first then 8 bits of pindirs (0xFF for output)
-            uint32_t payload = (0xFF << 8) | (data & 0xFF);
-            pio_sm_put_blocking(PIO_REGISTERS, REG_SM_CONTROL, payload);
+            case FIFO_REG_READ_COMMIT: {
+                // Commit of a register read
+                uint32_t address = board_fifo_read_address(raw_value);
 
-            uint8_t pending_after = (uint8_t)fifo_pending_prefetch;
-            fifo_trace_record(raw_value, payload_type, pending_before, pending_after, trace_flags, data);
-            break;
-        }
+                if (address < DMA_REGISTER_BASE || address >= (DMA_REGISTER_BASE + 0x100)) {
+                    trace_flags |= FIFO_TRACE_FLAG_ERROR;
+                    fifo_trace_record(raw_value, payload_type, pending_before, (uint8_t)fifo_pending_prefetch, trace_flags, 0);
+                    continue;
+                }
 
-        case FIFO_REG_READ_COMMIT: {
-            // Commit of a register read
-            uint32_t address = board_fifo_read_address(raw_value);
+                // Default: don't enqueue reads - only DATA reads need deferred processing
+                enque_result = false;
 
-            if (address < DMA_REGISTER_BASE || address >= (DMA_REGISTER_BASE + 0x100)) {
-                trace_flags |= FIFO_TRACE_FLAG_ERROR;
-                fifo_trace_record(raw_value, payload_type, pending_before, (uint8_t)fifo_pending_prefetch, trace_flags, 0);
-                return;
-            }
+                if (fifo_pending_prefetch == 0) {
+                    trace_flags |= FIFO_TRACE_FLAG_ERROR;
+                    reg_irq_warn("FIFO WARN: Commit without prefetch raw=0x%08x\n", raw_value);
+                } else {
+                    fifo_pending_prefetch--;
+                }
 
-            // Default: don't enqueue reads - only DATA reads need deferred processing
-            enque_result = false;
+                // Validate the register offset
+                uint32_t commit_offset = dma_mask_offset(address - DMA_REGISTER_BASE) & 0xFF;
+                if (!is_valid_reg_offset(commit_offset)) {
+                    trace_flags |= FIFO_TRACE_FLAG_ERROR;
+                }
 
-            if (fifo_pending_prefetch == 0) {
-                trace_flags |= FIFO_TRACE_FLAG_ERROR;
-                reg_irq_warn("FIFO WARN: Commit without prefetch raw=0x%08x\n", raw_value);
-            } else {
-                fifo_pending_prefetch--;
-            }
-
-            // Validate the register offset
-            uint32_t commit_offset = dma_mask_offset(address - DMA_REGISTER_BASE) & 0xFF;
-            if (!is_valid_reg_offset(commit_offset)) {
-                trace_flags |= FIFO_TRACE_FLAG_ERROR;
-            }
-
-            // For DATA register reads, update the CACHE to reflect the next phase.
-            // We check the CACHED status (not bus_ctrl) because the cache may already
-            // be ahead of bus_ctrl. The cache represents what the host is seeing.
-            if (commit_offset == REG_DATA) {
-                uint8_t cached_status = cached->values[REG_STATUS] & 0x1F;
+                // For DATA register reads, update the CACHE to reflect the next phase.
+                // We check the CACHED status (not bus_ctrl) because the cache may already
+                // be ahead of bus_ctrl. The cache represents what the host is seeing.
+                if (commit_offset == REG_DATA) {
+                    uint8_t cached_status = cached->values[REG_STATUS] & 0x1F;
 #if REG_IRQ_FAST_TRACE_ENABLE
-                uint8_t cached_data_before = cached->values[REG_DATA];
+                    uint8_t cached_data_before = cached->values[REG_DATA];
 #endif
 
-                if (cached_status & SASI_MSG_BIT) {
-                    // Message phase (0x1F) - host read message byte, transition to bus free
-                    cached->values[REG_DATA] = 0x00;  // Ensure message byte is 0x00
-                    cached->values[REG_STATUS] = 0x00;
-                    cached->values[0x30] = 0x00;
-                } else if ((cached_status & (SASI_CTL_BIT | SASI_INP_BIT)) == (SASI_CTL_BIT | SASI_INP_BIT)) {
-                    // Status phase (0x0F) - host read status byte, transition to message phase
-                    uint8_t next_status = cached_status | SASI_MSG_BIT;  // 0x0F -> 0x1F
-                    cached->values[REG_STATUS] = next_status;
-                    cached->values[0x30] = next_status;
-                    cached->values[REG_DATA] = 0x00;  // Message byte = Command Complete
-                }
+                    if (cached_status & SASI_MSG_BIT) {
+                        // Message phase (0x1F) - host read message byte, transition to bus free
+                        cached->values[REG_DATA] = 0x00;  // Ensure message byte is 0x00
+                        cached->values[REG_STATUS] = 0x00;
+                        cached->values[0x30] = 0x00;
+                    } else if ((cached_status & (SASI_CTL_BIT | SASI_INP_BIT)) == (SASI_CTL_BIT | SASI_INP_BIT)) {
+                        // Status phase (0x0F) - host read status byte, transition to message phase
+                        uint8_t next_status = cached_status | SASI_MSG_BIT;  // 0x0F -> 0x1F
+                        cached->values[REG_STATUS] = next_status;
+                        cached->values[0x30] = next_status;
+                        cached->values[REG_DATA] = 0x00;  // Message byte = Command Complete
+                    }
 
 #if REG_IRQ_FAST_TRACE_ENABLE
-                dma_registers_t *dma = &dma_registers;
-                uint8_t bus_ctrl_snapshot = dma ? dma->bus_ctrl : 0;
-                reg_irq_trace_record_data_commit(cached_status,
-                                                 cached_data_before,
-                                                 cached->values[REG_STATUS] & 0x1F,
-                                                 cached->values[REG_DATA],
-                                                 bus_ctrl_snapshot);
+                    dma_registers_t *dma = &dma_registers;
+                    uint8_t bus_ctrl_snapshot = dma ? dma->bus_ctrl : 0;
+                    reg_irq_trace_record_data_commit(cached_status,
+                                                     cached_data_before,
+                                                     cached->values[REG_STATUS] & 0x1F,
+                                                     cached->values[REG_DATA],
+                                                     bus_ctrl_snapshot);
 #endif
-                // DATA reads need deferred processing to sync bus_ctrl
-                enque_result = true;
-            } else if (commit_offset == REG_STATUS || commit_offset == 0x30) {
-                // Reading status clears the interrupt latch per DMA board spec.
-                // All work done here in fast handler - no need to enqueue.
-                dma_registers_t *dma = &dma_registers;
-                clear_irq_on_status_read(dma);
+                    // DATA reads need deferred processing to sync bus_ctrl
+                    enque_result = true;
+                } else if (commit_offset == REG_STATUS || commit_offset == 0x30) {
+                    // Reading status clears the interrupt latch per DMA board spec.
+                    // All work done here in fast handler - no need to enqueue.
+                    dma_registers_t *dma = &dma_registers;
+                    clear_irq_on_status_read(dma);
+                }
+                // Address register reads have no side effects - don't enqueue
+
+                uint8_t pending_after = (uint8_t)fifo_pending_prefetch;
+                fifo_trace_record(raw_value, payload_type, pending_before, pending_after, trace_flags, data);
+                break;
             }
-            // Address register reads have no side effects - don't enqueue
 
-            uint8_t pending_after = (uint8_t)fifo_pending_prefetch;
-            fifo_trace_record(raw_value, payload_type, pending_before, pending_after, trace_flags, data);
-            break;
-        }
+            case FIFO_REG_WRITE: {
+                // 8088 write to DMA register
+                uint32_t address = dma_fifo_write_address(raw_value);
 
-        case FIFO_REG_WRITE: {
-            // 8088 write to DMA register
-            uint32_t address = dma_fifo_write_address(raw_value);
+                if (address < DMA_REGISTER_BASE || address >= (DMA_REGISTER_BASE + 0x100)) {
+                    trace_flags |= FIFO_TRACE_FLAG_ERROR;
+                    fifo_trace_record(raw_value, payload_type, pending_before, (uint8_t)fifo_pending_prefetch, trace_flags, 0);
+                    continue;
+                }
 
-            if (address < DMA_REGISTER_BASE || address >= (DMA_REGISTER_BASE + 0x100)) {
+                masked_offset = dma_mask_offset(address - DMA_REGISTER_BASE);
+                masked_offset &= 0xFF;
+
+                data = dma_fifo_write_data(raw_value);
+                if (masked_offset == REG_ADDR_H) {
+                    data &= 0x0F;
+                }
+                bool valid_offset = is_valid_reg_offset(masked_offset);
+                bool is_addr_reg = valid_offset &&
+                                   (masked_offset == REG_ADDR_L || masked_offset == REG_ADDR_M ||
+                                    masked_offset == REG_ADDR_H);
+                if (!valid_offset) {
+                    trace_flags |= FIFO_TRACE_FLAG_ERROR;
+                }
+
+                if (is_addr_reg) {
+                    dma_registers_t *dma = &dma_registers;
+                    if (masked_offset == REG_ADDR_L) {
+                        dma->dma_address.bytes.low = data;
+                    } else if (masked_offset == REG_ADDR_M) {
+                        dma->dma_address.bytes.mid = data;
+                    } else {
+                        dma->dma_address.bytes.high = data & 0x0F;
+                    }
+                    __dmb();  // Ensure Core 0 sees updated DMA address bytes promptly
+                }
+
+                if (fifo_pending_prefetch == 0) {
+                    trace_flags |= FIFO_TRACE_FLAG_ERROR;
+                    reg_irq_warn("FIFO WARN: Reg Write without prefetch raw=0x%08x\n", raw_value);
+                } else {
+                    fifo_pending_prefetch--;
+                }
+
+                if (masked_offset == REG_CONTROL) {
+                    uint8_t prev_ctrl = cached->values[REG_CONTROL];
+                    bool prev_sel = (prev_ctrl & DMA_SELECT_BIT) != 0;
+                    bool now_sel = (data & DMA_SELECT_BIT) != 0;
+
+                    if (now_sel && !prev_sel) {
+                        cached->values[REG_STATUS] = SASI_BSY_BIT;
+                        cached->values[0x30] = SASI_BSY_BIT;
+                        cached->values[REG_DATA] = 0x00;
+                    } else if (!now_sel && prev_sel) {
+                        uint8_t cmd_phase = SASI_BSY_BIT | SASI_REQ_BIT | SASI_CTL_BIT;
+                        cached->values[REG_STATUS] = cmd_phase;
+                        cached->values[0x30] = cmd_phase;
+                        cached->values[REG_DATA] = 0x00;
+                    }
+                }
+
+                if (valid_offset) {
+                    cached->values[masked_offset] = data;
+                    if (masked_offset == REG_STATUS) {
+                        cached->values[0x30] = data;
+                    }
+                }
+                trace_flags |= FIFO_TRACE_FLAG_WRITE;
+
+                uint8_t pending_after = (uint8_t)fifo_pending_prefetch;
+                fifo_trace_record(raw_value, payload_type, pending_before, pending_after, trace_flags, data);
+                enque_result = valid_offset && !is_addr_reg;
+                break;
+            }
+
+            default:
                 trace_flags |= FIFO_TRACE_FLAG_ERROR;
                 fifo_trace_record(raw_value, payload_type, pending_before, (uint8_t)fifo_pending_prefetch, trace_flags, 0);
-                return;
-            }
-
-            masked_offset = dma_mask_offset(address - DMA_REGISTER_BASE);
-            masked_offset &= 0xFF;
-
-            data = dma_fifo_write_data(raw_value);
-            if (masked_offset == REG_ADDR_H) {
-                data &= 0x0F;
-            }
-            bool valid_offset = is_valid_reg_offset(masked_offset);
-            bool is_addr_reg = valid_offset &&
-                               (masked_offset == REG_ADDR_L || masked_offset == REG_ADDR_M ||
-                                masked_offset == REG_ADDR_H);
-            if (!valid_offset) {
-                trace_flags |= FIFO_TRACE_FLAG_ERROR;
-            }
-
-            if (is_addr_reg) {
-                dma_registers_t *dma = &dma_registers;
-                if (masked_offset == REG_ADDR_L) {
-                    dma->dma_address.bytes.low = data;
-                } else if (masked_offset == REG_ADDR_M) {
-                    dma->dma_address.bytes.mid = data;
-                } else {
-                    dma->dma_address.bytes.high = data & 0x0F;
-                }
-                __dmb();  // Ensure Core 0 sees updated DMA address bytes promptly
-            }
-
-            if (fifo_pending_prefetch == 0) {
-                trace_flags |= FIFO_TRACE_FLAG_ERROR;
-                reg_irq_warn("FIFO WARN: Reg Write without prefetch raw=0x%08x\n", raw_value);
-            } else {
-                fifo_pending_prefetch--;
-            }
-
-            if (masked_offset == REG_CONTROL) {
-                uint8_t prev_ctrl = cached->values[REG_CONTROL];
-                bool prev_sel = (prev_ctrl & DMA_SELECT_BIT) != 0;
-                bool now_sel = (data & DMA_SELECT_BIT) != 0;
-
-                if (now_sel && !prev_sel) {
-                    cached->values[REG_STATUS] = SASI_BSY_BIT;
-                    cached->values[0x30] = SASI_BSY_BIT;
-                    cached->values[REG_DATA] = 0x00;
-                } else if (!now_sel && prev_sel) {
-                    uint8_t cmd_phase = SASI_BSY_BIT | SASI_REQ_BIT | SASI_CTL_BIT;
-                    cached->values[REG_STATUS] = cmd_phase;
-                    cached->values[0x30] = cmd_phase;
-                    cached->values[REG_DATA] = 0x00;
-                }
-            }
-
-            if (valid_offset) {
-                cached->values[masked_offset] = data;
-                if (masked_offset == REG_STATUS) {
-                    cached->values[0x30] = data;
-                }
-            }
-            trace_flags |= FIFO_TRACE_FLAG_WRITE;
-
-            uint8_t pending_after = (uint8_t)fifo_pending_prefetch;
-            fifo_trace_record(raw_value, payload_type, pending_before, pending_after, trace_flags, data);
-            enque_result = valid_offset && !is_addr_reg;
-            break;
+                continue;
         }
 
-        default:
-            trace_flags |= FIFO_TRACE_FLAG_ERROR;
-            fifo_trace_record(raw_value, payload_type, pending_before, (uint8_t)fifo_pending_prefetch, trace_flags, 0);
-            return;
-    }
+        if (enque_result) {
+            // Enqueue for deferred processing (fast inline version)
+            defer_queue_t *queue = &defer_queue;
+            uint32_t head = queue->head;
+            uint32_t next = (head + 1) & DEFER_QUEUE_MASK;
 
-    if (enque_result) {
-        // Enqueue for deferred processing (fast inline version)
-        defer_queue_t *queue = &defer_queue;
-        uint32_t head = queue->head;
-        uint32_t next = (head + 1) & DEFER_QUEUE_MASK;
-
-        if (next != queue->tail) {
-            queue->entries[head].raw_value = raw_value;
-            __asm volatile("dmb" ::: "memory");
-            queue->head = next;
-        } else {
-            // Queue full - track dropped entries
-            queue->drops++;
+            if (next != queue->tail) {
+                queue->entries[head].raw_value = raw_value;
+                __asm volatile("dmb" ::: "memory");
+                queue->head = next;
+            } else {
+                // Queue full - track dropped entries
+                queue->drops++;
+            }
         }
     }
 }
