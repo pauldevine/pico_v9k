@@ -65,8 +65,8 @@ int main() {
     // Initialize the debug queue for PIO register access logging
     debug_queue_init();
     // Debug output is disabled by default for minimal performance impact
-    // Uncomment the next line to enable debug output
-    debug_queue_enable(true);
+    // Enable only when actively debugging register traffic.
+    // debug_queue_enable(true);
 
     int ch=0;
     uint32_t millis_per_second = 1000;
@@ -200,7 +200,7 @@ int main() {
            pio_sm_is_exec_stalled(register_pio, reg_sm_control),
            pio_sm_get_pc(register_pio, reg_sm_control));
      
-    dma_device_reset(dma_get_registers());
+    dma_device_reset(&dma_registers);
     sasi_trace_init();  // Initialize diagnostic trace buffer
     printf("DMA device reset complete\n");
     
@@ -212,58 +212,6 @@ int main() {
     printf("waiting for DMA register access...\n");
     uint64_t iterations = INT64_MAX;
     for (uint64_t i = 0; i<INT64_MAX; i++) {
-        char buffer[256];
-        if (queue_try_remove(&log_queue, buffer)) {
-            printf("%s", buffer);
-        } else if (i % 100000 == 0) {
-            printf(".");
-        }
-
-        // Process debug queue entries (non-blocking)
-        debug_queue_process();    
-            
-        // Every 10M iterations, check PIO state
-        if (i % 10000000 == 0) {
-            // Check board_registers state machine (PIO0)
-            printf("\nboard_registers (PIO%d SM%d): PC=0x%02x, stalled=%d, RX=%d/4, TX=%d/4\n",
-                   pio_get_index(register_pio), reg_sm_control,
-                   pio_sm_get_pc(register_pio, reg_sm_control),
-                   pio_sm_is_exec_stalled(register_pio, reg_sm_control),
-                   pio_sm_get_rx_fifo_level(register_pio, reg_sm_control),
-                   pio_sm_get_tx_fifo_level(register_pio, reg_sm_control));
-
-
-            // Check DMA control state machine (PIO2)
-            bool dma_enabled = !!(pio_dma_master->ctrl & (1u << (PIO_CTRL_SM_ENABLE_LSB + dma_control_sm)));
-            printf("dma_read_write (PIO%d SM%d): PC=0x%02x, stalled=%d, RX=%d/4, TX=%d/4, enabled=%d\n",
-                   pio_get_index(pio_dma_master), dma_control_sm,
-                   pio_sm_get_pc(pio_dma_master, dma_control_sm),
-                   pio_sm_is_exec_stalled(pio_dma_master, dma_control_sm),
-                   pio_sm_get_rx_fifo_level(pio_dma_master, dma_control_sm),
-                   pio_sm_get_tx_fifo_level(pio_dma_master, dma_control_sm),
-                   dma_enabled);
-
-            // Check IRQ flags on all PIOs
-            printf("\nIRQ Flags:\n");
-            for (int pio_idx = 0; pio_idx < 3; pio_idx++) {
-                PIO pio_inst = (pio_idx == 0) ? pio0 : (pio_idx == 1) ? pio1 : pio2;
-                printf("  PIO%d: ", pio_idx);
-                for (int irq = 0; irq < 8; irq++) {
-                    if (pio_interrupt_get(pio_inst, irq)) {
-                        printf("IRQ%d=1 ", irq);
-                    }
-                }
-                printf("\n");
-            }
-
-            // Check defer queue stats
-            defer_queue_t *q = defer_get_queue();
-            if (q->drops > 0) {
-                printf("DEFER QUEUE: drops=%lu processed=%lu\n",
-                       (unsigned long)q->drops, (unsigned long)q->processed);
-            }
-
-        }
     
         tight_loop_contents();
     }

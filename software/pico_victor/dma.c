@@ -12,6 +12,7 @@
 #include "sasi.h"
 #include "logging.h"
 #include "reg_queue_processor.h"
+#include "fifo_helpers.h"
 #include "pico_fujinet/spi.h"
 
 // Set to 1 to enable debug printf during DMA operations (WARNING: breaks timing-critical bus operations)
@@ -137,22 +138,9 @@ static bool sasi_dma_ram_to_device(dma_registers_t *dma) {
     return true;
 }
 
-// Place the actual registers in time_critical section
-static dma_registers_t registers_storage __attribute__((section(".time_critical.dma_registers")));
-static dma_registers_t *registers = NULL;
-
-dma_registers_t* dma_get_registers() {
-    if (!registers) {
-        // Use static storage in time_critical section for fast access
-        registers = &registers_storage;
-        // Initialize all registers to zero
-        memset(registers, 0, sizeof(dma_registers_t));
-        printf("DMA registers initialized in time_critical section\n");
-    }
-
-    return registers;
-
-}
+// Global DMA registers in scratch_x RAM bank — zero-initialized by CRT0.
+// scratch_x is ideal because Core 1 (the ISR consumer) gets contention-free access.
+dma_registers_t dma_registers __scratch_x("dma_registers");
 
 void debug_pio_state(PIO pio, uint sm) {
     // Check FIFO levels
@@ -692,6 +680,7 @@ void dma_device_reset(dma_registers_t *dma) {
 
     // Clear interrupt
     dma_update_interrupts(dma, false);
+    fifo_pending_prefetch = 0;
     // Ensure cached status reflects bus-free after reset
     cached_status_sync_from_bus(dma);
     cached_set_data(0x00);

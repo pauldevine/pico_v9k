@@ -26,6 +26,16 @@ extern cached_registers_t cached_regs;
 #define REG_IRQ_FAST_TRACE_ENABLE 0
 #endif
 
+#ifndef REG_IRQ_WARN_ENABLE
+#define REG_IRQ_WARN_ENABLE 0
+#endif
+
+#if REG_IRQ_WARN_ENABLE
+#define reg_irq_warn(...) fast_log(__VA_ARGS__)
+#else
+#define reg_irq_warn(...) ((void)0)
+#endif
+
 #define REG_IRQ_TRACE_SIZE 128u
 #define REG_IRQ_TRACE_MASK (REG_IRQ_TRACE_SIZE - 1u)
 
@@ -181,7 +191,7 @@ void init_register_irq_handlers(void) {
     register_irq_trace_init();
 
     // Get cached registers and pre-warm
-    cached_registers_t *cached = defer_get_cached_registers();
+    cached_registers_t *cached = &cached_regs;
     volatile uint8_t dummy = 0;
 
     // Touch all cached values multiple times
@@ -259,7 +269,7 @@ void __time_critical_func(register_read_irq_isr)() {
                         cached->values[REG_DATA] = 0x00;
                     } else if (phase == (SASI_CTL_BIT | SASI_INP_BIT)) {
                         // Serve status byte from authoritative controller state.
-                        dma_registers_t *dma = dma_get_registers();
+                        dma_registers_t *dma = &dma_registers;
                         data = dma ? dma->status : cached->values[REG_DATA];
                         cached->values[REG_DATA] = data;
                     } else {
@@ -294,7 +304,7 @@ void __time_critical_func(register_read_irq_isr)() {
 
             if (fifo_pending_prefetch == 0) {
                 trace_flags |= FIFO_TRACE_FLAG_ERROR;
-                fast_log("FIFO WARN: Commit without prefetch raw=0x%08x\n", raw_value);
+                reg_irq_warn("FIFO WARN: Commit without prefetch raw=0x%08x\n", raw_value);
             } else {
                 fifo_pending_prefetch--;
             }
@@ -328,7 +338,7 @@ void __time_critical_func(register_read_irq_isr)() {
                 }
 
 #if REG_IRQ_FAST_TRACE_ENABLE
-                dma_registers_t *dma = dma_get_registers();
+                dma_registers_t *dma = &dma_registers;
                 uint8_t bus_ctrl_snapshot = dma ? dma->bus_ctrl : 0;
                 reg_irq_trace_record_data_commit(cached_status,
                                                  cached_data_before,
@@ -341,7 +351,7 @@ void __time_critical_func(register_read_irq_isr)() {
             } else if (commit_offset == REG_STATUS || commit_offset == 0x30) {
                 // Reading status clears the interrupt latch per DMA board spec.
                 // All work done here in fast handler - no need to enqueue.
-                dma_registers_t *dma = dma_get_registers();
+                dma_registers_t *dma = &dma_registers;
                 clear_irq_on_status_read(dma);
             }
             // Address register reads have no side effects - don't enqueue
@@ -377,7 +387,7 @@ void __time_critical_func(register_read_irq_isr)() {
             }
 
             if (is_addr_reg) {
-                dma_registers_t *dma = dma_get_registers();
+                dma_registers_t *dma = &dma_registers;
                 if (masked_offset == REG_ADDR_L) {
                     dma->dma_address.bytes.low = data;
                 } else if (masked_offset == REG_ADDR_M) {
@@ -390,7 +400,7 @@ void __time_critical_func(register_read_irq_isr)() {
 
             if (fifo_pending_prefetch == 0) {
                 trace_flags |= FIFO_TRACE_FLAG_ERROR;
-                fast_log("FIFO WARN: Reg Write without prefetch raw=0x%08x\n", raw_value);
+                reg_irq_warn("FIFO WARN: Reg Write without prefetch raw=0x%08x\n", raw_value);
             } else {
                 fifo_pending_prefetch--;
             }
@@ -413,11 +423,9 @@ void __time_critical_func(register_read_irq_isr)() {
             }
 
             if (valid_offset) {
-                if (masked_offset != REG_DATA) {
-                    cached->values[masked_offset] = data;
-                    if (masked_offset == REG_STATUS) {
-                        cached->values[0x30] = data;
-                    }
+                cached->values[masked_offset] = data;
+                if (masked_offset == REG_STATUS) {
+                    cached->values[0x30] = data;
                 }
             }
             trace_flags |= FIFO_TRACE_FLAG_WRITE;

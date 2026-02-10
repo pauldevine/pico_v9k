@@ -248,7 +248,8 @@ void debug_dump_pin(uint pin);
 void pio_debug_state();
 void core1_main();
 void setup_bus_control();
-dma_registers_t* dma_get_registers();
+// Global DMA registers — lives in scratch_x RAM for contention-free Core 1 access.
+extern dma_registers_t dma_registers;
 void dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_address);
 void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_address);
 void dma_process_deferred_events(void);

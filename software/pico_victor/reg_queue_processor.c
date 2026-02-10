@@ -393,7 +393,7 @@ void defer_process_entry(dma_registers_t *dma, const defer_entry_t *entry) {
 
 // Core 1 worker main loop
 void defer_worker_main(void) {
-    dma_registers_t *dma = dma_get_registers();
+    dma_registers_t *dma = &dma_registers;
     defer_entry_t entry;
 
     defer_log("DEFER: Worker starting on Core 1\n");
@@ -413,12 +413,3 @@ void defer_worker_main(void) {
     }
 }
 
-// Get the shared queue instance
-defer_queue_t* defer_get_queue(void) {
-    return &defer_queue;
-}
-
-// Get the cached registers instance
-cached_registers_t* defer_get_cached_registers(void) {
-    return &cached_regs;
-}

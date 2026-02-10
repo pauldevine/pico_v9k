@@ -142,11 +142,7 @@ int main() {
     printf("Target: <80ns (<16 cycles)\n\n");
     
     // Initialize DMA registers
-    dma_registers_t *dma = dma_get_registers();
-    if (!dma) {
-        printf("Failed to initialize DMA registers\n");
-        return -1;
-    }
+    dma_registers_t *dma = &dma_registers;
 
     
     // Run benchmarks for each test case

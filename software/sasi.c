@@ -22,6 +22,11 @@
 #define SASI_DMA_READ_VERIFY 0
 // Set to 1 to enable DMA write verification for READ(6) (reads back data after writing to Victor RAM)
 #define SASI_DMA_WRITE_VERIFY 0
+// Set to 1 to automatically dump SASI trace to UART on each reset after the first.
+// Keep disabled in timing-sensitive boots to avoid heavy UART latency.
+#ifndef SASI_TRACE_AUTODUMP_ON_RESET
+#define SASI_TRACE_AUTODUMP_ON_RESET 0
+#endif
 
 #if SASI_DEBUG_PRINTF
 #define sasi_printf(...) printf(__VA_ARGS__)
@@ -130,10 +135,12 @@ void sasi_reset_command_state(void) {
     // This helps debug when Victor retries initialization
     static int reset_count = 0;
     reset_count++;
+#if SASI_TRACE_AUTODUMP_ON_RESET
     if (sasi_trace.head > 0 && reset_count > 1) {
         printf("\n!!! SASI RESET #%d - Auto-dumping trace !!!\n", reset_count);
         sasi_trace_dump();
     }
+#endif
 
     sasi_cmd_index = 0;
     // Optionally clear buffer for cleaner debugging
