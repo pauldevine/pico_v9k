@@ -74,11 +74,6 @@ void defer_process_entry(dma_registers_t *dma, const defer_entry_t *entry);
 // Core 1 worker main loop
 void defer_worker_main(void);
 
-// Get the shared queue instance
-defer_queue_t* defer_get_queue(void);
-
-// Get the cached registers instance
-cached_registers_t* defer_get_cached_registers(void);
 
 // Helpers to keep cached register values aligned with SASI bus state
 void cached_status_sync_from_bus(const dma_registers_t *dma);

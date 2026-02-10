@@ -16,29 +16,8 @@
 #include "reg_queue_processor.h"
 #include "register_irq_handlers.h"
 #include "dma_irq_handler.h"
+#include "fifo_helpers.h"
 #include "logging.h"
-
-static inline void warmup_read_sequence(PIO pio, int sm, uint32_t address) {
-    // board_registers pushes READ_COMMIT when handling reads
-    if (pio_sm_is_tx_fifo_empty(pio, sm)) {
-        pio_sm_put(pio, sm, board_fifo_encode_read(address));
-        register_read_irq_isr();
-        if (!pio_sm_is_rx_fifo_empty(pio, sm)) {
-            pio_sm_get(pio, sm);
-        }
-    }
-}
-
-static inline void warmup_write_sequence(PIO pio, int sm, uint32_t address, uint8_t value) {
-    // board_registers pushes WRITE_VALUE when handling writes
-    if (pio_sm_is_tx_fifo_empty(pio, sm)) {
-        pio_sm_put(pio, sm, dma_fifo_encode_write(address, value));
-        register_write_irq_isr();
-        if (!pio_sm_is_rx_fifo_empty(pio, sm)) {
-            pio_sm_get(pio, sm);
-        }
-    }
-}
 
 void setup_irq_handlers(void) {
     //delete any data that might be in the FIFOs from cache warming
@@ -80,35 +59,37 @@ void warm_caches(void) {
     PIO pio_dma_master = PIO_DMA_MASTER;
     int dma_sm_control = DMA_SM_CONTROL;
 
-     printf("Pre-warming IRQ handler caches...\n");
+    printf("Pre-warming IRQ handler caches...\n");
 
     // Temporarily disable IRQs while we warm up
     irq_set_enabled(PIO0_IRQ_0, false);
     irq_set_enabled(PIO1_IRQ_0, false);
     irq_set_enabled(PIO1_IRQ_1, false);
 
-    // Warm up board_registers handler
-    for (int warm_iter = 0; warm_iter < 10; warm_iter++) {
-        //writes
-        warmup_write_sequence(register_pio, register_control, DMA_REGISTER_BASE + REG_CONTROL, 0x00);
-        warmup_write_sequence(register_pio, register_control, DMA_REGISTER_BASE + REG_ADDR_L, 0x00);
-        warmup_write_sequence(register_pio, register_control, DMA_REGISTER_BASE + REG_ADDR_M, 0x00);
-        warmup_write_sequence(register_pio, register_control, DMA_REGISTER_BASE + REG_ADDR_H, 0x00);
-        //reads
-        warmup_read_sequence(register_pio, register_control, DMA_REGISTER_BASE + REG_DATA);
-        warmup_read_sequence(register_pio, register_control, DMA_REGISTER_BASE + REG_STATUS);
-        warmup_read_sequence(register_pio, register_control, DMA_REGISTER_BASE + REG_ADDR_L);
+    // Warm cache lines directly instead of invoking IRQ handlers with synthetic FIFO data.
+    cached_registers_t *cached = &cached_regs;
+    volatile uint8_t dummy = 0;
+
+    for (int iter = 0; iter < 8; iter++) {
+        dummy ^= cached->values[REG_CONTROL];
+        dummy ^= cached->values[REG_STATUS];
+        dummy ^= cached->values[0x30];
+        dummy ^= cached->values[REG_DATA];
+        dummy ^= cached->values[REG_ADDR_L];
+        dummy ^= cached->values[REG_ADDR_M];
+        dummy ^= cached->values[REG_ADDR_H];
+        dummy ^= (uint8_t)PIO_REGISTERS->fstat;
+        dummy ^= (uint8_t)PIO_DMA_MASTER->fstat;
     }
+    (void)dummy;
 
     printf("Cache pre-warming complete\n");
 
     // Small delay to let caches settle
     busy_wait_us(100);
 
-    // One more round of warming after the delay
-    for (int i = 0; i < 5; i++) {
-        warmup_write_sequence(register_pio, register_control, DMA_REGISTER_BASE + REG_ADDR_L, (uint8_t)i);
-    }
+    // Reset FIFO bookkeeping and clear any stale payloads.
+    fifo_pending_prefetch = 0;
 
     // Clear the FIFOs so cache warming doesn't interfere with normal operation
     pio_sm_set_enabled(register_pio, register_control, false);
@@ -145,24 +126,20 @@ void core1_main() {
     init_register_irq_handlers();  // This calls dma_defer_init() internally
     setup_irq_handlers();
 
-    dma_registers_t *dma = dma_get_registers();
-    if (dma) {
-        // Initialize DMA registers to known state
-        dma->dma_address.full = 0;
-        dma->control = 0;
-        dma->status = 0;
-        dma->bus_ctrl = 0;
+    // Initialize DMA registers to known state
+    dma_registers.dma_address.full = 0;
+    dma_registers.control = 0;
+    dma_registers.status = 0;
+    dma_registers.bus_ctrl = 0;
 
-        // Sync initial state to cached registers
-        cached_registers_t *cached = defer_get_cached_registers();
-        cached->values[REG_ADDR_L] = 0;
-        cached->values[REG_ADDR_M] = 0;
-        cached->values[REG_ADDR_H] = 0;
-        cached->values[REG_STATUS] = 0;
-        cached->values[0x30] = 0;  // Status alias
-        cached->values[REG_DATA] = 0xFF;
-        cached->values[REG_CONTROL] = 0;
-    }
+    // Sync initial state to cached registers
+    cached_regs.values[REG_ADDR_L] = 0;
+    cached_regs.values[REG_ADDR_M] = 0;
+    cached_regs.values[REG_ADDR_H] = 0;
+    cached_regs.values[REG_STATUS] = 0;
+    cached_regs.values[0x30] = 0;  // Status alias
+    cached_regs.values[REG_DATA] = 0xFF;
+    cached_regs.values[REG_CONTROL] = 0;
 
     // Pre-warm the caches for both IRQ handlers
     warm_caches();
@@ -196,9 +173,9 @@ void core1_main() {
 // This can be called periodically from the main loop if you prefer
 void dma_process_deferred_events_cached(void) {
     static uint32_t last_process = 0;
-    defer_queue_t *queue = defer_get_queue();
+    defer_queue_t *queue = &defer_queue;
     defer_entry_t entry;
-    dma_registers_t *dma = dma_get_registers();
+    dma_registers_t *dma = &dma_registers;
 
     // Process up to 10 entries per call to avoid blocking too long
     int processed = 0;

@@ -8,6 +8,10 @@
 #define FIFO_TRACE_SIZE 256
 #define FIFO_TRACE_MASK (FIFO_TRACE_SIZE - 1)
 
+#ifndef FIFO_TRACE_ENABLE
+#define FIFO_TRACE_ENABLE 0
+#endif
+
 enum {
     FIFO_TRACE_FLAG_ERROR = 0x01,
     FIFO_TRACE_FLAG_WRITE = 0x02,
@@ -51,6 +55,7 @@ static inline void fifo_trace_record(uint32_t raw_value,
                                      uint8_t pending_after,
                                      uint8_t flags,
                                      uint8_t data) {
+#if FIFO_TRACE_ENABLE
     uint32_t head = fifo_trace_head;
     fifo_trace_entry_t *entry = &fifo_trace[head & FIFO_TRACE_MASK];
     entry->raw_value = raw_value;
@@ -61,9 +66,18 @@ static inline void fifo_trace_record(uint32_t raw_value,
     entry->data = data;
     __asm volatile("dmb" ::: "memory");
     fifo_trace_head = head + 1;
+#else
+    (void)raw_value;
+    (void)tag;
+    (void)pending_before;
+    (void)pending_after;
+    (void)flags;
+    (void)data;
+#endif
 }
 
 static inline void dma_fifo_trace_flush(void) {
+#if FIFO_TRACE_ENABLE
     uint32_t tail = fifo_trace_tail;
     while (tail != fifo_trace_head) {
         fifo_trace_entry_t entry = fifo_trace[tail & FIFO_TRACE_MASK];
@@ -77,6 +91,7 @@ static inline void dma_fifo_trace_flush(void) {
         tail++;
     }
     fifo_trace_tail = tail;
+#endif
 }
 
 // Mask register offset based on MAME-style rules

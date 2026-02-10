@@ -133,12 +133,8 @@ uint8_t test_dma_read_register(dma_registers_t *dma, dma_reg_offsets_t offset) {
 bool test_step1_initialization() {
     printf("\n=== STEP 1: DMA INITIALIZATION ===\n");
     
-    dma_registers_t *dma = dma_get_registers();
-    if (!dma) {
-        printf("FAIL: Could not get DMA registers\n");
-        return false;
-    }
-    
+    dma_registers_t *dma = &dma_registers;
+
     // Reset controller (from trace: Write offset 00 data 00)
     test_dma_write_register(dma, REG_CONTROL, 0x00);
     
@@ -159,7 +155,7 @@ bool test_step1_initialization() {
 bool test_step2_dma_address_config() {
     printf("\n=== STEP 2: DMA ADDRESS CONFIGURATION ===\n");
     
-    dma_registers_t *dma = dma_get_registers();
+    dma_registers_t *dma = &dma_registers;
     
     // Set first address: 0x05AA55 (from trace)
     test_dma_write_register(dma, REG_ADDR_H, 0x05);
@@ -199,7 +195,7 @@ bool test_step2_dma_address_config() {
 bool test_step3_target_selection() {
     printf("\n=== STEP 3: SASI TARGET SELECTION ===\n");
     
-    dma_registers_t *dma = dma_get_registers();
+    dma_registers_t *dma = &dma_registers;
     test_state.target_selected = false;
     
     // From trace: Write offset 00 data 24 (SELECT + WMODE + LATCH)
@@ -229,7 +225,7 @@ bool test_step3_target_selection() {
 bool test_step4_diagnostic_command() {
     printf("\n=== STEP 4: SEND DIAGNOSTIC COMMAND ===\n");
     
-    dma_registers_t *dma = dma_get_registers();
+    dma_registers_t *dma = &dma_registers;
     test_state.diagnostic_complete = false;
     
     // Simulate controller wanting command (REQ + CMD + BSY)

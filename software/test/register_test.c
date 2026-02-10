@@ -94,7 +94,7 @@ int main() {
            pio_sm_is_exec_stalled(register_pio, register_sm),
            pio_sm_get_pc(register_pio, register_sm));
 
-    dma_device_reset(dma_get_registers());
+    dma_device_reset(&dma_registers);
     printf("waiting for DMA register access...\n");
     uint64_t iterations = INT64_MAX;
     for (uint64_t i = 0; i<INT64_MAX; i++) {
