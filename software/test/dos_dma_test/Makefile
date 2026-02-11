@@ -22,11 +22,11 @@ CFLAGS_DEBUG = -bt=dos -ms -0 -od -zq -za99 -d2 -I$(WATCOM_INC)
 LFLAGS = format dos LIBPATH $(WATCOM_LIB) LIBPATH $(WATCOM_PATH)/rel/lib286
 
 # Target executables
-TARGETS = dmatest.exe addrtest.exe addr_mid.exe minimal.exe read.exe victor_boot_trace.exe sasi_perf_test.exe dma_verify.exe boot_sequence_test.exe
+TARGETS = dmatest.exe addrtest.exe addr_mid.exe minimal.exe read.exe victor_boot_trace.exe sasi_perf_test.exe dma_verify.exe boot_sequence_test.exe hd_stress.exe
 
 # Source and object files
-SOURCES = dmatest.c addrtest.c addr_mid.c minimal.c read.c victor_boot_trace.c sasi_perf_test.c dma_verify.c boot_sequence_test.c
-OBJECTS = dmatest.o addrtest.o addr_mid.o minimal.o read.o victor_boot_trace.o sasi_perf_test.o dma_verify.o boot_sequence_test.o
+SOURCES = dmatest.c addrtest.c addr_mid.c minimal.c read.c victor_boot_trace.c sasi_perf_test.c dma_verify.c boot_sequence_test.c hd_stress.c
+OBJECTS = dmatest.o addrtest.o addr_mid.o minimal.o read.o victor_boot_trace.o sasi_perf_test.o dma_verify.o boot_sequence_test.o hd_stress.o
 
 # Default target
 .PHONY: all
@@ -66,6 +66,10 @@ dma_verify.exe: dma_verify.o
 	@$(LINK) $(LFLAGS) name $@ file $<
 
 boot_sequence_test.exe: boot_sequence_test.o
+	@echo "Linking $@..."
+	@$(LINK) $(LFLAGS) name $@ file $<
+
+hd_stress.exe: hd_stress.o
 	@echo "Linking $@..."
 	@$(LINK) $(LFLAGS) name $@ file $<
 
@@ -143,6 +147,7 @@ help:
 	@echo "  sasi_perf_test.exe - SASI state machine perf test (250 ops from MAME)"
 	@echo "  dma_verify.exe - DMA transfer CRC8 verification (10 sectors)"
 	@echo "  boot_sequence_test.exe - Replay full observed boot SASI sequence with divergence checks"
+	@echo "  hd_stress.exe  - DOS file I/O stress test (25 small + 1 large file)"
 	@echo ""
 	@echo "Environment:"
 	@echo "  WATCOM_PATH = $(WATCOM_PATH)"
