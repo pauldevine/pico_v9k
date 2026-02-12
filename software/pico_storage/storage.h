@@ -56,6 +56,9 @@ typedef struct storage_ops {
     // Write a sector to the given target
     bool (*write_sector)(uint8_t target_id, uint32_t lba, const uint8_t *buffer, size_t len);
 
+    // Flush pending writes to persistent storage for the given target
+    bool (*sync)(uint8_t target_id);
+
     // Get disk capacity in sectors for the given target
     uint32_t (*get_capacity)(uint8_t target_id);
 
@@ -80,6 +83,9 @@ bool storage_read_sector(uint8_t target_id, uint32_t lba, uint8_t *buffer, size_
 
 // Write a sector (512 bytes by default)
 bool storage_write_sector(uint8_t target_id, uint32_t lba, const uint8_t *buffer, size_t len);
+
+// Flush pending writes to persistent storage
+bool storage_sync(uint8_t target_id);
 
 // Get disk capacity in sectors
 uint32_t storage_get_capacity(uint8_t target_id);

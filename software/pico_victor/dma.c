@@ -590,12 +590,6 @@ void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_addre
         return;
     }
 
-    uint8_t *temp = malloc(length);
-    if (!temp) {
-        printf("Failed to allocate memory for DMA transfer\n");
-        return;
-    }
-
 #if DMA_DEBUG_PRINTF
     debug_pio_state(PIO_DMA_MASTER, DMA_SM_CONTROL);
 #endif
@@ -606,7 +600,6 @@ void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_addre
     for (uint32_t batch = 0; batch < full_batch_count; batch++) {
         if (!start_dma_control()) {
             printf("Failed to obtain DMA master\n");
-            free(temp);
             return;
         }
 
@@ -627,8 +620,14 @@ void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_addre
 
             // Get the data byte that was read
             uint32_t char_data = pio_sm_get_blocking(PIO_DMA_MASTER, DMA_SM_CONTROL);
-            temp[index] = char_data & 0xFF;
+            data[index] = char_data & 0xFF;
         }
+
+        // Wait for all responses to be received before releasing DMA master
+        while (pio_sm_get_rx_fifo_level(PIO_DMA_MASTER, DMA_SM_CONTROL) > 0) {
+            tight_loop_contents();
+        }
+        sleep_us(3); // small delay to ensure all data is processed
 
         release_dma_master();
         
@@ -636,8 +635,7 @@ void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_addre
         sleep_us(DMA_SHARE_WAIT_US);
     }
 
-    memcpy(data, temp, length);
-    free(temp);
+    return;
 }
 #else
 // Unit-test in-memory Victor RAM model (64 KiB to fit SRAM)
@@ -677,6 +675,7 @@ void dma_device_reset(dma_registers_t *dma) {
     dma->selected_target = 0;
     dma->block_count.full = 0;
     dma->logical_block.full = 0;
+    dma->reset_requested = false;
 
     // Clear interrupt
     dma_update_interrupts(dma, false);

@@ -419,6 +419,13 @@ void __time_critical_func(register_read_irq_isr)() {
                     bool prev_sel = (prev_ctrl & DMA_SELECT_BIT) != 0;
                     bool now_sel = (data & DMA_SELECT_BIT) != 0;
 
+                    if (data & DMA_RESET_BIT) {
+                        // Signal Core 1 to abort any in-flight command immediately
+                        dma_registers_t *dma = &dma_registers;
+                        dma->reset_requested = true;
+                        __dmb();
+                    }
+
                     if (now_sel && !prev_sel) {
                         cached->values[REG_STATUS] = SASI_BSY_BIT;
                         cached->values[0x30] = SASI_BSY_BIT;

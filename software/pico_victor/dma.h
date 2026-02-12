@@ -203,6 +203,10 @@ typedef struct {
         uint8_t data_out_expected; // Non-zero = expecting this many data-out bytes (e.g., for 0x0C params)
     } state;
 
+    // Set by Core 0 ISR when a RESET write is detected on the control register.
+    // Checked by Core 1 command loops to abort long-running commands promptly.
+    volatile bool reset_requested;
+
     // SASI bus control state (tracks bus signals for status register)
     // NOTE: volatile required - accessed by both Core 0 (fast handler) and Core 1 (deferred processor)
     volatile uint8_t bus_ctrl;
