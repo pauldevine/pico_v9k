@@ -102,6 +102,19 @@ bool storage_write_sector(uint8_t target_id, uint32_t lba, const uint8_t *buffer
     return ops->write_sector(target_id, lba, buffer, len);
 }
 
+bool storage_sync(uint8_t target_id) {
+    if (!initialized || active_backend == STORAGE_BACKEND_NONE) {
+        return false;
+    }
+
+    const storage_ops_t *ops = backend_ops[active_backend];
+    if (!ops || !ops->sync) {
+        return true;  // No sync needed for this backend
+    }
+
+    return ops->sync(target_id);
+}
+
 uint32_t storage_get_capacity(uint8_t target_id) {
     if (!initialized || active_backend == STORAGE_BACKEND_NONE) {
         return 0;

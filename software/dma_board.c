@@ -55,7 +55,7 @@ void initialize_uart() {
 }
 
 
-int main() {
+    int main() {
     set_sys_clock_khz(200000, true);
     stdio_init_all();
     initialize_uart();    

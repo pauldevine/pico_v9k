@@ -435,6 +435,11 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
 #endif
 
     for (uint16_t i = 0; i < blocks; i++) {
+        // Abort immediately if host sent a RESET while we were busy
+        if (dma->reset_requested) {
+            break;
+        }
+
         uint8_t sector_data[512];
         read_sector_from_disk(dma, sector + i, sector_data);
 
@@ -457,6 +462,12 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
             __dmb();
             cached_status_sync_from_bus(dma);
         }
+    }
+
+    // If host reset during the loop, skip status — the queued reset
+    // will clean up the bus state when Core 1 returns to the defer loop.
+    if (dma->reset_requested) {
+        return;
     }
 
 #if SASI_DMA_WRITE_VERIFY
@@ -530,6 +541,11 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
     uint8_t target = dma ? (dma->selected_target & 0x07) : 0;
 
     for (uint16_t i = 0; i < blocks; i++) {
+        // Abort immediately if host sent a RESET while we were busy
+        if (dma->reset_requested) {
+            break;
+        }
+
         uint8_t sector_data[512];
         // Switch to DATA OUT just before DMA read from Victor RAM
         dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_CTL_BIT | SASI_INP_BIT | SASI_ACK_BIT);
@@ -580,6 +596,17 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
                 sasi_printf("Warning: write sector LBA %lu failed, continuing\n", (unsigned long)(sector + i));
             }
         }
+    }
+
+    // If host reset during the loop, skip status/sync — the queued reset
+    // will clean up the bus state when Core 1 returns to the defer loop.
+    if (dma->reset_requested) {
+        return;
+    }
+
+    // Sync all written sectors to persistent storage in one operation
+    if (storage_is_mounted(target)) {
+        storage_sync(target);
     }
 
     if (dma) {

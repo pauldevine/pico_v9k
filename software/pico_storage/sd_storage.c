@@ -60,6 +60,7 @@ static bool sd_storage_mount(uint8_t target_id, const char *image_path, bool rea
 static bool sd_storage_unmount(uint8_t target_id);
 static bool sd_storage_read_sector(uint8_t target_id, uint32_t lba, uint8_t *buffer, size_t len);
 static bool sd_storage_write_sector(uint8_t target_id, uint32_t lba, const uint8_t *buffer, size_t len);
+static bool sd_storage_sync(uint8_t target_id);
 static uint32_t sd_storage_get_capacity(uint8_t target_id);
 static bool sd_storage_is_mounted(uint8_t target_id);
 
@@ -70,6 +71,7 @@ static const storage_ops_t sd_ops = {
     .unmount = sd_storage_unmount,
     .read_sector = sd_storage_read_sector,
     .write_sector = sd_storage_write_sector,
+    .sync = sd_storage_sync,
     .get_capacity = sd_storage_get_capacity,
     .is_mounted = sd_storage_is_mounted,
 };
@@ -342,11 +344,23 @@ static bool sd_storage_write_sector(uint8_t target_id, uint32_t lba, const uint8
         return false;
     }
 
-    // Sync to ensure data is written
-    fr = f_sync(&target->file);
+    return true;
+}
+
+static bool sd_storage_sync(uint8_t target_id) {
+    if (!sd_initialized || !sd_state || target_id >= STORAGE_MAX_TARGETS) {
+        return false;
+    }
+
+    sd_target_t *target = &sd_state->targets[target_id];
+    if (!target->mounted) {
+        return false;
+    }
+
+    FRESULT fr = f_sync(&target->file);
     if (FR_OK != fr) {
         printf("SD Storage: f_sync error: %s (%d)\n", FRESULT_str(fr), fr);
-        // Continue anyway, data may still be written
+        return false;
     }
 
     return true;
