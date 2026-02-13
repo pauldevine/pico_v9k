@@ -17,6 +17,7 @@
 #include "sasi.h"
 #include "pico_storage/storage.h"
 #include "pico_storage/sd_storage.h"
+#include "sasi_log.h"
 
 // Storage backend selection
 // Set to 1 to use SD card, 0 to use FujiNet
@@ -129,6 +130,9 @@ void initialize_uart() {
         printf("FujiNet: failed to mount disk slot 0\n");
     }
 #endif
+
+    // Initialize SASI command logger (must happen before Core 1 starts)
+    sasi_log_init();
 
     //setup our debug pin
     gpio_init(DEBUG_PIN);

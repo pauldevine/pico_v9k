@@ -13,6 +13,7 @@
 #include "sasi.h"
 #include "pico_storage/storage.h"
 #include "pico_fujinet/spi.h"
+#include "sasi_log.h"
 
 // Set to 1 to enable SASI debug printf (WARNING: slows Core 1 dramatically, causes queue overflow)
 #define SASI_DEBUG_PRINTF 0
@@ -351,6 +352,7 @@ void handle_sasi_command_byte(dma_registers_t *dma, uint8_t cmd_byte) {
     if (command_complete(sasi_command_buffer, sasi_cmd_index)) {
         sasi_fastlog("SASI: command complete, routing opcode=0x%02X\n", sasi_command_buffer[0]);
         sasi_trace_event(TRACE_CMD_COMPLETE, sasi_command_buffer[0], sasi_cmd_index, dma ? dma->bus_ctrl : 0);
+        sasi_log_cmd_start(dma, sasi_command_buffer, sasi_cmd_index);
         route_to_sasi_target(dma, sasi_command_buffer, sasi_cmd_index);
         sasi_cmd_index = 0; // Reset for next command
     } else {
@@ -467,6 +469,7 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
     // If host reset during the loop, skip status — the queued reset
     // will clean up the bus state when Core 1 returns to the defer loop.
     if (dma->reset_requested) {
+        sasi_log_cmd_complete(dma, 0xFF);
         return;
     }
 
@@ -601,6 +604,7 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
     // If host reset during the loop, skip status/sync — the queued reset
     // will clean up the bus state when Core 1 returns to the defer loop.
     if (dma->reset_requested) {
+        sasi_log_cmd_complete(dma, 0xFF);
         return;
     }
 
@@ -729,6 +733,8 @@ bool command_complete(uint8_t *command_buffer, int cmd_index) {
 }
 
 void signal_command_complete(dma_registers_t *dma) {
+    // Log completed command before entering status phase
+    sasi_log_cmd_complete(dma, 0x00);
     // After data/command phase, send GOOD status then message-in 0x00
     sasi_enter_status_phase(dma, 0x00);
     __dmb();  // Ensure bus_ctrl update is visible

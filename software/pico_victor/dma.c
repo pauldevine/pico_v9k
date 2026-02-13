@@ -14,6 +14,7 @@
 #include "reg_queue_processor.h"
 #include "fifo_helpers.h"
 #include "pico_fujinet/spi.h"
+#include "sasi_log.h"
 
 // Set to 1 to enable debug printf during DMA operations (WARNING: breaks timing-critical bus operations)
 #define DMA_DEBUG_PRINTF 0
