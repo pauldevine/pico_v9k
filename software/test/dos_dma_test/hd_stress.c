@@ -374,6 +374,7 @@ static int phase4_verify_large_file(void)
         return 0;
     }
 
+    printf("  Reading first chunk...\n");
     offset = 0;
     while (offset < LARGE_FILE_SIZE) {
         expect_len = (LARGE_FILE_SIZE - offset > IO_BUFFER_SIZE)
@@ -413,7 +414,7 @@ static int phase4_verify_large_file(void)
 
         offset += read_len;
 
-        if (offset - last_report >= 102400UL) {
+        if (offset - last_report >= 51200UL) {
             printf("  Verified %luK / %luK...\n",
                    offset / 1024UL, LARGE_FILE_SIZE / 1024UL);
             last_report = offset;

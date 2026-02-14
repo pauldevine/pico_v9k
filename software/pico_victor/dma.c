@@ -10,6 +10,7 @@
 #include <string.h>
 #include "dma.h"
 #include "sasi.h"
+#include "sasi_log.h"
 #include "logging.h"
 #include "reg_queue_processor.h"
 #include "fifo_helpers.h"
@@ -464,10 +465,84 @@ static inline void setup_pins_register_inputs() {
 } 
 
 
+// Timeout for individual PIO blocking operations (per bus cycle, not per sector).
+// A single DMA bus cycle completes in <10us.  5ms gives enormous margin for
+// bus timing variations (wait states, bus contention) while still detecting a
+// genuinely-stuck PIO SM (e.g. Victor rebooted mid-DMA, bus signals are dead).
+// Safe to be generous because the 8088's BIOS timeout counter PAUSES during
+// DMA HOLD — longer PIO waits don't consume BIOS timeout budget.
+// History: 200us caused ~33% false DMA aborts; 50ms blocked Core 1 too long
+// (before local_dma_addr fix prevented cross-core address corruption).
+#define PIO_OP_TIMEOUT_US 5000
+
+// Shorter timeout for FIFO drain after the last batch entry.  The FIFO
+// empties within microseconds when PIO is running; this is a safety net.
+#define PIO_DRAIN_TIMEOUT_US 10000
+
+// Timeout-protected pio_sm_put.  Returns false if the TX FIFO didn't drain
+// within PIO_OP_TIMEOUT_US (PIO SM is stuck).
+static inline bool pio_sm_put_timeout(PIO pio, uint sm, uint32_t data) {
+    absolute_time_t deadline = make_timeout_time_us(PIO_OP_TIMEOUT_US);
+    while (pio_sm_is_tx_fifo_full(pio, sm)) {
+        if (absolute_time_diff_us(get_absolute_time(), deadline) <= 0) {
+            return false;
+        }
+        tight_loop_contents();
+    }
+    pio_sm_put(pio, sm, data);
+    return true;
+}
+
+// Timeout-protected pio_sm_get.  Returns false if no data appeared in the
+// RX FIFO within PIO_OP_TIMEOUT_US.
+static inline bool pio_sm_get_timeout(PIO pio, uint sm, uint32_t *out) {
+    absolute_time_t deadline = make_timeout_time_us(PIO_OP_TIMEOUT_US);
+    while (pio_sm_is_rx_fifo_empty(pio, sm)) {
+        if (absolute_time_diff_us(get_absolute_time(), deadline) <= 0) {
+            return false;
+        }
+        tight_loop_contents();
+    }
+    *out = pio_sm_get(pio, sm);
+    return true;
+}
+
+// DMA error codes for sasi_log_dma_error()
+#define DMA_ERR_MASTER_FAIL  0xF0  // Failed to obtain DMA bus master (clock/HLDA timeout)
+#define DMA_ERR_PIO_TIMEOUT  0xF1  // PIO SM stuck during DMA transfer
+
+// Emergency abort: force-release DMA master and clean up PIO state.
+// Called when a PIO timeout is detected so Core 1 can recover.
+static void abort_dma_transfer(void) {
+    sasi_log_dma_error(DMA_ERR_PIO_TIMEOUT,
+                       dma_registers.dma_address.full,
+                       dma_registers.bus_ctrl);
+
+    // Stop the DMA PIO SM immediately
+    pio_sm_set_enabled(PIO_DMA_MASTER, DMA_SM_CONTROL, false);
+    pio_sm_clear_fifos(PIO_DMA_MASTER, DMA_SM_CONTROL);
+
+    // Restore register pins and re-enable register SM
+    setup_pins_register_inputs();
+    pio_sm_clear_fifos(PIO_REGISTERS, REG_SM_CONTROL);
+    pio_sm_set_enabled(PIO_REGISTERS, REG_SM_CONTROL, true);
+
+    // Release HOLD so 8088 can resume
+    gpio_set_dir(HOLD_PIN, GPIO_IN);
+}
+
 static inline bool obtain_dma_master() {
     //wait for low then high so we can sync to CLOCK_5 edge to help meta-stability of board
-    while (gpio_get(CLOCK_5_PIN)) { tight_loop_contents(); } // wait low
-    while (!gpio_get(CLOCK_5_PIN)) { tight_loop_contents(); } // then wait high
+    // Timeout protects against Victor clock stopping (crash/reboot/power-off).
+    absolute_time_t clk_deadline = make_timeout_time_us(DMA_TIMEOUT_US);
+    while (gpio_get(CLOCK_5_PIN)) {
+        if (absolute_time_diff_us(get_absolute_time(), clk_deadline) <= 0) return false;
+        tight_loop_contents();
+    }
+    while (!gpio_get(CLOCK_5_PIN)) {
+        if (absolute_time_diff_us(get_absolute_time(), clk_deadline) <= 0) return false;
+        tight_loop_contents();
+    }
 
     gpio_init(HOLD_PIN);
     gpio_put(HOLD_PIN, 0);  // sink the line, HOLD/ is open drain on Victor
@@ -478,6 +553,7 @@ static inline bool obtain_dma_master() {
     absolute_time_t deadline = make_timeout_time_us(DMA_TIMEOUT_US);
     while (!gpio_get(HLDA_PIN)) {
         if (DMA_TIMEOUT_US && absolute_time_diff_us(get_absolute_time(), deadline) <= 0) {
+            gpio_set_dir(HOLD_PIN, GPIO_IN); // release HOLD on timeout
             return false;
         }
         tight_loop_contents();
@@ -488,12 +564,15 @@ static inline bool obtain_dma_master() {
 
 static inline bool start_dma_control() {
     if (!obtain_dma_master()) {
-        printf("Failed to obtain DMA master within timeout\n");
+        sasi_log_dma_error(DMA_ERR_MASTER_FAIL,
+                           dma_registers.dma_address.full,
+                           dma_registers.bus_ctrl);
         return false;
     }
     // Quiesce register SM before taking bus, and drain any queued events
     pio_sm_set_enabled(PIO_REGISTERS, REG_SM_CONTROL, false);
     pio_sm_clear_fifos(PIO_REGISTERS, REG_SM_CONTROL);
+    fifo_pending_prefetch = 0;  // Reset stale prefetch count after FIFO clear
 
     //setup all the pins to be controlled by PIO DMA SM
     setup_pins_dma_control();
@@ -512,9 +591,17 @@ static inline void release_dma_master() {
     pio_sm_set_enabled(PIO_REGISTERS, REG_SM_CONTROL, true);
 
     //wait for low then high so we can sync to CLOCK_5 edge to help meta-stability of board
-    while (gpio_get(CLOCK_5_PIN)) { tight_loop_contents(); } // wait low
-    while (!gpio_get(CLOCK_5_PIN)) { tight_loop_contents(); } // then wait high
-    
+    // Timeout protects against Victor clock stopping during release.
+    absolute_time_t clk_deadline = make_timeout_time_us(DMA_TIMEOUT_US);
+    while (gpio_get(CLOCK_5_PIN)) {
+        if (absolute_time_diff_us(get_absolute_time(), clk_deadline) <= 0) break;
+        tight_loop_contents();
+    }
+    while (!gpio_get(CLOCK_5_PIN)) {
+        if (absolute_time_diff_us(get_absolute_time(), clk_deadline) <= 0) break;
+        tight_loop_contents();
+    }
+
     gpio_set_dir(HOLD_PIN, GPIO_IN); // release HOLD/ is open drain on Victor
 }
 
@@ -540,10 +627,10 @@ void dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_addres
 
     for (uint32_t batch = 0; batch < full_batch_count; batch++) {
         if (!start_dma_control()) {
-            printf("Failed to obtain DMA master\n");
             return;
         }
 
+        bool pio_stuck = false;
         for (size_t i = 0; i < DMA_BATCH_SIZE; i++) {
             size_t index = (batch * DMA_BATCH_SIZE) + i;
             if (index >= length) {
@@ -555,14 +642,30 @@ void dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_addres
 
             // Send two FIFO payloads per memory address =  the PIO protocol
             uint32_t fifo_t1 = ((addr & 0xFFFFFu) << 1) | 1;                // T1: [20 bit address][1-bit write=1 flag in LSB]
-            pio_sm_put_blocking(PIO_DMA_MASTER, DMA_SM_CONTROL, fifo_t1);
+            if (!pio_sm_put_timeout(PIO_DMA_MASTER, DMA_SM_CONTROL, fifo_t1)) {
+                pio_stuck = true;
+                break;
+            }
 
             uint32_t fifo_t2 = (addr & 0xFFF00u) | byte;                    // T2: [12 bits address A19-A8][8 bits data byte]
-            pio_sm_put_blocking(PIO_DMA_MASTER, DMA_SM_CONTROL, fifo_t2);
+            if (!pio_sm_put_timeout(PIO_DMA_MASTER, DMA_SM_CONTROL, fifo_t2)) {
+                pio_stuck = true;
+                break;
+            }
+        }
+
+        if (pio_stuck) {
+            abort_dma_transfer();
+            return;
         }
 
         // Wait for TX FIFO to empty before releasing DMA master
+        absolute_time_t drain_deadline = make_timeout_time_us(PIO_DRAIN_TIMEOUT_US);
         while (pio_sm_get_tx_fifo_level(PIO_DMA_MASTER, DMA_SM_CONTROL) > 0) {
+            if (absolute_time_diff_us(get_absolute_time(), drain_deadline) <= 0) {
+                abort_dma_transfer();
+                return;
+            }
             tight_loop_contents();
         }
         sleep_us(3); // small delay to ensure last data is processed
@@ -599,10 +702,10 @@ void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_addre
 
     for (uint32_t batch = 0; batch < full_batch_count; batch++) {
         if (!start_dma_control()) {
-            printf("Failed to obtain DMA master\n");
             return;
         }
 
+        bool pio_stuck = false;
         for (size_t i = 0; i < DMA_BATCH_SIZE; i++) {
             size_t index = (batch * DMA_BATCH_SIZE) + i;
             if (index >= length) {
@@ -613,18 +716,38 @@ void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_addre
 
             // Send two FIFO words per the PIO protocol
             uint32_t fifo_t1 = ((addr & 0xFFFFFu) << 1) | 0; // T1: [20 bit address][1-bit read=0 flag in LSB]
-            pio_sm_put_blocking(PIO_DMA_MASTER, DMA_SM_CONTROL, fifo_t1);
+            if (!pio_sm_put_timeout(PIO_DMA_MASTER, DMA_SM_CONTROL, fifo_t1)) {
+                pio_stuck = true;
+                break;
+            }
 
             uint32_t fifo_t2 = 0xFFF00; // pindirs value only, no data or address T2: [A8-A19 remain outputs][BD0-BD7 inputs]
-            pio_sm_put_blocking(PIO_DMA_MASTER, DMA_SM_CONTROL, fifo_t2);
+            if (!pio_sm_put_timeout(PIO_DMA_MASTER, DMA_SM_CONTROL, fifo_t2)) {
+                pio_stuck = true;
+                break;
+            }
 
             // Get the data byte that was read
-            uint32_t char_data = pio_sm_get_blocking(PIO_DMA_MASTER, DMA_SM_CONTROL);
+            uint32_t char_data;
+            if (!pio_sm_get_timeout(PIO_DMA_MASTER, DMA_SM_CONTROL, &char_data)) {
+                pio_stuck = true;
+                break;
+            }
             data[index] = char_data & 0xFF;
         }
 
+        if (pio_stuck) {
+            abort_dma_transfer();
+            return;
+        }
+
         // Wait for all responses to be received before releasing DMA master
+        absolute_time_t drain_deadline = make_timeout_time_us(PIO_DRAIN_TIMEOUT_US);
         while (pio_sm_get_rx_fifo_level(PIO_DMA_MASTER, DMA_SM_CONTROL) > 0) {
+            if (absolute_time_diff_us(get_absolute_time(), drain_deadline) <= 0) {
+                abort_dma_transfer();
+                return;
+            }
             tight_loop_contents();
         }
         sleep_us(3); // small delay to ensure all data is processed
@@ -687,7 +810,9 @@ void dma_device_reset(dma_registers_t *dma) {
     // Reset SASI command accumulator state
     sasi_reset_command_state();
 
-    printf("DMA device reset\n");
+    // Track reset count for diagnostics (no printf - blocks Core 1 for ~780us)
+    static volatile uint32_t reset_count = 0;
+    reset_count++;
 }
 
 // Update interrupt state

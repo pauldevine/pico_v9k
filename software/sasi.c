@@ -11,6 +11,7 @@
 #include "logging.h"
 #include "reg_queue_processor.h"
 #include "sasi.h"
+#include "sasi_log.h"
 #include "pico_storage/storage.h"
 #include "pico_fujinet/spi.h"
 
@@ -351,6 +352,18 @@ void handle_sasi_command_byte(dma_registers_t *dma, uint8_t cmd_byte) {
     if (command_complete(sasi_command_buffer, sasi_cmd_index)) {
         sasi_fastlog("SASI: command complete, routing opcode=0x%02X\n", sasi_command_buffer[0]);
         sasi_trace_event(TRACE_CMD_COMPLETE, sasi_command_buffer[0], sasi_cmd_index, dma ? dma->bus_ctrl : 0);
+
+        // Log command start to SD card
+        {
+            uint8_t op = sasi_command_buffer[0];
+            uint32_t lba = ((sasi_command_buffer[1] & 0x1F) << 16) |
+                           (sasi_command_buffer[2] << 8) | sasi_command_buffer[3];
+            uint16_t blks = sasi_command_buffer[4] ? sasi_command_buffer[4] : 256;
+            sasi_log_cmd_start(op, dma ? dma->selected_target : 0, lba, blks,
+                               dma ? dma->dma_address.full : 0,
+                               dma ? dma->bus_ctrl : 0);
+        }
+
         route_to_sasi_target(dma, sasi_command_buffer, sasi_cmd_index);
         sasi_cmd_index = 0; // Reset for next command
     } else {
@@ -429,9 +442,16 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
     __dmb();  // Ensure Core 0 sees bus_ctrl update
     cached_status_sync_from_bus(dma);
 
+    // Snapshot the DMA address into a local variable.  Core 0's ISR writes
+    // individual bytes to dma->dma_address.bytes.* (address register updates),
+    // while this loop uses the full 32-bit word.  Without a local copy, a BIOS
+    // timeout/retry that writes new address registers mid-transfer corrupts the
+    // in-flight address via torn read/write across cores.
+    uint32_t local_dma_addr = dma->dma_address.full;
+
     // Simulate reading from disk and DMA to system RAM
 #if SASI_DMA_WRITE_VERIFY
-    uint32_t verify_start_addr = dma->dma_address.full;
+    uint32_t verify_start_addr = local_dma_addr;
 #endif
 
     for (uint16_t i = 0; i < blocks; i++) {
@@ -449,11 +469,11 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
         __dmb();
         cached_status_sync_from_bus(dma);
 
-        // DMA transfer to system RAM
-        dma_write_to_victor_ram(sector_data, 512, dma->dma_address.full);
+        // DMA transfer to system RAM using local address (immune to ISR overwrites)
+        dma_write_to_victor_ram(sector_data, 512, local_dma_addr);
 
-        // Auto-increment DMA address
-        dma->dma_address.full += 512;
+        // Auto-increment local DMA address
+        local_dma_addr += 512;
 
         // If more sectors remain, return to COMMAND busy while processing next sector
         if (i + 1 < blocks) {
@@ -510,6 +530,8 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
     if (dma) {
         dma->logical_block.full = sector + blocks;
         dma->block_count.full = 0;
+        // Write back final local address so completion log and BIOS readback are correct
+        dma->dma_address.full = local_dma_addr;
     }
 
     // Signal completion to host
@@ -540,6 +562,9 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
 
     uint8_t target = dma ? (dma->selected_target & 0x07) : 0;
 
+    // Snapshot DMA address - same cross-core race protection as handle_read_sectors
+    uint32_t local_dma_addr = dma->dma_address.full;
+
     for (uint16_t i = 0; i < blocks; i++) {
         // Abort immediately if host sent a RESET while we were busy
         if (dma->reset_requested) {
@@ -553,8 +578,8 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
         __dmb();
         cached_status_sync_from_bus(dma);
 
-        // Read from Victor RAM into local buffer
-        dma_read_from_victor_ram(sector_data, 512, dma->dma_address.full);
+        // Read from Victor RAM into local buffer using local address
+        dma_read_from_victor_ram(sector_data, 512, local_dma_addr);
 
 #if SASI_DMA_READ_VERIFY
         // Verify DMA read against expected test pattern (for dma_verify.c round-trip test)
@@ -573,7 +598,7 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
         }
 #endif // SASI_DMA_READ_VERIFY
 
-        dma->dma_address.full += 512;
+        local_dma_addr += 512;
 
         // If more sectors remain, return to COMMAND busy while processing next sector
         if (i + 1 < blocks) {
@@ -612,6 +637,8 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
     if (dma) {
         dma->logical_block.full = sector + blocks;
         dma->block_count.full = 0;
+        // Write back final local address so completion log and BIOS readback are correct
+        dma->dma_address.full = local_dma_addr;
     }
 
     cached_sync_dma_address(dma);
@@ -729,6 +756,15 @@ bool command_complete(uint8_t *command_buffer, int cmd_index) {
 }
 
 void signal_command_complete(dma_registers_t *dma) {
+    // Log command completion to SD card
+    sasi_log_cmd_complete(sasi_command_buffer[0],
+                          dma ? dma->selected_target : 0,
+                          0x00,  /* GOOD status */
+                          dma ? dma->logical_block.full : 0,
+                          0,
+                          dma ? dma->dma_address.full : 0,
+                          dma ? dma->bus_ctrl : 0);
+
     // After data/command phase, send GOOD status then message-in 0x00
     sasi_enter_status_phase(dma, 0x00);
     __dmb();  // Ensure bus_ctrl update is visible

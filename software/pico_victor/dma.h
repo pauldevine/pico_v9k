@@ -141,7 +141,9 @@ typedef struct {
 
     // Command/Status register (read/write)
     uint8_t command;
-    uint8_t status;
+    // NOTE: volatile required - written by Core 1 (sasi_enter_status_phase),
+    // read by Core 0 ISR (status phase DATA prefetch)
+    volatile uint8_t status;
 
     // Bus status register emulation (read-only)
     struct {
@@ -191,16 +193,17 @@ typedef struct {
     } buffer;
 
     // Internal state flags (not exposed to CPU)
-    // NOTE: volatile required - accessed by both Core 0 (fast handler) and Core 1 (deferred processor)
+    // NOTE: Keep these as separate volatile bytes (not bitfields). Bitfields cause
+    // read-modify-write collisions between fast IRQ paths and deferred processing.
     volatile struct {
-        uint8_t dma_enabled : 1;
-        uint8_t dma_strobe  : 1;
-        uint8_t dma_dir_in  : 1; // 1 = device → RAM (read), 0 = RAM → device
-        uint8_t interrupt_pending : 1;
-        uint8_t asserting_ack : 1;
-        uint8_t non_dma_req : 1;
-        uint8_t status_pending : 1; // 1 = waiting for host to read status byte
-        uint8_t data_out_expected; // Non-zero = expecting this many data-out bytes (e.g., for 0x0C params)
+        uint8_t dma_enabled;
+        uint8_t dma_strobe;
+        uint8_t dma_dir_in;          // 1 = device -> RAM (read), 0 = RAM -> device
+        uint8_t interrupt_pending;
+        uint8_t asserting_ack;
+        uint8_t non_dma_req;
+        uint8_t status_pending;      // 1 = waiting for host to read status byte
+        uint8_t data_out_expected;   // Non-zero = expecting this many data-out bytes (e.g., for 0x0C params)
     } state;
 
     // Set by Core 0 ISR when a RESET write is detected on the control register.
@@ -212,7 +215,8 @@ typedef struct {
     volatile uint8_t bus_ctrl;
 
     // Selected SASI target ID (from data bus during selection)
-    uint8_t selected_target;
+    // NOTE: volatile - written by Core 1 (defer processor), read cross-core
+    volatile uint8_t selected_target;
 } dma_registers_t;
 #pragma pack(pop)
 
