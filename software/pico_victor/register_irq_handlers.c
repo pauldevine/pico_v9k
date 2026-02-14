@@ -424,9 +424,13 @@ void __time_critical_func(register_read_irq_isr)() {
                         dma_registers_t *dma = &dma_registers;
                         dma->reset_requested = true;
                         __dmb();
-                    }
-
-                    if (now_sel && !prev_sel) {
+                        // RESET overrides all other CONTROL bits.
+                        // Clear cache to bus-free immediately so the host
+                        // sees idle state while Core 1 processes the reset.
+                        cached->values[REG_STATUS] = 0x00;
+                        cached->values[0x30] = 0x00;
+                        cached->values[REG_DATA] = 0x00;
+                    } else if (now_sel && !prev_sel) {
                         cached->values[REG_STATUS] = SASI_BSY_BIT;
                         cached->values[0x30] = SASI_BSY_BIT;
                         cached->values[REG_DATA] = 0x00;

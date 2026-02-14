@@ -10,6 +10,7 @@
 #include "reg_queue_processor.h"
 #include "dma.h"
 #include "sasi.h"
+#include "sasi_log.h"
 #include "logging.h"
 #include "fifo_helpers.h"
 
@@ -155,7 +156,8 @@ void defer_process_read(dma_registers_t *dma, uint32_t raw_value) {
                 dma->state.non_dma_req = 0;
                 dma->state.status_pending = 0;
                 dma_update_interrupts(dma, false);
-                cached_status_sync_from_bus(dma);
+                // NOTE: ISR already advanced cache to bus-free (register_irq_handlers.c:336-340)
+                // Do NOT call cached_status_sync_from_bus here - it would race with ISR.
             } else if ((dma->bus_ctrl & (SASI_CTL_BIT | SASI_INP_BIT)) ==
                         (SASI_CTL_BIT | SASI_INP_BIT)) {
                 // Status phase - host read status byte, transition to message phase
@@ -167,8 +169,8 @@ void defer_process_read(dma_registers_t *dma, uint32_t raw_value) {
                     dma->bus_ctrl |= SASI_MSG_BIT;  // Add MSG bit for message phase (0x0F -> 0x1F)
                     __dmb();
                     dma_update_interrupts(dma, true);
-                    cached_status_sync_from_bus(dma);
-                    cached_set_data(0x00);  // Message byte = Command Complete
+                    // NOTE: ISR already advanced cache to message phase (register_irq_handlers.c:341-346)
+                    // Do NOT call cached_status_sync_from_bus or cached_set_data here.
                 }
             } else if ((dma->bus_ctrl & (SASI_CTL_BIT | SASI_INP_BIT)) == SASI_INP_BIT) {
                 // Data-in phase (CTL=0, INP=1) - clear request after read
@@ -330,7 +332,11 @@ void defer_process_write(dma_registers_t *dma, uint32_t raw_value) {
                          write_data, dma->bus_ctrl);
             }
             // Note: bus_ctrl==0 means bus free, write is ignored (host preparing for next cmd)
-            cached_status_sync_from_bus(dma);
+            //
+            // IMPORTANT: Do not blindly resync cached status here. The fast IRQ handler
+            // may already have advanced cache state for DATA reads (status->message->free)
+            // ahead of deferred bus_ctrl updates. A late sync here can roll cache backwards
+            // and produce duplicate/mis-phased host reads.
             break;
 
         case REG_ADDR_L:
@@ -404,6 +410,9 @@ void defer_worker_main(void) {
             defer_process_entry(dma, &entry);
         }
 
+        // Flush SASI command log to SD card when bus is idle
+        sasi_log_flush_if_ready(dma);
+
         // Emit recorded FIFO tag trace entries for debugging
         // DISABLED: causes queue overflow due to fast_log overhead
         // dma_fifo_trace_flush();
@@ -412,4 +421,3 @@ void defer_worker_main(void) {
         tight_loop_contents();
     }
 }
-

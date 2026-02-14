@@ -15,6 +15,7 @@
 #include "pico_victor/reg_queue_processor.h"
 #include "pico_fujinet/spi.h"
 #include "sasi.h"
+#include "sasi_log.h"
 #include "pico_storage/storage.h"
 #include "pico_storage/sd_storage.h"
 
@@ -130,6 +131,9 @@ void initialize_uart() {
     }
 #endif
 
+    // Initialize SASI command logging (checks for SASLOG marker on SD card)
+    sasi_log_init();
+
     //setup our debug pin
     gpio_init(DEBUG_PIN);
     gpio_set_function(DEBUG_PIN, GPIO_FUNC_SIO);  // Explicitly set to SIO (GPIO) mode
@@ -171,9 +175,6 @@ void initialize_uart() {
     printf("board_registers initialized on PIO%d SM%d\n",
            pio_get_index(register_pio), reg_sm_control);
     
-    // Launch core 1 to handle board access operations
-    multicore_launch_core1(core1_main);
-
     systick_hw->csr = 0x5; // Enable, use processor clock, no interrupt
     systick_hw->rvr = 0x00FFFFFF; // Max reload value (24-bit)
 
@@ -203,6 +204,11 @@ void initialize_uart() {
     dma_device_reset(&dma_registers);
     sasi_trace_init();  // Initialize diagnostic trace buffer
     printf("DMA device reset complete\n");
+
+    // Launch core 1 only after both PIO state machines and reset state are stable.
+    // This avoids cross-core races where core1 cache warmup touches PIO1 SM0 while
+    // core0 is still configuring dma_master_program.
+    multicore_launch_core1(core1_main);
     
 #if DEBUG_GPIO
     pio_debug_state();

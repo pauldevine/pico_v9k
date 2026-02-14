@@ -50,6 +50,7 @@ pico_set_program_version(dma_board "0.2")
 target_sources(dma_board PRIVATE
     logging.c
     sasi.c
+    sasi_log.c
     pico_victor/fifo_helpers.c
     pico_victor/dma.c
     pico_victor/register_cache.c

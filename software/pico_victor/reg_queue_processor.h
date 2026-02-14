@@ -12,7 +12,7 @@
 #include <stdbool.h>
 #include "dma.h"
 
-// Queue size must be power of 2 for fast masking
+// Queue size must be power of 2 for fast masking.
 #define DEFER_QUEUE_SIZE 256
 #define DEFER_QUEUE_MASK (DEFER_QUEUE_SIZE - 1)
 
