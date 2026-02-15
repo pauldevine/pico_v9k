@@ -118,7 +118,7 @@ static int write_one_file(const char *fname, uint8_t file_id,
         if (fwrite(io_buf, 1, chunk_len, fp) != chunk_len) {
             printf("  ERROR: Write failed on %s at offset %lu "
                    "(file sector %lu) errno=%d\n",
-                   fname, offset, offset / SECTOR_SIZE, errno);
+                   fname, offset, (offset >> 9), errno);
             total_errors++;
             fclose(fp);
             return 0;
@@ -182,8 +182,8 @@ static int verify_one_file(const char *fname, uint8_t file_id,
                            "expected 0x%02X got 0x%02X\n",
                            fname,
                            abs_off,
-                           abs_off / SECTOR_SIZE,
-                           (unsigned)(abs_off % SECTOR_SIZE),
+                           (abs_off >> 9),
+                           (unsigned)((abs_off & 511U)),
                            expect_buf[i], io_buf[i]);
                 }
                 mismatch_count++;
@@ -233,7 +233,7 @@ static int phase1_write_small_files(void)
     uint16_t created = 0;
 
     printf("\n--- Phase 1: Writing %d small files (%luK each) ---\n",
-           NUM_SMALL_FILES, SMALL_FILE_SIZE / 1024UL);
+           NUM_SMALL_FILES, (SMALL_FILE_SIZE >> 10));
 
     for (f = 1; f <= NUM_SMALL_FILES; f++) {
         small_file_name(fname, f);
@@ -296,7 +296,7 @@ static int phase3_write_large_file(void)
     large_file_name(bigname);
 
     printf("\n--- Phase 3: Writing large file %s (%luK) ---\n",
-           bigname, LARGE_FILE_SIZE / 1024UL);
+           bigname, (LARGE_FILE_SIZE >> 10));
 
     {
         FILE *fp;
@@ -322,7 +322,7 @@ static int phase3_write_large_file(void)
             if (fwrite(io_buf, 1, chunk_len, fp) != chunk_len) {
                 printf("  ERROR: Write failed at offset %lu "
                        "(file sector %lu) errno=%d\n",
-                       offset, offset / SECTOR_SIZE, errno);
+                       offset, (offset >> 9), errno);
                 total_errors++;
                 ok = 0;
                 break;
@@ -334,7 +334,7 @@ static int phase3_write_large_file(void)
 
             if (offset - last_report >= 102400UL) {
                 printf("  Written %luK / %luK...\n",
-                       offset / 1024UL, LARGE_FILE_SIZE / 1024UL);
+                       (offset >> 10), (LARGE_FILE_SIZE >> 10));
                 last_report = offset;
             }
         }
@@ -364,7 +364,7 @@ static int phase4_verify_large_file(void)
     large_file_name(bigname);
 
     printf("\n--- Phase 4: Verifying large file %s (%luK) ---\n",
-           bigname, LARGE_FILE_SIZE / 1024UL);
+           bigname, (LARGE_FILE_SIZE >> 10));
 
     fp = fopen(bigname, "rb");
     if (!fp) {
@@ -402,8 +402,8 @@ static int phase4_verify_large_file(void)
                            "(file sector %lu, byte %u): "
                            "expected 0x%02X got 0x%02X\n",
                            abs_off,
-                           abs_off / SECTOR_SIZE,
-                           (unsigned)(abs_off % SECTOR_SIZE),
+                           (abs_off >> 9),
+                           (unsigned)((abs_off & 511U)),
                            expect_buf[i], io_buf[i]);
                 }
                 mismatch_count++;
@@ -416,7 +416,7 @@ static int phase4_verify_large_file(void)
 
         if (offset - last_report >= 51200UL) {
             printf("  Verified %luK / %luK...\n",
-                   offset / 1024UL, LARGE_FILE_SIZE / 1024UL);
+                   (offset >> 10), (LARGE_FILE_SIZE >> 10));
             last_report = offset;
         }
     }
@@ -496,16 +496,16 @@ int main(int argc, char *argv[])
     printf("\n");
     printf("Test plan:\n");
     printf("  Phase 1: Write %d files x %luK = %luK\n",
-           NUM_SMALL_FILES, SMALL_FILE_SIZE / 1024UL,
-           (uint32_t)NUM_SMALL_FILES * SMALL_FILE_SIZE / 1024UL);
+           NUM_SMALL_FILES, (SMALL_FILE_SIZE >> 10),
+           (uint32_t)NUM_SMALL_FILES * (SMALL_FILE_SIZE >> 10));
     printf("  Phase 2: Read back and verify all %d small files\n",
            NUM_SMALL_FILES);
     printf("  Phase 3: Write 1 large file = %luK\n",
-           LARGE_FILE_SIZE / 1024UL);
+           (LARGE_FILE_SIZE >> 10));
     printf("  Phase 4: Read back and verify the large file\n");
     printf("\n  Total I/O: %luK write + %luK read = %luK\n",
-           total_data / 1024UL, total_data / 1024UL,
-           total_data * 2UL / 1024UL);
+           (total_data >> 10), (total_data >> 10),
+           (total_data >> 9));
 
     printf("\nPress any key to begin (ESC to abort)...\n");
     ch = getch();
@@ -530,9 +530,9 @@ int main(int argc, char *argv[])
     printf("Phase 2 (verify small files):    %s\n",
            phase2_ok ? "PASS" : "FAIL");
     printf("Phase 3 (write %luK file):       %s\n",
-           LARGE_FILE_SIZE / 1024UL, phase3_ok ? "PASS" : "FAIL");
+           (LARGE_FILE_SIZE >> 10), phase3_ok ? "PASS" : "FAIL");
     printf("Phase 4 (verify %luK file):      %s\n",
-           LARGE_FILE_SIZE / 1024UL, phase4_ok ? "PASS" : "FAIL");
+           (LARGE_FILE_SIZE >> 10), phase4_ok ? "PASS" : "FAIL");
     printf("--------------------------------------\n");
     printf("Total bytes written:  %lu\n", total_bytes_written);
     printf("Total bytes verified: %lu\n", total_bytes_read);
