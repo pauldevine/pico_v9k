@@ -30,23 +30,20 @@
 #define SD_DISK_IMAGE "victor.img"
 #endif
 
-#define UART_ID uart0
-#define BAUD_RATE 230400
-#define UART_TX_PIN 0
-#define DEBUG_GPIO 0
-
 extern queue_t log_queue;
 
 
 void initialize_uart() {
     // Initialize UART for TX only
     gpio_init(UART_TX_PIN);
+    gpio_init(UART_RX_PIN);
     gpio_set_function(UART_TX_PIN, GPIO_FUNC_UART);
-    
+    gpio_set_function(UART_RX_PIN, GPIO_FUNC_UART);
+
     // Initialize UART hardware
     uart_init(UART_ID, BAUD_RATE);
     uart_set_fifo_enabled(UART_ID, false);
-    stdio_uart_init_full(UART_ID, BAUD_RATE, UART_TX_PIN, -1);
+    stdio_uart_init_full(UART_ID, BAUD_RATE, UART_TX_PIN, UART_RX_PIN);
 
     //clear BD0_PIN (GPIO1) - ensure it's not claimed by stdio/UART and ready for PIO
     gpio_disable_pulls(BD0_PIN);                     // clear PUE/PDE (kills bus-keep)
@@ -133,23 +130,6 @@ void initialize_uart() {
 
     // Initialize SASI command logging (checks for SASLOG marker on SD card)
     sasi_log_init();
-
-    //setup our debug pin
-    gpio_init(DEBUG_PIN);
-    gpio_set_function(DEBUG_PIN, GPIO_FUNC_SIO);  // Explicitly set to SIO (GPIO) mode
-    gpio_disable_pulls(DEBUG_PIN);  // Disable all pulls
-    gpio_set_dir(DEBUG_PIN, GPIO_OUT);  // Set as output
-
-    // Test toggles with delays to see restart on logic analyzer
-    gpio_put(DEBUG_PIN, 0);
-    sleep_ms(1);
-    gpio_put(DEBUG_PIN, 1);
-    sleep_ms(1);
-    gpio_put(DEBUG_PIN, 0);
-    sleep_ms(1);
-    gpio_put(DEBUG_PIN, 1);
-    sleep_ms(1);
-    gpio_put(DEBUG_PIN, 0);
 
     //configure GPIO pulls and output strenght/skew etc
     ontime_pin_setup();

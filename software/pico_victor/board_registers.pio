@@ -10,60 +10,71 @@
 .define REGISTER_SIZE 12
 .define DATA_SIZE 8
 
-.define FIFO_REG_PREFETCH    0x00
-.define FIFO_REG_READ_COMMIT 0x01
-.define FIFO_REG_WRITE       0x02
+.define FIFO_REG_READ   0x0
+.define FIFO_REG_WRITE  0x1
+
+; bit1 = EXTIO (MSB), bit0 = XACK (LSB)
+; XACK = add wait states
+; EXTIO = external I/O buffers
+
+.define S_NONE           0b00  ; both released
+.define S_EXTIO          0b10  ; EXTIO driving, XACK released
+.define S_XACK           0b01  ; XACK driving, EXTIO released
+.define S_BOTH           0b11  ; both driving
 
 .program board_registers
-.side_set 1 pindirs
+.side_set 2 pindirs       ;  bit1 = EXTIO (GPIO27), bit0 = XACK (GPIO26)
 
 ; --- Pre-amble ---
 ; This code runs once at the start of state machine initialization
 ; It stores a bitmask of the 12 MSBs (0xEF3) that we'll compare against later as our target address
-pull block side 0         ; Pull bitmask 
-out y, 12 side 0          ; Store bitmask in Y register
+pull block side 0                          ; Pull bitmask 
+out y, 12 side 0                           ; Store bitmask in Y register
 
 .wrap_target
 T0:
-    mov isr, null side 0                 ; clear ISR
-    mov pindirs, null side 0             ; set bus control pins to input
-    wait 0 GPIO CLOCK_5_PIN side 0       ; Wait for CLK5 to go low
+    mov isr, null side 0                   ; clear ISR
+    mov pindirs, null side 0               ; set bus control pins to input
+    wait 0 GPIO CLOCK_5_PIN side 0         ; Wait for CLK5 to go low
     
 T1:   
-    wait 0 GPIO ALE_PIN side 0           ; wait for ALE to go low = T0 start & wait for address to stabilize
-    wait 1 GPIO ALE_PIN [9] side 0       ; wait for ALE to go high = T1 start & wait for address to stabilize
-    in pins, ADDRESS_BUS_SIZE side 0     ; shift 12 bits of address into ISR
-    mov osr, isr side 0                  ; use OSR to store full 20-bit address for later
-    in null, 20 side 0                   ; move the address into the lower 12 bits of the register, dropping 8 LSB to leave us with 12 MSB
-    mov x, isr side 0                    ; set X = 12 MSB address bits for comparison to 0xEF3 bitmask
-    jmp x!=y, T0 side 0                  ; if we're not at 0xEF300, restart T0 to try again
-    mov isr, osr side 0                  ; restore full 20-bit address into ISR
-    set x, FIFO_REG_PREFETCH side 0      ; signal to arm prefetch address payload
-    in x, 2 side 0                       ; move the prefetch flag into ISR as MSBs // ISR has 00[address]
+    wait 0 GPIO ALE_PIN side 0             ; wait for ALE to go low = T0 start & wait for address to stabilize
+    wait 1 GPIO ALE_PIN [7] side 0         ; wait for ALE to go high = T1 start & wait for address to stabilize
+    in pins, ADDRESS_BUS_SIZE side 0       ; shift 12 bits of address into ISR
+    mov osr, isr side 0                    ; use OSR to store full 20-bit address for later
+    in null, 20 side 0                     ; move the address into the lower 12 bits of the register, dropping 8 LSB to leave us with 12 MSB
+    mov x, isr side 0                      ; set X = 12 MSB address bits for comparison to 0xEF3 bitmask
+    jmp x!=y, T0 side 0                    ; if we're not at 0xEF3XX, restart T0 to try again
 
 T2:
-    push side 0                          ; Push the current ISR address + read signal onto RX FIFO
-    mov isr, osr side 0                  ; restore full 20-bit address into ISR
-    pull block side 0                    ; Pull data to send to 8088 from TX FIFO
-    jmp pin T3_WRITE side 0              ; if RD pin is high 8088 is writing, if low 8088 is reading
+    wait 1 GPIO CLOCK_5_PIN side S_XACK    ; Wait for CLK5 to go high // pull ready low
+    wait 0 GPIO CLOCK_5_PIN side S_XACK    ; Wait for CLK5 to go low
+    wait 1 GPIO CLOCK_15B_PIN side S_XACK  ; Wait for CLK15B to go high
+    wait 0 GPIO CLOCK_15B_PIN side S_XACK  ; Wait for CLK15B to go low
+    mov isr, osr side S_XACK               ; move the 20-bit address we saved in OSR into ISR to send to ARM
+    jmp pin T3_WRITE side S_XACK           ; if RD pin is high 8088 is writing, if low 8088 is reading
 
-T3_READ:                               ; 8088 read cycle // pico's writing
-    out pins, DATA_SIZE side 1           ; drive BD0-BD7 with data for 8088 to read
-    out pindirs, DATA_SIZE side 1        ; set BD0-BD7 as outputs
-    wait 1 GPIO RD_PIN side 1            ; wait for RD to go high (end of read cycle)
-    set x, FIFO_REG_READ_COMMIT [12] side 1  ; signal to arm commit earlier read // wait for 12 cycles to allow for data hold time
-    in x, 2 side 0                       ; move the read commit flag into ISR as MSBs // ISR has 01[address]
+;fall through for read case
+T3_READ:                                   ; 8088 read cycle // pico's writing
+    set x, FIFO_REG_READ side S_BOTH       ; flag read cycle to ARM and prepare to send data
+    in x, 1 side S_BOTH                    ; move the READ prefetch flag into ISR as MSB // asert XACK and EXTIO //ISR has 0[address]
+    push block side S_BOTH                 ; send address and read flag to ARM
+    pull block side S_BOTH                 ; wait till we get the data back from the ARM
+    out pins, DATA_SIZE side S_BOTH        ; drive BD0-BD7 with data for 8088 to read
+    out pindirs, DATA_SIZE side S_EXTIO    ; set BD0-BD7 as outputs // release XACK to allow 8088 to complete read cycle
+    wait 1 GPIO RD_PIN [2] side S_EXTIO    ; wait for RD to go high (end of read cycle)
+    
 T4:
-    push [11] side 0                     ; send commit signal to arm
-    jmp T0 side 0                        ; jump to T4 for the next clock cycle
+ ; jump to T0 for the next clock cycle
 .wrap
 
-T3_WRITE:                                ; 8088 write cycle // pico's reading
-    wait 1 GPIO READY_PIN side 1         ; Wait for READY pin to go high to allow data to stabilize
-    set x, FIFO_REG_WRITE side 1         ; signal to arm write value payload
-    in pins, DATA_SIZE side 1            ; read data the 8088 is writing max 0xFF
-    in x, 2 side 0                       ; move the WRITE prefetch flag into ISR as MSBs //ISR has 10[data][address]
-    jmp T4 side 0                        ; jump to T4 for the next clock cycle
+T3_WRITE:                                  ; 8088 write cycle // pico's reading
+    wait 1 GPIO READY_PIN side S_EXTIO     ; Wait for READY pin to go high to allow data to stabilize
+    set x, FIFO_REG_WRITE side S_EXTIO     ; set write flag to signal to arm write payload
+    in pins, DATA_SIZE side S_EXTIO        ; read data the 8088 is writing max 0xFF   //ISR has [data][address]
+    in x, 1 side S_EXTIO                   ; move the WRITE prefetch flag into ISR as MSBs //ISR has 1[data][address] 
+    push block side 0                      ; send data received to arm for storage
+    jmp T0 side 0                          ; jump to T0 for the next clock cycle
 
 % c-sdk {
 #include <stdio.h>
@@ -114,18 +125,26 @@ static inline void board_registers_program_init(PIO pio, uint sm, uint offset) {
     //we need to assert EXTIO low when we want to send data to the 8088 processor
     //it takes the buffers for the 6522's out of the circuit so we don't loose the electrical battle
     //this isn't needed for writing to RAM in the DMA case
+    // Also setup XACK for side-set we assert XACK to insert 8088 wait states.
+    // This buys us time to prepare the register read response before
+    // the 8088 completes its bus cycle.  XACK is resynchronized by
+    // the Victor system logic and pulls READY low.
+    pio_gpio_init(pio, XACK_PIN);
     pio_gpio_init(pio, EXTIO_PIN);
-    sm_config_set_sideset_pins(&c, EXTIO_PIN);
-    //set as pindirs as EXTIO is open drain, will only be pulling to 0
+    sm_config_set_sideset_pin_base(&c, XACK_PIN);
+
+    //set as pindirs as XACK and EXTIO are open drain, will only be pulling to 0
     sm_config_set_sideset(&c,
-        1,     // bit_count: 1 pin for side-set
+        2,     // bit_count: 2 pins for side-set (XACK and EXTIO)
         false, // optional: side-set is mandatory on every instruction
         true   // pindirs: use side-set to control pin direction (for open-drain)
     );
-    pio_sm_set_consecutive_pindirs(pio, sm, EXTIO_PIN, 1, true);
+    pio_sm_set_consecutive_pindirs(pio, sm, EXTIO_PIN, 2, true);
     printf("EXTIO_PIN Pin %d func: %d, dir: %d\n", 
            EXTIO_PIN, gpio_get_function(EXTIO_PIN), gpio_get_dir(EXTIO_PIN));
-    pio_sm_set_pindirs_with_mask(pio, sm, 0, 1u << EXTIO_PIN); // preload value low
+    uint32_t both = (1u << XACK_PIN) | (1u << EXTIO_PIN);  //bitmask for my two sideset pins
+    pio_sm_set_pins_with_mask(pio, sm, 0, both);         // ensure output value = 0
+    pio_sm_set_pindirs_with_mask(pio, sm, 0, both);      // both start released (inputs)
 
     pio_sm_clear_fifos(pio, sm);
 

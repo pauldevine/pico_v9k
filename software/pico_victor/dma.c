@@ -783,6 +783,44 @@ uint8_t* test_get_victor_ram() { return test_victor_ram; }
 size_t test_get_victor_ram_size() { return TEST_VICTOR_RAM_SIZE; }
 #endif
 
+// Hold the Victor 8088 via HOLD/HLDA handshake without touching PIO state machines.
+// Use around slow SD card I/O so the BIOS timeout counter cannot advance.
+bool hold_victor_bus(void) {
+    // Sync to CLOCK_5 rising edge for clean bus transition
+    absolute_time_t clk_deadline = make_timeout_time_us(DMA_TIMEOUT_US);
+    while (gpio_get(CLOCK_5_PIN)) {
+        if (absolute_time_diff_us(get_absolute_time(), clk_deadline) <= 0) return false;
+        tight_loop_contents();
+    }
+    while (!gpio_get(CLOCK_5_PIN)) {
+        if (absolute_time_diff_us(get_absolute_time(), clk_deadline) <= 0) return false;
+        tight_loop_contents();
+    }
+
+    // Assert HOLD/ (open-drain)
+    gpio_init(HOLD_PIN);
+    gpio_put(HOLD_PIN, 0);
+    gpio_set_dir(HOLD_PIN, GPIO_OUT);
+    gpio_init(HLDA_PIN);
+    gpio_set_dir(HLDA_PIN, GPIO_IN);
+
+    // Wait for 8088 to acknowledge with HLDA
+    absolute_time_t deadline = make_timeout_time_us(DMA_TIMEOUT_US);
+    while (!gpio_get(HLDA_PIN)) {
+        if (absolute_time_diff_us(get_absolute_time(), deadline) <= 0) {
+            gpio_set_dir(HOLD_PIN, GPIO_IN);  // release on timeout
+            return false;
+        }
+        tight_loop_contents();
+    }
+    return true;
+}
+
+// Release HOLD/ so the 8088 resumes execution.
+void release_victor_bus(void) {
+    gpio_set_dir(HOLD_PIN, GPIO_IN);  // float high via pull-up
+}
+
 // Device reset function (based on MAME implementation)
 void dma_device_reset(dma_registers_t *dma) {
     dma->state.dma_enabled = 0;

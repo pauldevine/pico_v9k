@@ -3,6 +3,9 @@
 #include <stdio.h>
 #include "hardware/pio.h"
 
+#define UART_ID uart0
+#define BAUD_RATE 230400
+
 #define PIO_REGISTERS   pio0
 #define REG_SM_CONTROL  0   
 
@@ -23,38 +26,46 @@
 #define DMA_SHARE_WAIT_US 40   // Wait time after releasing bus before re-acquiring (in microseconds)
 #define DMA_TIMEOUT_US 2000  // Timeout for DMA master acquisition (in microseconds)
 
+#define UART_TX_PIN 0
 #define BD0_PIN 1
 #define A19_PIN 20
 #define RD_PIN 21
 #define WR_PIN 22
 #define DTR_PIN 23       
 #define ALE_PIN 24      
-#define DEN_PIN 25 
-#define HOLD_PIN 26  
+#define HOLD_PIN 25 
+#define XACK_PIN 26  
 #define EXTIO_PIN 27
 #define READY_PIN 28
 #define HLDA_PIN 29
 #define CLOCK_5_PIN 30
 #define CLOCK_15B_PIN 31
 #define IR_4_PIN 32
-#define XACK_PIN 33
-#define IO_M_PIN 34
-#define IR_5_PIN 35
+#define UART_RX_PIN 33
+#define IR_5_PIN 34
+#define IO_M_PIN 35
+
+#define SSO_PIN 36
+#define DLATCH_PIN 37
+#define CSEN_PIN 38
+#define PHASE_2_PIN 39
+#define DEN_PIN 40
+
+#define SDIO_CLK 41
+#define SDIO_CMD 42
+#define SDIO_D0 43
+#define SDIO_D1 44
+#define SDIO_D2 45
+#define SDIO_D3 46
+
+#define ADDRESS_DIR_PINCNT 2
+#define DMA_READ 1
+#define DMA_WRITE 0
 
 // DMA board IRQ line (IR4 by default; jumperable to IR5 per manual).
 #define DMA_IRQ_PIN IR_4_PIN
 #define DMA_IRQ_ASSERT_LEVEL 1
 #define DMA_IRQ_DEASSERT_LEVEL 0
-#define SSO_PIN 36
-#define DLATCH_PIN 37
-#define CSEN_PIN 38
-#define PHASE_2_PIN 39
-
-#define DEBUG_PIN 46 // Was 45, but that conflicts with SDIO D3!
-
-#define ADDRESS_DIR_PINCNT 2
-#define DMA_READ 1
-#define DMA_WRITE 0
 
 // Extract target ID from SASI selection byte (bit mask format)
 // In SASI selection, the data byte is a bit mask where each bit represents an ID:
@@ -69,28 +80,31 @@ static inline uint8_t sasi_extract_target_id(uint8_t selection_byte) {
 }
 
 // FIFO operation types, defines for the 2-bit pio payload type flag
-#define FIFO_REG_PREFETCH    0x00
-#define FIFO_REG_READ_COMMIT 0x01
-#define FIFO_REG_WRITE       0x02
+#define FIFO_REG_READ    0x0
+#define FIFO_REG_WRITE   0x1
 
-#define FIFO_DMA_READ        0x00
-#define FIFO_DMA_WRITE       0x01
+#define FIFO_DMA_READ        0x0
+#define FIFO_DMA_WRITE       0x1
 
 static inline uint32_t fifo_payload_type(uint32_t raw_value) {
-    // PIO encoding varies by operation type, but payload-type identifier is always in bits 31-30
-    return (raw_value >> 30) & 0x03u;  // Write: type in bits 31-30
+    // PIO payload varies by operation RD vs WR, but payload-type identifier is always in bit 31
+    //[RD/WR flag 1 bit][WR data 8 bits][address 20 bits]
+    return (raw_value >> 31) & 0x01u; 
 }
 
 static inline uint32_t board_fifo_read_address(uint32_t raw_value) {
-    return (raw_value >> 10) & 0xFFFFFu;  // Address is in bits 29-10 (board_registers uses right-shift ISR)
+    // read payload is MSB 0[address 20 bits]
+    return (raw_value >> 11) & 0xFFFFFu;  // Address is in bits 30-9 (board_registers uses right-shift ISR)
 }
 
 static inline uint32_t dma_fifo_write_address(uint32_t raw_value) {
-    return (raw_value >> 2) & 0xFFFFFu;  // Write address is in bits 21-2 (ISR restored at line 66, then shifts by 10)
+    // write payload is MSB 1[data 8 bits][address 20 bits] 
+    return (raw_value >> 3) & 0xFFFFFu;  // Write address is in bits 22-3 (ISR restored at line 66, then shifts by 9)
 }
 
 static inline uint8_t dma_fifo_write_data(uint32_t raw_value) {
-    return (raw_value >> 22) & 0xFFu;  // Write data is in bits 29-22
+    // write payload is MSB 1[data 8 bits][address 20 bits] 
+    return (raw_value >> 23) & 0xFFu;  // Write data is in bits 30-23
 }
 
 static inline uint32_t dma_mask_offset(uint32_t offset) {
@@ -99,17 +113,6 @@ static inline uint32_t dma_mask_offset(uint32_t offset) {
     }
     return offset & ~0x0Fu;
 }
-
-static inline uint32_t board_fifo_encode_read(uint32_t address) {
-    return ((address & 0xFFFFFu) << 10) | ((uint32_t) FIFO_REG_READ_COMMIT << 30);
-}
-
-static inline uint32_t dma_fifo_encode_write(uint32_t address, uint8_t data) {
-    return ((address & 0xFFFFFu) << 2) |       // Address in bits 21-2
-           (((uint32_t)data & 0xFFu) << 22) |  // Data in bits 29-22
-           ((uint32_t)FIFO_REG_WRITE << 30); // Type in bits 31-30
-}
-
 
 // DMA operations use a TWO-WORD FIFO protocol (see dma_read_write.pio for details):
 //
@@ -260,6 +263,12 @@ void setup_bus_control();
 extern dma_registers_t dma_registers;
 void dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_address);
 void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_address);
+
+// Hold/release the Victor 8088 bus via HOLD/HLDA handshake.
+// Use around slow SD card I/O to prevent the BIOS timeout counter from advancing.
+// Does NOT touch PIO state machines — safe to call independently of DMA transfers.
+bool hold_victor_bus(void);
+void release_victor_bus(void);
 void dma_process_deferred_events(void);
 void dma_process_deferred_events_cached(void);
 

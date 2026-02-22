@@ -29,15 +29,6 @@ void __time_critical_func(dma_read_isr)() {
     uint8_t trace_flags = 0;
     uint8_t pending_before = (uint8_t)fifo_pending_prefetch;
 
-    // Set debug pin high
-    *(volatile uint32_t *)SIO_GPIO_OUT_SET_REG = DEBUG_PIN_MASK;
-
-    // Check if SM1 RX FIFO is actually non-empty - if empty, this is a spurious IRQ
-    if (pio_sm_is_rx_fifo_empty(PIO_DMA_MASTER, DMA_SM_CONTROL)) {
-        *(volatile uint32_t *)SIO_GPIO_OUT_CLR_REG = DEBUG_PIN_MASK;
-        return;
-    }
-
     // Get value from bus_output_helper PIO FIFO
     raw_value = PIO_DMA_MASTER->rxf[DMA_SM_CONTROL];
 
@@ -77,7 +68,4 @@ void __time_critical_func(dma_read_isr)() {
             queue->head = next;
         }
     }
-
-    // Clear debug pin
-    *(volatile uint32_t *)SIO_GPIO_OUT_CLR_REG = DEBUG_PIN_MASK;
 }

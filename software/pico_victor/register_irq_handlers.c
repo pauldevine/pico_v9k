@@ -230,6 +230,7 @@ void init_register_irq_handlers(void) {
 
 // IRQ handler for board_registers_output handles FIFO_REG_READ
 void __time_critical_func(register_read_irq_isr)() {
+
     static uint32_t masked_offset;
 
     // Drain all pending FIFO entries in a single ISR invocation.
@@ -478,6 +479,7 @@ void __time_critical_func(register_read_irq_isr)() {
             }
         }
     }
+
 }
 
 // Legacy entry point used by cache warmup; delegate to unified handler
