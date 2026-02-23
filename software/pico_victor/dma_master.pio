@@ -21,7 +21,6 @@
 ; Bit 1 -> WR/ (GPIO 22)
 ; Bit 2 -> DT/R/ (GPIO 23)
 ; Bit 3 -> ALE  (GPIO 24)
-; Bit 4 -> DEN/ (GPIO 25)
 
 ; TX FIFO data format:
 ; First FIFO entry: Address + R/W bit
@@ -50,18 +49,18 @@ T0:                                ; Prepare for DMA read/write cycle
     wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
     wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go low
 T1:
-    set pins, 0b11111              ; Set control pins to output DEN=1, ALE=1, DT/R=1, WR/=1, RD=1 //ALE high to latch address
+    set pins, 0b1111               ; Set control pins to output ALE=1, DT/R=1, WR/=1, RD=1 //ALE high to latch address
     wait 1 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go high
     wait 0 GPIO CLOCK_5_PIN        ; Wait for CLK5 to go low
 T2:
-    set pins, 0b00111              ; Write: set control pins DEN=0, ALE=0, DT/R=1, WR=1, RD=1 // Pull ALE/DEN low to prepare for read or write
+    set pins, 0b0111               ; Write: set control pins ALE=0, DT/R=1, WR=1, RD=1 // Pull ALE/DEN low to prepare for read or write
     wait 1 GPIO CLOCK_15B_PIN      ; Wait for CLK15B to go high
     jmp !x T2_READ                 ; If x=0 (read), jump to T2_READ
     ; Fall through for write (x=1)
 
 T2_WRITE_INLINE:                   ; DMA Write, pico writing to bus
     out pins, ADDRESS_BUS_SIZE     ; Output data on BD0-BD7, A8-A19 continues to hold MSB of address
-    set pins, 0b00101              ; Write: set control pins DEN=0, ALE=0, DT/R=1, WR=0, RD=1 // WR/ low to write data    
+    set pins, 0b0101               ; Write: set control pins ALE=0, DT/R=1, WR=0, RD=1 // WR/ low to write data    
 
 T2_CONTINUE:
     wait 1 GPIO READY_PIN          ; Wait for READY to go high
@@ -80,12 +79,12 @@ T4:
     wait 1 GPIO CLOCK_5_PIN        ; T4 start (~600ns)
     wait 0 GPIO CLOCK_5_PIN        ; mid-T4 (~700ns)
     wait 1 GPIO CLOCK_5_PIN        ; T5 start (~800ns) - expansion RAM latches HERE
-    set pins, 0b00111              ; Set control pins to T4 close, DEN=0, ALE=0, DT/R=1, WR=1, RD=1  // WR/ and RD/ high to end cycle
-    set pins, 0b10111              ; Set control pins to T4 close, DEN=1, ALE=0, DT/R=1, WR=1, RD=1  // DEN high to end cycle
+    set pins, 0b0111              ; Set control pins to T4 close, ALE=0, DT/R=1, WR=1, RD=1  // WR/ and RD/ high to end cycle
+    set pins, 0b0111              ; Set control pins to T4 close, ALE=0, DT/R=1, WR=1, RD=1  // DEN high to end cycle
 .wrap
 
 T2_READ:
-    set pins, 0b00010              ; Read: set control pins for RD control DEN=0, ALE=0, DT/R=0, WR=1, RD=0 // RD/ low to read data
+    set pins, 0b0010              ; Read: set control pins for RD control ALE=0, DT/R=0, WR=1, RD=0 // RD/ low to read data
     out pindirs, ADDRESS_BUS_SIZE  ; set BD0-BD7 pins to input for RD cycle, A8-A19 remain output 0xFFF00
     jmp T2_CONTINUE                
 
@@ -108,8 +107,8 @@ static inline void dma_master_program_init(PIO pio, uint sm, uint offset, uint p
 
     printf("setting out pin mapping to %d, count %d\n", pin, ADDRESS_BUS_SIZE);
     sm_config_set_out_pins(&c, pin, ADDRESS_BUS_SIZE);
-    printf("setting set pin mapping to %d, count 5\n", RD_PIN);
-    sm_config_set_set_pins(&c, RD_PIN, 5);
+    printf("setting set pin mapping to %d, count 4\n", RD_PIN);
+    sm_config_set_set_pins(&c, RD_PIN, 4);
 
     // Shift Register configuration settings
     // Configure for both read and write operations

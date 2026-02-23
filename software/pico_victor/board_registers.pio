@@ -57,11 +57,11 @@ T2:
 ;fall through for read case
 T3_READ:                                   ; 8088 read cycle // pico's writing
     set x, FIFO_REG_READ side S_BOTH       ; flag read cycle to ARM and prepare to send data
-    in x, 1 side S_BOTH                    ; move the READ prefetch flag into ISR as MSB // asert XACK and EXTIO //ISR has 0[address]
+    in x, 1 side S_BOTH                    ; move READ flag into ISR as MSB // assert XACK and EXTIO //ISR has 0[address]
     push block side S_BOTH                 ; send address and read flag to ARM
     pull block side S_BOTH                 ; wait till we get the data back from the ARM
     out pins, DATA_SIZE side S_BOTH        ; drive BD0-BD7 with data for 8088 to read
-    out pindirs, DATA_SIZE side S_EXTIO    ; set BD0-BD7 as outputs // release XACK to allow 8088 to complete read cycle
+    out pindirs, DATA_SIZE side S_EXTIO    ; set BD0-BD7 as outputs to drive data // release XACK to allow 8088 to complete read cycle
     wait 1 GPIO RD_PIN [2] side S_EXTIO    ; wait for RD to go high (end of read cycle)
     
 T4:
@@ -72,7 +72,7 @@ T3_WRITE:                                  ; 8088 write cycle // pico's reading
     wait 1 GPIO READY_PIN side S_EXTIO     ; Wait for READY pin to go high to allow data to stabilize
     set x, FIFO_REG_WRITE side S_EXTIO     ; set write flag to signal to arm write payload
     in pins, DATA_SIZE side S_EXTIO        ; read data the 8088 is writing max 0xFF   //ISR has [data][address]
-    in x, 1 side S_EXTIO                   ; move the WRITE prefetch flag into ISR as MSBs //ISR has 1[data][address] 
+    in x, 1 side S_EXTIO                   ; move WRITE flag into ISR as MSB //ISR has 1[data][address]
     push block side 0                      ; send data received to arm for storage
     jmp T0 side 0                          ; jump to T0 for the next clock cycle
 
@@ -139,7 +139,7 @@ static inline void board_registers_program_init(PIO pio, uint sm, uint offset) {
         false, // optional: side-set is mandatory on every instruction
         true   // pindirs: use side-set to control pin direction (for open-drain)
     );
-    pio_sm_set_consecutive_pindirs(pio, sm, EXTIO_PIN, 2, true);
+    pio_sm_set_consecutive_pindirs(pio, sm, XACK_PIN, 2, true);
     printf("EXTIO_PIN Pin %d func: %d, dir: %d\n", 
            EXTIO_PIN, gpio_get_function(EXTIO_PIN), gpio_get_dir(EXTIO_PIN));
     uint32_t both = (1u << XACK_PIN) | (1u << EXTIO_PIN);  //bitmask for my two sideset pins

@@ -2,14 +2,12 @@
 
 This document shows the T-state timing and signaling between the three PIO state machines for different bus cycles.
 
-## Register Read Cycle (8088 reading from 0xEF300)
+## Register Read Cycle (8088 reading from 0xEF300, single-pass)
 
 ```mermaid
 sequenceDiagram
     participant BR as board_registers<br/>SM
-    participant BH as bus_output_helper<br/>SM
     participant ARM as ARM Core
-    participant EH as extio_helper<br/>SM
     participant BUS as 8088 Bus
 
     Note over BUS: T0: CLK5 goes low
@@ -18,39 +16,28 @@ sequenceDiagram
     BR->>BR: Detect 0xEF300 match
     BR->>BR: Store full 20-bit address
 
-    Note over BR: T2: Push prefetch
-    BR->>ARM: FIFO RX: 0x00 + address (PREFETCH)
-    BR->>EH: IRQ 0 (Assert EXTIO/)
+    Note over BR: T2: Assert XACK (open-drain), hold READY low
     BR->>BR: Check RD pin (low=read)
 
-    Note over BR: T3_READ: Wait for data
-    BR->>BR: wait READY (800ns window)
+    Note over BR: T3_READ: Single FIFO request/response
+    BR->>ARM: FIFO RX: [type=0][address]
+    BR->>BR: pull block (wait for ARM response)
 
-    Note over ARM: Process prefetch IRQ
-    ARM->>ARM: Lookup register value
-    ARM->>BH: FIFO TX: 8-bit data byte
+    Note over ARM: register_read_irq_isr
+    ARM->>ARM: Decode address + compute data + apply read side effects
+    ARM->>BR: FIFO TX: [0xFF pindirs][8-bit data]
 
-    Note over BR: Data ready in helper FIFO
-    BR->>BH: IRQ 1 (Output data now)
-
-    Note over BH: Pull data, output
-    BH->>BH: pull block (get data byte)
-    BH->>BH: jmp pin (HLDA=0, register cycle)
-    BH->>BUS: out pins 8 (BD0-BD7 = data)
-    BH->>BUS: out pindirs 8 (BD0-BD7 outputs)
+    Note over BR: Drive response and release wait state
+    BR->>BUS: out pins 8 (BD0-BD7 = data)
+    BR->>BUS: out pindirs 8 (BD0-BD7 outputs, XACK released)
 
     Note over BUS: T3: 8088 samples data
     BUS->>BUS: RD goes high
     BR->>BR: wait RD high (end of cycle)
 
-    Note over BR: T4: Commit & cleanup
-    BR->>ARM: FIFO RX: 0x01 + address (COMMIT)
-    BR->>BH: IRQ 4 (Tri-state bus)
-
-    Note over BH: Release bus
-    BH->>BH: wait irq 4
-    BH->>BUS: mov pindirs null (tri-state BD0-BD7)
-    EH->>EH: Release EXTIO/
+    Note over BR: T4/T0: Cleanup
+    BR->>BUS: Release EXTIO (side-set back to input)
+    BR->>BUS: Tri-state BD0-BD7 on next cycle setup
 
     Note over BR,BUS: Cycle complete, back to T0
 ```
@@ -206,21 +193,23 @@ sequenceDiagram
 
 | IRQ | Source | Destination | Phase | Purpose |
 |-----|--------|-------------|-------|---------|
-| **0** | board_registers | extio_helper | T2 | Assert EXTIO/ for register access |
-| **1** | board_registers OR dma_read_write | bus_output_helper | T2/T1 | Data ready in FIFO, start outputting |
+| **1** | dma_read_write | bus_output_helper | T1 | Output DMA address phase |
 | **2** | dma_read_write | bus_output_helper | T2 | Switch from address to data phase |
 | **3** | dma_read_write | bus_output_helper | T3 | Capture read data from BD0-BD7 |
-| **4** | board_registers OR dma_read_write | bus_output_helper | T4 | Cycle complete, tri-state bus |
+| **4** | dma_read_write | bus_output_helper | T4 | Cycle complete, tri-state bus |
+
+`board_registers` no longer uses inter-SM IRQ handshakes for register reads; it performs a direct FIFO round-trip with ARM Core 0 while XACK holds READY low.
 
 ## FIFO Protocol Summary
 
 ### board_registers → ARM (RX FIFO)
-- **Prefetch**: `0x00` (2 bits) + 20-bit address = "ARM, prepare data for this register"
-- **Commit**: `0x01` (2 bits) + 20-bit address = "ARM, read cycle completed"
-- **Write**: `0x02` (2 bits) + 8-bit data + 20-bit address = "ARM, 8088 wrote this value"
+- **Read**: `[type=0][address 20-bit]` (address in bits 30:11)
+- **Write**: `[type=1][data 8-bit][address 20-bit]` (data in bits 30:23, address in bits 22:3)
+
+### ARM → board_registers (TX FIFO)
+- **Register read response**: `[pindirs 0xFF][data 8-bit]` (16-bit pull consumed by `board_registers`)
 
 ### ARM → bus_output_helper (TX FIFO)
-- **Register read**: 8-bit data byte only
 - **DMA cycle**: First pulled in preamble (pindirs value 0xFFF00), then address pulled at runtime
 
 ### ARM → dma_read_write (TX FIFO)
@@ -232,7 +221,7 @@ sequenceDiagram
 
 ## Key Timing Points
 
-1. **Register reads have 800ns window**: READY signal insertion gives ARM plenty of time to respond to prefetch
-2. **DMA cycles are tightly timed**: ARM must preload FIFOs before initiating DMA
-3. **bus_output_helper is single arbiter**: Only this SM outputs to BD0-A19, eliminating PIO muxer conflicts
-4. **IRQs coordinate phase transitions**: Each SM signals the helper at appropriate cycle phases
+1. **Register reads are now deterministic**: XACK (open-drain) holds READY low until Core 0 returns a byte via FIFO.
+2. **Single-pass register semantics**: one read payload does both data return and read side effects; no commit payload.
+3. **DMA cycles remain tightly timed**: ARM must preload FIFOs before initiating DMA.
+4. **bus_output_helper remains DMA arbiter**: it coordinates DMA bus direction/tri-state transitions via IRQs 1/2/3/4.

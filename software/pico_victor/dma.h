@@ -79,7 +79,7 @@ static inline uint8_t sasi_extract_target_id(uint8_t selection_byte) {
     return (uint8_t)__builtin_ctz(target_mask);
 }
 
-// FIFO operation types, defines for the 2-bit pio payload type flag
+// FIFO operation types encoded in bit 31 of the payload word.
 #define FIFO_REG_READ    0x0
 #define FIFO_REG_WRITE   0x1
 
@@ -145,7 +145,7 @@ typedef struct {
     // Command/Status register (read/write)
     uint8_t command;
     // NOTE: volatile required - written by Core 1 (sasi_enter_status_phase),
-    // read by Core 0 ISR (status phase DATA prefetch)
+    // read by Core 0 ISR during single-pass DATA reads.
     volatile uint8_t status;
 
     // Bus status register emulation (read-only)

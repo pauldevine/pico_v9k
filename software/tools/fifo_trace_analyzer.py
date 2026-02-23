@@ -3,10 +3,16 @@
 fifo_trace_analyzer.py
 ~~~~~~~~~~~~~~~~~~~~~~
 
-Utility script to decode FIFO trace lines emitted by the cached DMA handlers.
-It ingests the `fast_log` output, reconstructs the address offsets referenced
-by each FIFO word, and optionally summarises activity for the DMA address
-registers (0x80/0xA0/0xC0).
+Utility script to decode FIFO TRACE lines emitted by the cached DMA handlers.
+It ingests `fast_log` output, reconstructs register offsets referenced by each
+FIFO word, and summarizes activity for register and DMA operations.
+
+The current protocol uses a 1-bit payload type:
+  - 0: read payload
+  - 1: write payload
+
+The script also recognizes legacy 2-bit prefetch/commit/write logs so archived
+captures remain readable.
 
 Example usage:
     python tools/fifo_trace_analyzer.py logs/pico_debug.log --summary
@@ -26,8 +32,9 @@ from typing import Iterable, Optional, Tuple
 
 
 DMA_REGISTER_BASE = 0xEF300
+DMA_REGISTER_LIMIT = DMA_REGISTER_BASE + 0x100
 
-# Trace flags copied from dma_ultra_fast_cached.c
+# Trace flags copied from fifo_helpers.h
 TRACE_FLAG_ERROR = 0x01
 TRACE_FLAG_WRITE = 0x02
 
@@ -104,18 +111,18 @@ class TraceEntry:
         return " ".join(parts)
 
 
-def decode_register_address(raw: int) -> Tuple[Optional[int], Optional[int], Optional[int], bool]:
-    address = (raw >> 10) & 0xFFFFF  # board_registers address in bits 29-10
-    in_range = DMA_REGISTER_BASE <= address < DMA_REGISTER_BASE + 0x100
+def decode_register_address(raw: int, *, shift: int) -> Tuple[int, Optional[int], Optional[int], bool]:
+    address = (raw >> shift) & 0xFFFFF
+    in_range = DMA_REGISTER_BASE <= address < DMA_REGISTER_LIMIT
     if not in_range:
-        return None, None, None, False
+        return address, None, None, False
     offset = (address - DMA_REGISTER_BASE) & 0xFFFFF
     masked_offset = dma_mask_offset(offset) & 0xFF
     return address, offset, masked_offset, True
 
 
-def decode_dma_address(raw: int) -> int:
-    return (raw >> 2) & 0xFFFFF  # DMA read/write address in bits 21-2
+def decode_dma_address(raw: int, *, shift: int = 2) -> int:
+    return (raw >> shift) & 0xFFFFF
 
 
 def parse_trace_lines(lines: Iterable[str]) -> Iterable[TraceEntry]:
@@ -147,30 +154,66 @@ def parse_trace_lines(lines: Iterable[str]) -> Iterable[TraceEntry]:
         in_range = False
         kind = "unknown"
 
-        if tag == 2:
-            # FIFO_REG_WRITE: address in bits 21-2, data in bits 29-22.
-            kind = "reg_write"
-            address = decode_dma_address(raw)
-            decoded_data = (raw >> 22) & 0xFF
-            in_range = DMA_REGISTER_BASE <= address < DMA_REGISTER_BASE + 0x100
-            if in_range:
-                offset = (address - DMA_REGISTER_BASE) & 0xFFFFF
-                masked_offset = dma_mask_offset(offset) & 0xFF
-        elif tag in (0, 1):
-            # FIFO_REG_PREFETCH (0) / FIFO_REG_READ_COMMIT (1) if address matches register range.
-            reg_address, reg_offset, reg_masked, reg_in_range = decode_register_address(raw)
+        if tag == 0:
+            # New protocol register read: [type=0][address bits 30:11]
+            reg_address, reg_offset, reg_masked, reg_in_range = decode_register_address(raw, shift=11)
             if reg_in_range:
                 address = reg_address
                 offset = reg_offset
                 masked_offset = reg_masked
                 in_range = True
-                kind = "reg_prefetch" if tag == 0 else "reg_commit"
+                kind = "reg_read"
             else:
-                # Otherwise treat as DMA read/write (PIO DMA path uses tag 0/1).
-                address = decode_dma_address(raw)
-                decoded_data = (raw >> 22) & 0xFF
+                # Legacy prefetch decode fallback: [tag bits 31:30][address bits 29:10]
+                legacy_addr, legacy_off, legacy_masked, legacy_in_range = decode_register_address(raw, shift=10)
+                if legacy_in_range:
+                    address = legacy_addr
+                    offset = legacy_off
+                    masked_offset = legacy_masked
+                    in_range = True
+                    kind = "reg_prefetch_legacy"
+                else:
+                    # DMA path payloads also use tag 0/1 but with different layout.
+                    address = decode_dma_address(raw, shift=2)
+                    decoded_data = (raw >> 22) & 0xFF
+                    in_range = True
+                    kind = "dma_read"
+        elif tag == 1:
+            # New protocol register write: [type=1][data bits 30:23][address bits 22:3]
+            write_address = decode_dma_address(raw, shift=3)
+            write_data = (raw >> 23) & 0xFF
+            if DMA_REGISTER_BASE <= write_address < DMA_REGISTER_LIMIT:
+                address = write_address
+                decoded_data = write_data
                 in_range = True
-                kind = "dma_read" if tag == 0 else "dma_write"
+                offset = (write_address - DMA_REGISTER_BASE) & 0xFFFFF
+                masked_offset = dma_mask_offset(offset) & 0xFF
+                kind = "reg_write"
+            else:
+                # Legacy commit fallback: [tag bits 31:30][address bits 29:10]
+                legacy_addr, legacy_off, legacy_masked, legacy_in_range = decode_register_address(raw, shift=10)
+                if legacy_in_range:
+                    address = legacy_addr
+                    offset = legacy_off
+                    masked_offset = legacy_masked
+                    in_range = True
+                    kind = "reg_commit_legacy"
+                else:
+                    address = decode_dma_address(raw, shift=2)
+                    decoded_data = (raw >> 22) & 0xFF
+                    in_range = True
+                    kind = "dma_write"
+        elif tag == 2:
+            # Legacy write: [tag bits 31:30][data bits 29:22][address bits 21:2]
+            address = decode_dma_address(raw, shift=2)
+            decoded_data = (raw >> 22) & 0xFF
+            in_range = DMA_REGISTER_BASE <= address < DMA_REGISTER_LIMIT
+            if in_range:
+                offset = (address - DMA_REGISTER_BASE) & 0xFFFFF
+                masked_offset = dma_mask_offset(offset) & 0xFF
+                kind = "reg_write_legacy"
+            else:
+                kind = "unknown_legacy_tag2"
 
         yield TraceEntry(
             index=index,
@@ -207,9 +250,9 @@ def validate_sequence(entries: Iterable[TraceEntry]) -> Tuple[Counter, Counter, 
         if entry.flags & TRACE_FLAG_ERROR:
             anomalies["explicit-error-flagged"] += 1
 
-        if entry.kind in ("reg_prefetch", "reg_commit"):
+        if entry.kind in ("reg_read", "reg_prefetch_legacy", "reg_commit_legacy"):
             summary[(entry.kind, entry.masked_offset)] += 1
-        elif entry.kind == "reg_write":
+        elif entry.kind in ("reg_write", "reg_write_legacy"):
             if not entry.in_range:
                 anomalies["reg_write-out-of-range"] += 1
             else:
@@ -228,6 +271,8 @@ def validate_sequence(entries: Iterable[TraceEntry]) -> Tuple[Counter, Counter, 
                 and entry.decoded_data != entry.logged_data
             ):
                 anomalies[f"{entry.kind}-data-mismatch"] += 1
+        elif entry.kind.startswith("unknown_legacy"):
+            anomalies["legacy-unknown"] += 1
         else:
             anomalies["unknown-kind"] += 1
 

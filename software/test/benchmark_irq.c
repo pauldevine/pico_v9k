@@ -31,28 +31,38 @@ typedef struct {
 // Test cases covering all register types
 static test_case_t test_cases[] = {
     // Control register tests
-    {0xEF300, 0x15, FIFO_REG_WRITE,    "Write control register"},
-    {0xEF300, 0x00, FIFO_PREFETCH_ADDRESS, "Read control register"},
+    {0xEF300, 0x15, FIFO_REG_WRITE, "Write control register"},
+    {0xEF300, 0x00, FIFO_REG_READ,  "Read control register"},
     
     // Data register tests  
-    {0xEF310, 0x55, FIFO_REG_WRITE,    "Write data register"},
-    {0xEF310, 0x00, FIFO_PREFETCH_ADDRESS, "Read data register"},
+    {0xEF310, 0x55, FIFO_REG_WRITE, "Write data register"},
+    {0xEF310, 0x00, FIFO_REG_READ,  "Read data register"},
     
     // Status register tests
-    {0xEF320, 0x00, FIFO_PREFETCH_ADDRESS, "Read status register"},
+    {0xEF320, 0x00, FIFO_REG_READ, "Read status register"},
     
     // Address register tests (most common)
-    {0xEF380, 0x00, FIFO_REG_WRITE,    "Write DMA addr low"},
-    {0xEF380, 0x00, FIFO_PREFETCH_ADDRESS, "Read DMA addr low"},
-    {0xEF3A0, 0x50, FIFO_REG_WRITE,    "Write DMA addr mid"},
-    {0xEF3A0, 0x00, FIFO_PREFETCH_ADDRESS, "Read DMA addr mid"},
-    {0xEF3C0, 0x0F, FIFO_REG_WRITE,    "Write DMA addr high"},
-    {0xEF3C0, 0x00, FIFO_PREFETCH_ADDRESS, "Read DMA addr high"},
+    {0xEF380, 0x00, FIFO_REG_WRITE, "Write DMA addr low"},
+    {0xEF380, 0x00, FIFO_REG_READ,  "Read DMA addr low"},
+    {0xEF3A0, 0x50, FIFO_REG_WRITE, "Write DMA addr mid"},
+    {0xEF3A0, 0x00, FIFO_REG_READ,  "Read DMA addr mid"},
+    {0xEF3C0, 0x0F, FIFO_REG_WRITE, "Write DMA addr high"},
+    {0xEF3C0, 0x00, FIFO_REG_READ,  "Read DMA addr high"},
 };
 
 // Simulate PIO FIFO access
 static uint32_t simulated_fifo_value;
 static uint32_t simulated_tx_value;
+
+static inline uint32_t encode_reg_read_payload(uint32_t address) {
+    // [type=0][address 20 bits] -> address lands in bits 30:11.
+    return (address & 0xFFFFFu) << 11;
+}
+
+static inline uint32_t encode_reg_write_payload(uint32_t address, uint8_t data) {
+    // [type=1][data 8 bits][address 20 bits]
+    return (1u << 31) | (((uint32_t)data & 0xFFu) << 23) | ((address & 0xFFFFFu) << 3);
+}
 
 // Mock PIO functions for benchmark mode using macros
 // This avoids redefinition errors with SDK functions
@@ -76,14 +86,11 @@ typedef void (*irq_handler_t)(void);
 static void benchmark_handler(irq_handler_t handler, const char *name, test_case_t *test) {
     // Prepare simulated FIFO value
     switch (test->payload_type) {
-        case FIFO_PREFETCH_ADDRESS:
-            simulated_fifo_value = dma_fifo_encode_prefetch(test->address);
-            break;
-        case FIFO_READ_COMMIT:
-            simulated_fifo_value = board_fifo_encode_read(test->address);
+        case FIFO_REG_READ:
+            simulated_fifo_value = encode_reg_read_payload(test->address);
             break;
         case FIFO_REG_WRITE:
-            simulated_fifo_value = dma_fifo_encode_write(test->address, test->data);
+            simulated_fifo_value = encode_reg_write_payload(test->address, test->data);
             break;
         default:
             simulated_fifo_value = 0;

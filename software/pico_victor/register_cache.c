@@ -88,9 +88,6 @@ void warm_caches(void) {
     // Small delay to let caches settle
     busy_wait_us(100);
 
-    // Reset FIFO bookkeeping and clear any stale payloads.
-    fifo_pending_prefetch = 0;
-
     // Clear the FIFOs so cache warming doesn't interfere with normal operation
     pio_sm_set_enabled(register_pio, register_control, false);
     pio_sm_clear_fifos(register_pio, register_control);

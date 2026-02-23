@@ -13,7 +13,6 @@
 #include "sasi_log.h"
 #include "logging.h"
 #include "reg_queue_processor.h"
-#include "fifo_helpers.h"
 #include "pico_fujinet/spi.h"
 
 // Set to 1 to enable debug printf during DMA operations (WARNING: breaks timing-critical bus operations)
@@ -392,6 +391,7 @@ void ontime_pin_setup() {
     gpio_pull_up(DEN_PIN);  // DEN is active low, so pull-up
     gpio_pull_up(SSO_PIN);  // SSO is active low, so pull-up
     gpio_pull_up(DLATCH_PIN); // DLATCH is active low, so pull-up
+    gpio_pull_up(XACK_PIN); // XACK is active low, so pull-up
     gpio_pull_up(EXTIO_PIN); // EXTIO is active low, so pull-up
 
     // DMA IRQ line: drive low by default, assert when interrupts are pending.
@@ -411,7 +411,7 @@ static inline void setup_pins_dma_control() {
     
     //setup data pins BD0 to A19 to be owned by PIO as inputs
     uint function = GPIO_FUNC_PIO0 + pio_get_index(PIO_DMA_MASTER);
-    for (int pin = BD0_PIN; pin <= DEN_PIN; ++pin) {
+    for (int pin = BD0_PIN; pin <= ALE_PIN; ++pin) {
         gpio_set_function(pin, function);
         pio_gpio_init(PIO_DMA_MASTER, pin);
         pio_sm_set_pins_with_mask(PIO_DMA_MASTER, DMA_SM_CONTROL, 0u, 1u << pin); // preload latch low
@@ -430,9 +430,10 @@ static inline void setup_pins_dma_control() {
     setup_pin_dma_control(WR_PIN, GPIO_OUT, high);   // WR/ output, preload high
     setup_pin_dma_control(DTR_PIN, GPIO_OUT, high);  // DTR/ output, preload high
     setup_pin_dma_control(EXTIO_PIN, GPIO_OUT, high);  // EXTIO/ output, preload high
+    setup_pin_dma_control(DEN_PIN, GPIO_OUT, high);   // DEN/ output, preload high
 
-    setup_pin_dma_control(ALE_PIN, GPIO_OUT, low);   // ALE/ output, preload low
-    setup_pin_dma_control(DEN_PIN, GPIO_OUT, low);   // DEN/ output, preload low
+    setup_pin_dma_control(ALE_PIN, GPIO_OUT, low);   // ALE output, preload low
+    
     
     setup_pin_dma_control(READY_PIN, GPIO_IN, low); // READY/ input, preload low
     setup_pin_dma_control(CLOCK_5_PIN, GPIO_IN, low); // CLOCK_5 input, preload low
@@ -569,10 +570,9 @@ static inline bool start_dma_control() {
                            dma_registers.bus_ctrl);
         return false;
     }
-    // Quiesce register SM before taking bus, and drain any queued events
+    // Quiesce register SM before taking bus.
     pio_sm_set_enabled(PIO_REGISTERS, REG_SM_CONTROL, false);
     pio_sm_clear_fifos(PIO_REGISTERS, REG_SM_CONTROL);
-    fifo_pending_prefetch = 0;  // Reset stale prefetch count after FIFO clear
 
     //setup all the pins to be controlled by PIO DMA SM
     setup_pins_dma_control();
@@ -840,7 +840,6 @@ void dma_device_reset(dma_registers_t *dma) {
 
     // Clear interrupt
     dma_update_interrupts(dma, false);
-    fifo_pending_prefetch = 0;
     // Ensure cached status reflects bus-free after reset
     cached_status_sync_from_bus(dma);
     cached_set_data(0x00);

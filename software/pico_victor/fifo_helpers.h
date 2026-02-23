@@ -30,12 +30,10 @@ typedef struct {
 fifo_trace_entry_t fifo_trace[FIFO_TRACE_SIZE];
 volatile uint32_t fifo_trace_head = 0;
 volatile uint32_t fifo_trace_tail = 0;
-volatile uint32_t fifo_pending_prefetch = 0;
 #else
 extern fifo_trace_entry_t fifo_trace[FIFO_TRACE_SIZE];
 extern volatile uint32_t fifo_trace_head;
 extern volatile uint32_t fifo_trace_tail;
-extern volatile uint32_t fifo_pending_prefetch;
 #endif
 
 // For pins > 31, we need to use different registers

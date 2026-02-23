@@ -109,11 +109,11 @@ bool defer_dequeue(defer_queue_t *queue, defer_entry_t *entry) {
     return true;
 }
 
-// Read operations are handled entirely by the fast cached handler
-// We only need to process side effects here, not update cache values
-// The cache was already read and returned by the fast handler
+// Read operations are handled entirely by the fast cached handler.
+// We only need to process side effects here, not update cache values.
+// The cache value was already returned by the fast handler.
 void defer_process_read(dma_registers_t *dma, uint32_t raw_value) {
-    // Extract address FIFO has 00[address] - REG_READ payload
+    // Extract address from READ payload format: [type=0][address 20 bits].
     if (++read_request_counter >= 1000) {
         read_request_counter = 0;
         //defer_log("1000 READ requests processed\n");
@@ -203,10 +203,9 @@ void defer_process_read(dma_registers_t *dma, uint32_t raw_value) {
     }
 }
 
-//Write operations need to update both cache and actual DMA state
-//by processing side effects
+// Write operations update both cache and actual DMA state via side effects.
 void defer_process_write(dma_registers_t *dma, uint32_t raw_value) {
-    // Extract address FIFO has 10[data][address]
+    // Extract fields from WRITE payload format: [type=1][data 8 bits][address 20 bits].
     uint32_t address = dma_fifo_write_address(raw_value);
     uint32_t offset = address - DMA_REGISTER_BASE;
     uint32_t masked_offset = dma_mask_offset(offset);
@@ -375,13 +374,11 @@ void defer_process_write(dma_registers_t *dma, uint32_t raw_value) {
 void defer_process_entry(dma_registers_t *dma, const defer_entry_t *entry) {
     
     uint32_t raw_value = entry->raw_value;
-    //extract 2-bit payload type flag
-    uint32_t payload_type = (raw_value >> 30) & 0x03;
-    uint32_t address;
-    uint32_t offset;
+    // Extract 1-bit payload type flag (bit 31): 0=read, 1=write.
+    uint32_t payload_type = fifo_payload_type(raw_value);
 
     switch (payload_type) {
-        case FIFO_REG_READ_COMMIT:
+        case FIFO_REG_READ:
             // Read operation - process side effects only
             defer_process_read(dma, raw_value);
             break;
