@@ -22,8 +22,8 @@
 #define ADDRESS_DATA_CONBIT_SIZE 29  // 20-bit address, 8-bit data, 1-bit control
 #define PIO_FULL_SIZE 32
 
-#define DMA_BATCH_SIZE 128  // Number of bytes per DMA batch transfer
-#define DMA_SHARE_WAIT_US 40   // Wait time after releasing bus before re-acquiring (in microseconds)
+#define DMA_BATCH_SIZE 256  // Bytes per DMA batch transfer (2 batches per 512-byte sector)
+#define DMA_SHARE_WAIT_US 8   // Small bus-share pause between batches (microseconds)
 #define DMA_TIMEOUT_US 2000  // Timeout for DMA master acquisition (in microseconds)
 
 #define UART_TX_PIN 0
@@ -261,8 +261,8 @@ void core1_main();
 void setup_bus_control();
 // Global DMA registers — lives in scratch_x RAM for contention-free Core 1 access.
 extern dma_registers_t dma_registers;
-void dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_address);
-void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_address);
+bool dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_address);
+bool dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_address);
 
 // Hold/release the Victor 8088 bus via HOLD/HLDA handshake.
 // Use around slow SD card I/O to prevent the BIOS timeout counter from advancing.

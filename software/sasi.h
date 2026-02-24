@@ -77,7 +77,7 @@ void handle_test_unit_ready(dma_registers_t *dma);
 void handle_xebec_diagnostic(dma_registers_t *dma, uint8_t diagnostic_type);
 
 // Disk read (uses FujiNet when available)
-void read_sector_from_disk(dma_registers_t *dma, uint32_t sector, uint8_t *buffer);
+bool read_sector_from_disk(dma_registers_t *dma, uint32_t sector, uint8_t *buffer);
 
 // Command lifecycle
 bool command_complete(uint8_t *command_buffer, int cmd_index);

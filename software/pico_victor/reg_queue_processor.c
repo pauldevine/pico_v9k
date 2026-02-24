@@ -144,42 +144,9 @@ void defer_process_read(dma_registers_t *dma, uint32_t raw_value) {
             break;
 
         case REG_DATA:
-            // Data register read - handle phase transitions
-            // Core 1 (deferred processor) is the sole owner of bus_ctrl to avoid race conditions.
+            // DATA read side effects are handled in the fast IRQ path for single-pass reads.
+            // Keep this branch as a no-op to avoid double phase advancement.
             sasi_trace_event(TRACE_DATA_READ, dma->bus_ctrl, dma->state.status_pending, cached_regs.values[REG_DATA]);
-            if (dma->bus_ctrl & SASI_MSG_BIT) {
-                // Message phase - host read the message byte, release bus
-                defer_log("DEFER_READ: Message phase complete, releasing bus\n");
-                sasi_trace_event(TRACE_BUS_FREE, dma->bus_ctrl, 0, 0);
-                dma->bus_ctrl = 0;  // Clear all bus signals (bus free)
-                __dmb();
-                dma->state.non_dma_req = 0;
-                dma->state.status_pending = 0;
-                dma_update_interrupts(dma, false);
-                // NOTE: ISR already advanced cache to bus-free (register_irq_handlers.c:336-340)
-                // Do NOT call cached_status_sync_from_bus here - it would race with ISR.
-            } else if ((dma->bus_ctrl & (SASI_CTL_BIT | SASI_INP_BIT)) ==
-                        (SASI_CTL_BIT | SASI_INP_BIT)) {
-                // Status phase - host read status byte, transition to message phase
-                if (dma->state.status_pending) {
-                    defer_log("DEFER_READ: Status phase complete, entering message phase\n");
-                    sasi_trace_event(TRACE_MSG_PHASE, dma->bus_ctrl, 1, 0);
-                    dma->state.status_pending = 0;
-                    dma->state.non_dma_req = 1;
-                    dma->bus_ctrl |= SASI_MSG_BIT;  // Add MSG bit for message phase (0x0F -> 0x1F)
-                    __dmb();
-                    dma_update_interrupts(dma, true);
-                    // NOTE: ISR already advanced cache to message phase (register_irq_handlers.c:341-346)
-                    // Do NOT call cached_status_sync_from_bus or cached_set_data here.
-                }
-            } else if ((dma->bus_ctrl & (SASI_CTL_BIT | SASI_INP_BIT)) == SASI_INP_BIT) {
-                // Data-in phase (CTL=0, INP=1) - clear request after read
-                dma->state.non_dma_req = 0;
-            } else if (dma->state.non_dma_req) {
-                // Command phase (CTL=1, INP=0) or Data-out phase (CTL=0, INP=0)
-                // Reading DATA is unexpected here
-                defer_log("DEFER_READ: DATA read during unexpected phase, bus_ctrl=0x%02X\n", dma->bus_ctrl);
-            }
 #if DEFER_VERBOSE_LOG
             defer_log("DEFER_READ: DATA read complete, bus_ctrl=0x%02X, status_cache=0x%02X\n",
                      dma->bus_ctrl, cached_regs.values[REG_STATUS]);
@@ -406,9 +373,6 @@ void defer_worker_main(void) {
         while (defer_dequeue(&defer_queue, &entry)) {
             defer_process_entry(dma, &entry);
         }
-
-        // Flush SASI command log to SD card when bus is idle
-        sasi_log_flush_if_ready(dma);
 
         // Emit recorded FIFO tag trace entries for debugging
         // DISABLED: causes queue overflow due to fast_log overhead

@@ -268,7 +268,8 @@ void __time_critical_func(register_read_irq_isr)() {
                 } else if (masked_offset == REG_DATA) {
                     // Single-pass DATA read model:
                     // 1) return current byte now, 2) advance visible cache phase now,
-                    // 3) enqueue deferred processing to reconcile bus_ctrl/state.
+                    // 3) advance bus_ctrl/state now in lockstep with cache.
+                    dma_registers_t *dma = &dma_registers;
                     uint8_t cached_status_before = cached->values[REG_STATUS] & 0x1Fu;
                     uint8_t phase_before = cached_status_before & (SASI_CTL_BIT | SASI_INP_BIT | SASI_MSG_BIT);
 #if REG_IRQ_FAST_TRACE_ENABLE
@@ -281,23 +282,41 @@ void __time_critical_func(register_read_irq_isr)() {
                         cached->values[REG_DATA] = 0x00;
                         cached->values[REG_STATUS] = 0x00;
                         cached->values[0x30] = 0x00;
+
+                        dma->bus_ctrl = 0x00;
+                        dma->state.non_dma_req = 0;
+                        dma->state.status_pending = 0;
+                        dma->state.asserting_ack = 0;
+                        __dmb();  // Ensure bus_ctrl update is visible before IRQ line update.
+                        dma_update_interrupts(dma, false);
                     } else if (phase_before == (SASI_CTL_BIT | SASI_INP_BIT)) {
                         // Status phase: serve authoritative status byte, then advance to message phase.
-                        dma_registers_t *dma = &dma_registers;
-                        data = dma ? dma->status : cached->values[REG_DATA];
+                        data = dma->status;
                         uint8_t next_status = cached_status_before | SASI_MSG_BIT;
                         cached->values[REG_STATUS] = next_status;
                         cached->values[0x30] = next_status;
                         cached->values[REG_DATA] = 0x00;  // Next DATA read returns message byte.
+
+                        dma->state.status_pending = 0;
+                        dma->state.non_dma_req = 1;
+                        dma->bus_ctrl |= (SASI_BSY_BIT | SASI_REQ_BIT | SASI_CTL_BIT | SASI_INP_BIT | SASI_MSG_BIT);
+                        dma->bus_ctrl &= ~SASI_ACK_BIT;
+                        __dmb();  // Ensure bus_ctrl update is visible before IRQ line update.
+                        dma_update_interrupts(dma, true);
                     } else {
                         // Command/data/bus-free path: return the currently cached DATA byte.
                         data = cached->values[REG_DATA];
+                        if (dma->state.non_dma_req) {
+                            trace_flags |= FIFO_TRACE_FLAG_ERROR;
+                            reg_irq_warn("REG IRQ WARN: DATA read in unexpected phase status=0x%02X bus=0x%02X\n",
+                                         cached_status_before,
+                                         dma->bus_ctrl);
+                        }
                     }
 
 #if REG_IRQ_FAST_TRACE_ENABLE
                     {
-                        dma_registers_t *dma = &dma_registers;
-                        uint8_t bus_ctrl_snapshot = dma ? dma->bus_ctrl : 0;
+                        uint8_t bus_ctrl_snapshot = dma->bus_ctrl;
                         reg_irq_trace_record_data_transition(cached_status_before,
                                                              cached_data_before,
                                                              cached->values[REG_STATUS] & 0x1F,
@@ -305,7 +324,8 @@ void __time_critical_func(register_read_irq_isr)() {
                                                              bus_ctrl_snapshot);
                     }
 #endif
-                    enque_result = true;
+                    // DATA phase side effects are handled fully in this fast path.
+                    enque_result = false;
                 } else if (masked_offset == REG_STATUS || masked_offset == 0x30) {
                     // STATUS/0x30 reads clear IRQ latch but do not advance SASI phase.
                     data = cached->values[masked_offset];
@@ -392,7 +412,7 @@ void __time_critical_func(register_read_irq_isr)() {
                     }
                 }
 
-                if (valid_offset) {
+                if (valid_offset && masked_offset != REG_DATA) {
                     cached->values[masked_offset] = data;
                     if (masked_offset == REG_STATUS) {
                         cached->values[0x30] = data;

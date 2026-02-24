@@ -91,6 +91,24 @@ static int sasi_cmd_index = 0;
 // Diagnostic trace buffer - records last N events for post-mortem debugging
 static sasi_trace_t sasi_trace;
 
+#define SASI_STATUS_GOOD            0x00
+#define SASI_STATUS_CHECK_CONDITION 0x02
+
+#ifndef SASI_STRICT_DMA_ERRORS
+#define SASI_STRICT_DMA_ERRORS 1
+#endif
+
+#ifndef SASI_DMA_SECTOR_RETRIES
+#define SASI_DMA_SECTOR_RETRIES 8
+#endif
+
+#ifndef SASI_DMA_RETRY_WAIT_US
+#define SASI_DMA_RETRY_WAIT_US 25
+#endif
+
+static void signal_command_complete_with_status(dma_registers_t *dma, uint8_t status);
+static void signal_dma_failure_status(dma_registers_t *dma);
+
 void sasi_trace_init(void) {
     memset(&sasi_trace, 0, sizeof(sasi_trace));
 }
@@ -270,7 +288,10 @@ void route_to_sasi_target(dma_registers_t *dma, uint8_t *cmd, int len) {
                 cached_status_sync_from_bus(dma);
 
                 // Read parameter bytes from Victor RAM via DMA.
-                dma_read_from_victor_ram(params, sizeof(params), dma->dma_address.full);
+                if (!dma_read_from_victor_ram(params, sizeof(params), dma->dma_address.full)) {
+                    signal_dma_failure_status(dma);
+                    break;
+                }
                 dma->dma_address.full += sizeof(params);
                 cached_sync_dma_address(dma);
 
@@ -448,6 +469,11 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
     // timeout/retry that writes new address registers mid-transfer corrupts the
     // in-flight address via torn read/write across cores.
     uint32_t local_dma_addr = dma->dma_address.full;
+    uint16_t completed_blocks = 0;
+    bool transfer_ok = true;
+    bool storage_read_ok = true;
+    bool dma_transfer_ok = true;
+    storage_backend_t backend = storage_get_backend();
 
     // Simulate reading from disk and DMA to system RAM
 #if SASI_DMA_WRITE_VERIFY
@@ -461,7 +487,19 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
         }
 
         uint8_t sector_data[512];
-        read_sector_from_disk(dma, sector + i, sector_data);
+        bool held_for_storage = false;
+        if (backend == STORAGE_BACKEND_SDCARD) {
+            held_for_storage = hold_victor_bus();
+        }
+        bool sector_read_ok = read_sector_from_disk(dma, sector + i, sector_data);
+        if (held_for_storage) {
+            release_victor_bus();
+        }
+        if (!sector_read_ok) {
+            transfer_ok = false;
+            storage_read_ok = false;
+            break;
+        }
 
         // Switch to DATA IN just before DMA transfer
         dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_CTL_BIT | SASI_ACK_BIT);
@@ -469,11 +507,27 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
         __dmb();
         cached_status_sync_from_bus(dma);
 
-        // DMA transfer to system RAM using local address (immune to ISR overwrites)
-        dma_write_to_victor_ram(sector_data, 512, local_dma_addr);
+        // DMA transfer to system RAM using local address (immune to ISR overwrites).
+        // Retry transient DMA timeout errors that appear during long multi-sector reads.
+        bool dma_ok = false;
+        for (uint8_t attempt = 0; attempt < SASI_DMA_SECTOR_RETRIES; attempt++) {
+            if (dma_write_to_victor_ram(sector_data, 512, local_dma_addr)) {
+                dma_ok = true;
+                break;
+            }
+            if (attempt + 1 < SASI_DMA_SECTOR_RETRIES) {
+                sleep_us(SASI_DMA_RETRY_WAIT_US);
+            }
+        }
+        if (!dma_ok) {
+            transfer_ok = false;
+            dma_transfer_ok = false;
+            break;
+        }
 
         // Auto-increment local DMA address
         local_dma_addr += 512;
+        completed_blocks++;
 
         // If more sectors remain, return to COMMAND busy while processing next sector
         if (i + 1 < blocks) {
@@ -491,6 +545,7 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
     }
 
 #if SASI_DMA_WRITE_VERIFY
+    if (transfer_ok) {
     // Verification: verify FIRST sector to check if DMA read-back works
     // Testing both on-board and expansion RAM
     {
@@ -499,7 +554,9 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
         uint8_t readback[512];
 
         // Re-read expected data from disk
-        read_sector_from_disk(dma, sector, expected);
+        if (!read_sector_from_disk(dma, sector, expected)) {
+            memset(expected, 0x00, sizeof(expected));
+        }
         uint8_t expected_crc = sasi_crc8(expected, 512);
 
         // Read back just the first 8 bytes to minimize DMA time
@@ -525,17 +582,32 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
                    readback[4], readback[5], readback[6], readback[7]);
         }
     }
+    }
 #endif
 
     if (dma) {
-        dma->logical_block.full = sector + blocks;
-        dma->block_count.full = 0;
+        dma->logical_block.full = sector + completed_blocks;
+        dma->block_count.full = transfer_ok ? 0 : (blocks - completed_blocks);
         // Write back final local address so completion log and BIOS readback are correct
         dma->dma_address.full = local_dma_addr;
     }
 
     // Signal completion to host
     cached_sync_dma_address(dma);
+    if (!transfer_ok) {
+        if (!storage_read_ok) {
+            sasi_printf("SASI: READ storage failure at LBA %lu\n",
+                        (unsigned long)(sector + completed_blocks));
+            signal_command_complete_with_status(dma, SASI_STATUS_CHECK_CONDITION);
+        } else if (!dma_transfer_ok) {
+            sasi_printf("SASI: READ DMA failure at LBA %lu\n",
+                        (unsigned long)(sector + completed_blocks));
+            signal_dma_failure_status(dma);
+        } else {
+            signal_dma_failure_status(dma);
+        }
+        return;
+    }
     signal_command_complete(dma);
 }
 
@@ -561,9 +633,14 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
     cached_status_sync_from_bus(dma);
 
     uint8_t target = dma ? (dma->selected_target & 0x07) : 0;
+    storage_backend_t backend = storage_get_backend();
 
     // Snapshot DMA address - same cross-core race protection as handle_read_sectors
     uint32_t local_dma_addr = dma->dma_address.full;
+    uint16_t completed_blocks = 0;
+    bool dma_transfer_ok = true;
+    bool storage_write_ok = true;
+    bool any_storage_writes = false;
 
     for (uint16_t i = 0; i < blocks; i++) {
         // Abort immediately if host sent a RESET while we were busy
@@ -578,8 +655,22 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
         __dmb();
         cached_status_sync_from_bus(dma);
 
-        // Read from Victor RAM into local buffer using local address
-        dma_read_from_victor_ram(sector_data, 512, local_dma_addr);
+        // Read from Victor RAM into local buffer using local address.
+        // Retry transient DMA timeout errors that appear during long command bursts.
+        bool dma_ok = false;
+        for (uint8_t attempt = 0; attempt < SASI_DMA_SECTOR_RETRIES; attempt++) {
+            if (dma_read_from_victor_ram(sector_data, 512, local_dma_addr)) {
+                dma_ok = true;
+                break;
+            }
+            if (attempt + 1 < SASI_DMA_SECTOR_RETRIES) {
+                sleep_us(SASI_DMA_RETRY_WAIT_US);
+            }
+        }
+        if (!dma_ok) {
+            dma_transfer_ok = false;
+            break;
+        }
 
 #if SASI_DMA_READ_VERIFY
         // Verify DMA read against expected test pattern (for dma_verify.c round-trip test)
@@ -598,7 +689,31 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
         }
 #endif // SASI_DMA_READ_VERIFY
 
+        bool write_ok = false;
+        if (storage_is_mounted(target)) {
+            bool held_for_storage = false;
+            if (backend == STORAGE_BACKEND_SDCARD) {
+                held_for_storage = hold_victor_bus();
+            }
+            write_ok = storage_write_sector(target, sector + i, sector_data, 512);
+            if (held_for_storage) {
+                release_victor_bus();
+            }
+            if (write_ok) {
+                any_storage_writes = true;
+            }
+        } else if (backend != STORAGE_BACKEND_SDCARD) {
+            uint8_t device = DEVICE_DISK_BASE + target;
+            write_ok = fujinet_write_sector(device, sector + i, sector_data, 512);
+        }
+
+        if (!write_ok) {
+            storage_write_ok = false;
+            break;
+        }
+
         local_dma_addr += 512;
+        completed_blocks++;
 
         // If more sectors remain, return to COMMAND busy while processing next sector
         if (i + 1 < blocks) {
@@ -606,20 +721,6 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
             dma->bus_ctrl |= (SASI_BSY_BIT | SASI_CTL_BIT);
             __dmb();
             cached_status_sync_from_bus(dma);
-        }
-
-        // Try storage abstraction layer first (handles SD card, FujiNet, etc.)
-        bool write_ok = false;
-        if (storage_is_mounted(target)) {
-            write_ok = storage_write_sector(target, sector + i, sector_data, 512);
-        }
-
-        // Fall back to FujiNet direct access if storage layer not available
-        if (!write_ok) {
-            uint8_t device = DEVICE_DISK_BASE + target;
-            if (!fujinet_write_sector(device, sector + i, sector_data, 512)) {
-                sasi_printf("Warning: write sector LBA %lu failed, continuing\n", (unsigned long)(sector + i));
-            }
         }
     }
 
@@ -630,18 +731,37 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
     }
 
     // Sync all written sectors to persistent storage in one operation
-    if (storage_is_mounted(target)) {
-        storage_sync(target);
+    if (storage_write_ok && any_storage_writes && storage_is_mounted(target)) {
+        bool held_for_storage = false;
+        if (backend == STORAGE_BACKEND_SDCARD) {
+            held_for_storage = hold_victor_bus();
+        }
+        storage_write_ok = storage_sync(target);
+        if (held_for_storage) {
+            release_victor_bus();
+        }
     }
 
     if (dma) {
-        dma->logical_block.full = sector + blocks;
-        dma->block_count.full = 0;
+        dma->logical_block.full = sector + completed_blocks;
+        dma->block_count.full = (dma_transfer_ok && storage_write_ok) ? 0 : (blocks - completed_blocks);
         // Write back final local address so completion log and BIOS readback are correct
         dma->dma_address.full = local_dma_addr;
     }
 
     cached_sync_dma_address(dma);
+    if (!dma_transfer_ok || !storage_write_ok) {
+        if (!storage_write_ok) {
+            sasi_printf("SASI: WRITE storage failure at LBA %lu\n",
+                        (unsigned long)(sector + completed_blocks));
+            signal_command_complete_with_status(dma, SASI_STATUS_CHECK_CONDITION);
+        } else {
+            sasi_printf("SASI: WRITE DMA failure at LBA %lu\n",
+                        (unsigned long)(sector + completed_blocks));
+            signal_dma_failure_status(dma);
+        }
+        return;
+    }
     signal_command_complete(dma);
 }
 
@@ -682,7 +802,10 @@ void handle_request_sense(dma_registers_t *dma, uint8_t *cmd) {
     cached_status_sync_from_bus(dma);
 
     // Transfer sense data to host via DMA
-    dma_write_to_victor_ram(sense_data, size, dma->dma_address.full);
+    if (!dma_write_to_victor_ram(sense_data, size, dma->dma_address.full)) {
+        signal_dma_failure_status(dma);
+        return;
+    }
     dma->dma_address.full += size;
     cached_sync_dma_address(dma);
 
@@ -704,7 +827,10 @@ void handle_mode_select(dma_registers_t *dma, uint8_t *cmd) {
         cached_status_sync_from_bus(dma);
 
         // Read parameter list from Victor RAM (ignore content for now)
-        dma_read_from_victor_ram(params, param_len, dma->dma_address.full);
+        if (!dma_read_from_victor_ram(params, param_len, dma->dma_address.full)) {
+            signal_dma_failure_status(dma);
+            return;
+        }
         dma->dma_address.full += param_len;
         cached_sync_dma_address(dma);
     }
@@ -755,19 +881,31 @@ bool command_complete(uint8_t *command_buffer, int cmd_index) {
     return cmd_index >= 6;
 }
 
-void signal_command_complete(dma_registers_t *dma) {
+static void signal_command_complete_with_status(dma_registers_t *dma, uint8_t status) {
     // Log command completion to SD card
     sasi_log_cmd_complete(sasi_command_buffer[0],
                           dma ? dma->selected_target : 0,
-                          0x00,  /* GOOD status */
+                          status,
                           dma ? dma->logical_block.full : 0,
                           0,
                           dma ? dma->dma_address.full : 0,
                           dma ? dma->bus_ctrl : 0);
 
-    // After data/command phase, send GOOD status then message-in 0x00
-    sasi_enter_status_phase(dma, 0x00);
+    // After data/command phase, send status then message-in 0x00
+    sasi_enter_status_phase(dma, status);
     __dmb();  // Ensure bus_ctrl update is visible
+}
+
+static void signal_dma_failure_status(dma_registers_t *dma) {
+#if SASI_STRICT_DMA_ERRORS
+    signal_command_complete_with_status(dma, SASI_STATUS_CHECK_CONDITION);
+#else
+    signal_command_complete(dma);
+#endif
+}
+
+void signal_command_complete(dma_registers_t *dma) {
+    signal_command_complete_with_status(dma, SASI_STATUS_GOOD);
 }
 
 void handle_test_unit_ready(dma_registers_t *dma) {
@@ -775,23 +913,33 @@ void handle_test_unit_ready(dma_registers_t *dma) {
     sasi_enter_status_phase(dma, 0x00);
 }
 
-void read_sector_from_disk(dma_registers_t *dma, uint32_t sector, uint8_t *buffer) {
+bool read_sector_from_disk(dma_registers_t *dma, uint32_t sector, uint8_t *buffer) {
     uint8_t target = dma ? (dma->selected_target & 0x07) : 0;
+    storage_backend_t backend = storage_get_backend();
 
     // Try storage abstraction layer first (handles SD card, FujiNet, etc.)
     if (storage_is_mounted(target)) {
         if (storage_read_sector(target, sector, buffer, 512)) {
-            return;
+            return true;
         }
         sasi_printf("Warning: storage_read_sector failed for target %d, LBA %lu\n",
                     target, (unsigned long)sector);
+        return false;
     }
 
-    // Fall back to FujiNet direct access if storage layer not available
+    // If SD backend is active but target is not mounted, don't touch FujiNet SPI path.
+    if (backend == STORAGE_BACKEND_SDCARD) {
+        memset(buffer, 0x00, 512);
+        return false;
+    }
+
+    // Fall back to FujiNet direct access only when SD backend is not active
     uint8_t device = DEVICE_DISK_BASE + target;
     if (!fujinet_read_sector(device, sector, buffer, 512)) {
         // Last resort: generate deterministic test data
         for (int i = 0; i < 512; i++) buffer[i] = (uint8_t)((sector + i) & 0xFF);
+        return false;
     }
     sasi_printf("RD sector %lu target %d\n", (unsigned long)sector, target);
+    return true;
 }

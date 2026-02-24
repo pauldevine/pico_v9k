@@ -66,9 +66,13 @@ void sasi_log_cmd_complete(uint8_t opcode, uint8_t target, uint8_t status,
 void sasi_log_dma_error(uint8_t error_code, uint32_t dma_addr, uint8_t bus_ctrl);
 
 /* Flush buffered entries to SD card when bus is idle.
- * Call from the Core 1 defer worker loop. Safe to call frequently;
+ * Call from the Core 0 main loop. Safe to call frequently;
  * only writes when bus_ctrl == 0 and enough idle time has elapsed. */
 void sasi_log_flush_if_ready(const dma_registers_t *dma);
+
+/* Force a flush of buffered log entries immediately.
+ * Intended for manual debug control from UART command handlers. */
+void sasi_log_flush_now(void);
 
 /* Query whether logging is currently active */
 bool sasi_log_is_enabled(void);

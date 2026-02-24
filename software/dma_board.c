@@ -1,5 +1,6 @@
 #include <stdio.h>
 #include <string.h>
+#include <ctype.h>
 
 
 #include "pico/stdlib.h"
@@ -18,6 +19,7 @@
 #include "sasi_log.h"
 #include "pico_storage/storage.h"
 #include "pico_storage/sd_storage.h"
+#include "pico_storage/fatfs_guard.h"
 
 // Storage backend selection
 // Set to 1 to use SD card, 0 to use FujiNet
@@ -30,7 +32,62 @@
 #define SD_DISK_IMAGE "victor.img"
 #endif
 
+#ifndef SASI_LOG_AUTO_FLUSH_DEFAULT
+#define SASI_LOG_AUTO_FLUSH_DEFAULT 0
+#endif
+
 extern queue_t log_queue;
+
+#ifndef CORE1_STACK_WORDS
+#define CORE1_STACK_WORDS 2048u  // 8 KiB explicit Core1 stack for deferred + FatFS workload
+#endif
+
+static uint32_t core1_stack[CORE1_STACK_WORDS] __attribute__((aligned(8)));
+
+static void print_uart_help(void) {
+    printf("\nUART commands:\n");
+    printf("  h/? : show this help\n");
+    printf("  t   : dump SASI trace to UART\n");
+    printf("  f   : force SASI_LOG.TXT flush now\n");
+    printf("  a   : toggle automatic log flush\n");
+    printf("\n");
+}
+
+static void handle_uart_command(int raw_ch, bool *auto_flush_enabled) {
+    if (raw_ch < 0 || !auto_flush_enabled) {
+        return;
+    }
+
+    if (raw_ch == '\r' || raw_ch == '\n') {
+        return;
+    }
+
+    char ch = (char)tolower(raw_ch);
+    switch (ch) {
+        case 'h':
+        case '?':
+            print_uart_help();
+            break;
+        case 't':
+            printf("\nUART: dumping SASI trace\n");
+            sasi_trace_dump();
+            break;
+        case 'f':
+            printf("\nUART: forcing SASI log flush\n");
+            sasi_log_flush_now();
+            break;
+        case 'a':
+            *auto_flush_enabled = !*auto_flush_enabled;
+            printf("\nUART: automatic SASI log flush %s\n",
+                   *auto_flush_enabled ? "ENABLED" : "DISABLED");
+            break;
+        default:
+            printf("\nUART: unknown command '%c' (0x%02X). Press 'h' for help.\n",
+                   (raw_ch >= 32 && raw_ch <= 126) ? raw_ch : '.',
+                   (unsigned int)(raw_ch & 0xFF));
+            break;
+    }
+}
 
 
 void initialize_uart() {
@@ -66,15 +123,15 @@ void initialize_uart() {
     // Enable only when actively debugging register traffic.
     // debug_queue_enable(true);
 
-    int ch=0;
-    uint32_t millis_per_second = 1000;
     uint32_t seconds = 3;
-    uint32_t timeout = seconds * millis_per_second;
 
     printf("\n=== DMA Board Initialization ===\n");
     printf("Sleeping for %d seconds\n", seconds);
     //sleep_ms(timeout);
     printf("Awake!\n");
+
+    // Initialize shared FatFS lock before any SD card file operations.
+    fatfs_guard_init();
 
     // Initialize storage backend
 #if USE_SD_STORAGE
@@ -130,6 +187,10 @@ void initialize_uart() {
 
     // Initialize SASI command logging (checks for SASLOG marker on SD card)
     sasi_log_init();
+    bool sasi_log_auto_flush_enabled = SASI_LOG_AUTO_FLUSH_DEFAULT != 0;
+    printf("SASI Log: automatic flush %s (UART 'a' toggles, 'f' forces flush)\n",
+           sasi_log_auto_flush_enabled ? "ENABLED" : "DISABLED");
+    print_uart_help();
 
     //configure GPIO pulls and output strenght/skew etc
     ontime_pin_setup();
@@ -188,7 +249,7 @@ void initialize_uart() {
     // Launch core 1 only after both PIO state machines and reset state are stable.
     // This avoids cross-core races where core1 cache warmup touches PIO1 SM0 while
     // core0 is still configuring dma_master_program.
-    multicore_launch_core1(core1_main);
+    multicore_launch_core1_with_stack(core1_main, core1_stack, sizeof(core1_stack));
     
 #if DEBUG_GPIO
     pio_debug_state();
@@ -198,6 +259,13 @@ void initialize_uart() {
     printf("waiting for DMA register access...\n");
     uint64_t iterations = INT64_MAX;
     for (uint64_t i = 0; i<INT64_MAX; i++) {
+        int cmd = getchar_timeout_us(0);
+        if (cmd >= 0) {
+            handle_uart_command(cmd, &sasi_log_auto_flush_enabled);
+        }
+        if (sasi_log_auto_flush_enabled) {
+            sasi_log_flush_if_ready(&dma_registers);
+        }
     
         tight_loop_contents();
     }

@@ -60,10 +60,16 @@ target_sources(dma_board PRIVATE
     pico_victor/debug_queue.c
     pico_fujinet/spi.c
     pico_storage/storage.c
+    pico_storage/fatfs_guard.c
     pico_storage/sd_storage.c
     pico_storage/hw_config.c)
 
 pico_set_binary_type(dma_board default)
+
+# Core 1 stack is provided explicitly via multicore_launch_core1_with_stack().
+target_compile_definitions(dma_board PRIVATE
+    PICO_CORE1_STACK_SIZE=0
+)
 
 # Generate PIO headers for cached version
 pico_generate_pio_header(dma_board ${CMAKE_CURRENT_LIST_DIR}/pico_victor/board_registers.pio)

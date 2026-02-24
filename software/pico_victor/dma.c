@@ -1,6 +1,7 @@
 #include "pico/stdlib.h"
 #include "hardware/pio.h"
 #include "hardware/dma.h"
+#include "hardware/sync.h"
 #include "hardware/structs/systick.h"
 #include "hardware/structs/iobank0.h"
 #include "hardware/structs/padsbank0.h"
@@ -90,7 +91,9 @@ static bool sasi_dma_device_to_ram(dma_registers_t *dma) {
             return false;
         }
 
-        dma_write_to_victor_ram(sector, SASI_SECTOR_SIZE, addr);
+        if (!dma_write_to_victor_ram(sector, SASI_SECTOR_SIZE, addr)) {
+            return false;
+        }
 
         addr += SASI_SECTOR_SIZE;
         sectors_remaining--;
@@ -118,7 +121,9 @@ static bool sasi_dma_ram_to_device(dma_registers_t *dma) {
     while (sectors_remaining > 0) {
         uint8_t sector[SASI_SECTOR_SIZE];
 
-        dma_read_from_victor_ram(sector, SASI_SECTOR_SIZE, addr);
+        if (!dma_read_from_victor_ram(sector, SASI_SECTOR_SIZE, addr)) {
+            return false;
+        }
 
         if (!fujinet_write_sector(device, lba, sector, SASI_SECTOR_SIZE)) {
             printf("Warning: FujiNet write LBA %lu failed\n", (unsigned long)lba);
@@ -467,18 +472,13 @@ static inline void setup_pins_register_inputs() {
 
 
 // Timeout for individual PIO blocking operations (per bus cycle, not per sector).
-// A single DMA bus cycle completes in <10us.  5ms gives enormous margin for
-// bus timing variations (wait states, bus contention) while still detecting a
-// genuinely-stuck PIO SM (e.g. Victor rebooted mid-DMA, bus signals are dead).
-// Safe to be generous because the 8088's BIOS timeout counter PAUSES during
-// DMA HOLD — longer PIO waits don't consume BIOS timeout budget.
-// History: 200us caused ~33% false DMA aborts; 50ms blocked Core 1 too long
-// (before local_dma_addr fix prevented cross-core address corruption).
-#define PIO_OP_TIMEOUT_US 5000
+// Keep this above normal wait-state variance to avoid false timeout aborts on
+// long boot-time reads, but still bounded to recover from a genuinely stuck SM.
+#define PIO_OP_TIMEOUT_US 15000
 
 // Shorter timeout for FIFO drain after the last batch entry.  The FIFO
 // empties within microseconds when PIO is running; this is a safety net.
-#define PIO_DRAIN_TIMEOUT_US 10000
+#define PIO_DRAIN_TIMEOUT_US 25000
 
 // Timeout-protected pio_sm_put.  Returns false if the TX FIFO didn't drain
 // within PIO_OP_TIMEOUT_US (PIO SM is stuck).
@@ -610,14 +610,18 @@ static inline void release_dma_master() {
 // Write function using two-word FIFO protocol:
 //  Word 1: bits 0=W/R flag (1=write), bits 1-20=address A0-A19
 //  Word 2: bits 0-7=data byte, bits 8-19=address A8-A19 (MSB)
-void dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_address) {
+bool dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_address) {
 #if DMA_DEBUG_PRINTF
     dma_printf("DMA WR ");
     print_segment_offset(start_address);
 #endif
 
-    if (!data || length == 0) {
-        return;
+    if (!data) {
+        return false;
+    }
+
+    if (length == 0) {
+        return true;
     }
 
     // debug_pio_state(PIO_DMA_MASTER, DMA_SM_CONTROL);
@@ -627,7 +631,7 @@ void dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_addres
 
     for (uint32_t batch = 0; batch < full_batch_count; batch++) {
         if (!start_dma_control()) {
-            return;
+            return false;
         }
 
         bool pio_stuck = false;
@@ -656,7 +660,7 @@ void dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_addres
 
         if (pio_stuck) {
             abort_dma_transfer();
-            return;
+            return false;
         }
 
         // Wait for TX FIFO to empty before releasing DMA master
@@ -664,7 +668,7 @@ void dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_addres
         while (pio_sm_get_tx_fifo_level(PIO_DMA_MASTER, DMA_SM_CONTROL) > 0) {
             if (absolute_time_diff_us(get_absolute_time(), drain_deadline) <= 0) {
                 abort_dma_transfer();
-                return;
+                return false;
             }
             tight_loop_contents();
         }
@@ -676,21 +680,25 @@ void dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_addres
         sleep_us(DMA_SHARE_WAIT_US);
     }
    
-    return;
+    return true;
 }
 
 // Read function (PIO-based) using two-word FIFO protocol:
 //  Word 1: bits 0=W/R flag (0=read), bits 1-20=address A0-A19
 //  Word 2: pindirs control value 0xFFF00 (A8-A19 outputs, BD0-BD7 inputs)
-void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_address) {
+bool dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_address) {
 
 #if DMA_DEBUG_PRINTF
     dma_printf("DMA RD Length: %zu, start_address: %d ", length, start_address);
     print_segment_offset(start_address);
 #endif
 
-    if (!data || length == 0) {
-        return;
+    if (!data) {
+        return false;
+    }
+
+    if (length == 0) {
+        return true;
     }
 
 #if DMA_DEBUG_PRINTF
@@ -702,7 +710,7 @@ void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_addre
 
     for (uint32_t batch = 0; batch < full_batch_count; batch++) {
         if (!start_dma_control()) {
-            return;
+            return false;
         }
 
         bool pio_stuck = false;
@@ -738,7 +746,7 @@ void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_addre
 
         if (pio_stuck) {
             abort_dma_transfer();
-            return;
+            return false;
         }
 
         // Wait for all responses to be received before releasing DMA master
@@ -746,7 +754,7 @@ void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_addre
         while (pio_sm_get_rx_fifo_level(PIO_DMA_MASTER, DMA_SM_CONTROL) > 0) {
             if (absolute_time_diff_us(get_absolute_time(), drain_deadline) <= 0) {
                 abort_dma_transfer();
-                return;
+                return false;
             }
             tight_loop_contents();
         }
@@ -758,25 +766,33 @@ void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_addre
         sleep_us(DMA_SHARE_WAIT_US);
     }
 
-    return;
+    return true;
 }
 #else
 // Unit-test in-memory Victor RAM model (64 KiB to fit SRAM)
 static uint8_t test_victor_ram[1 << 16];
 static const size_t TEST_VICTOR_RAM_SIZE = (1 << 16);
 
-void dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_address) {
+bool dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_address) {
+    if (!data) {
+        return false;
+    }
     for (size_t i = 0; i < length; i++) {
         uint32_t addr = (start_address + i) & 0xFFFFF;
         if (addr < TEST_VICTOR_RAM_SIZE) test_victor_ram[addr] = data[i];
     }
+    return true;
 }
 
-void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_address) {
+bool dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_address) {
+    if (!data) {
+        return false;
+    }
     for (size_t i = 0; i < length; i++) {
         uint32_t addr = (start_address + i) & 0xFFFFF;
         data[i] = (addr < TEST_VICTOR_RAM_SIZE) ? test_victor_ram[addr] : 0x00;
     }
+    return true;
 }
 
 uint8_t* test_get_victor_ram() { return test_victor_ram; }
@@ -837,6 +853,12 @@ void dma_device_reset(dma_registers_t *dma) {
     dma->block_count.full = 0;
     dma->logical_block.full = 0;
     dma->reset_requested = false;
+
+    // Drop any deferred register operations queued before reset.
+    // This prevents stale DATA read/write events from reapplying old phase transitions.
+    uint32_t irq_state = save_and_disable_interrupts();
+    defer_queue.tail = defer_queue.head;
+    restore_interrupts(irq_state);
 
     // Clear interrupt
     dma_update_interrupts(dma, false);

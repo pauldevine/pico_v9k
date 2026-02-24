@@ -23,6 +23,7 @@
 
 #include "pico_victor/dma.h"
 #include "sasi_log.h"
+#include "fatfs_guard.h"
 
 /* ------------------------------------------------------------------ */
 /* State                                                              */
@@ -31,6 +32,8 @@
 static bool sasi_log_enabled   = SASI_LOG_ENABLED_DEFAULT;
 static bool sasi_log_file_open = false;
 static FIL  sasi_log_fil;
+static uint64_t sasi_log_last_sync_us = 0;
+static uint32_t sasi_log_sync_fail_count = 0;
 
 static sasi_log_buffer_t sasi_log_buffer;
 
@@ -41,7 +44,8 @@ static uint64_t bus_free_since  = 0;
 /* Minimum idle time (microseconds) before we flush to SD card.
  * Writing to SD can take several milliseconds, so only flush when
  * the bus has been idle long enough that we won't miss a command. */
-#define SASI_LOG_IDLE_FLUSH_US  50000   /* 50 ms */
+#define SASI_LOG_IDLE_FLUSH_US  50000    /* 50 ms */
+#define SASI_LOG_SYNC_INTERVAL_US 5000000 /* 5 s */
 
 /* ------------------------------------------------------------------ */
 /* File-scope batch buffer -- MUST NOT be on Core 1 stack!            */
@@ -76,6 +80,9 @@ void sasi_log_init(void) {
     sasi_log_file_open = false;
     sasi_log_enabled   = SASI_LOG_ENABLED_DEFAULT;
 
+    fatfs_guard_init();
+    fatfs_guard_lock();
+
     /* Check for SASLOG marker file to enable logging */
     FILINFO fno;
     FRESULT fr = f_stat("SASLOG", &fno);
@@ -83,6 +90,7 @@ void sasi_log_init(void) {
         sasi_log_enabled = true;
         printf("SASI Log: enabled by SASLOG marker file\n");
     } else if (!sasi_log_enabled) {
+        fatfs_guard_unlock();
         printf("SASI Log: disabled (no SASLOG file on SD card)\n");
         return;
     }
@@ -90,6 +98,7 @@ void sasi_log_init(void) {
     /* Open (or create) the log file in append mode */
     fr = f_open(&sasi_log_fil, "SASI_LOG.TXT", FA_WRITE | FA_OPEN_APPEND);
     if (fr != FR_OK) {
+        fatfs_guard_unlock();
         printf("SASI Log: failed to open SASI_LOG.TXT (%d)\n", fr);
         sasi_log_enabled = false;
         return;
@@ -101,8 +110,25 @@ void sasi_log_init(void) {
                       "Event     Op    Name      Tgt  LBA       Blks  DMA_Addr  BusCtrl  Dur_ms  Status\n"
                       "--------  ----  --------  ---  --------  ----  --------  -------  ------  ------\n";
     UINT bw;
-    f_write(&sasi_log_fil, hdr, strlen(hdr), &bw);
-    f_sync(&sasi_log_fil);
+    FRESULT frw = f_write(&sasi_log_fil, hdr, strlen(hdr), &bw);
+    if (frw != FR_OK || bw != strlen(hdr)) {
+        printf("SASI Log: header write failed (%d, bw=%u)\n", frw, bw);
+        f_close(&sasi_log_fil);
+        sasi_log_file_open = false;
+        sasi_log_enabled = false;
+        fatfs_guard_unlock();
+        return;
+    }
+    FRESULT frs = f_sync(&sasi_log_fil);
+    if (frs != FR_OK) {
+        // Keep logging as best-effort even if sync fails once.
+        printf("SASI Log: header sync failed (%d), continuing without immediate sync\n", frs);
+        sasi_log_sync_fail_count++;
+    } else {
+        sasi_log_sync_fail_count = 0;
+    }
+    fatfs_guard_unlock();
+    sasi_log_last_sync_us = time_us_64();
 
     printf("SASI Log: ready, logging to SASI_LOG.TXT\n");
 }
@@ -161,8 +187,81 @@ void sasi_log_dma_error(uint8_t error_code, uint32_t dma_addr, uint8_t bus_ctrl)
 }
 
 /* ------------------------------------------------------------------ */
-/* Flush to SD card (called from Core 1 defer worker loop)            */
+/* Flush to SD card (called from Core 0 main loop)                    */
 /* ------------------------------------------------------------------ */
+
+static bool sasi_log_flush_locked(bool force_sync) {
+    int batch_pos = 0;
+    while (sasi_log_buffer.read_idx != sasi_log_buffer.write_idx) {
+        __dmb();
+        uint32_t idx = sasi_log_buffer.read_idx & (SASI_LOG_BUFFER_SIZE - 1);
+        sasi_log_entry_t *e = &sasi_log_buffer.entries[idx];
+
+        const char *event_str;
+        switch (e->event) {
+            case 0:  event_str = "CMD_START"; break;
+            case 1:  event_str = "CMD_DONE "; break;
+            case 2:  event_str = "DMA_ERROR"; break;
+            default: event_str = "UNKNOWN  "; break;
+        }
+        const char *name = sasi_opcode_name(e->opcode);
+
+        int n = snprintf(sasi_log_batch + batch_pos,
+                         sizeof(sasi_log_batch) - batch_pos,
+                         "%s  0x%02X  %-8s  %3d  %08lX  %4u  %08lX  0x%02X     %6u  0x%02X\n",
+                         event_str,
+                         e->opcode,
+                         name,
+                         e->target,
+                         (unsigned long)e->lba,
+                         e->block_count,
+                         (unsigned long)e->dma_address,
+                         e->bus_ctrl,
+                         e->duration_ms,
+                         e->status);
+
+        if (n <= 0 || (batch_pos + n) >= (int)(sizeof(sasi_log_batch) - 1)) {
+            break;  /* buffer full, flush what we have */
+        }
+        batch_pos += n;
+        sasi_log_buffer.read_idx++;
+    }
+
+    if (batch_pos <= 0) {
+        return false;
+    }
+
+    UINT bw;
+    FRESULT frw = f_write(&sasi_log_fil, sasi_log_batch, batch_pos, &bw);
+    if (frw != FR_OK || (int)bw != batch_pos) {
+        printf("SASI Log: flush write failed (%d, bw=%u), disabling log file\n", frw, bw);
+        f_close(&sasi_log_fil);
+        sasi_log_file_open = false;
+        sasi_log_enabled = false;
+        return false;
+    }
+
+    uint64_t now_sync = time_us_64();
+    bool should_sync = force_sync || ((now_sync - sasi_log_last_sync_us) >= SASI_LOG_SYNC_INTERVAL_US);
+    if (should_sync) {
+        FRESULT frs = f_sync(&sasi_log_fil);
+        if (frs != FR_OK) {
+            // Sync failures can be transient under heavy SD traffic.
+            // Keep file open and continue logging; hard failures will still
+            // be caught by f_write failures above.
+            sasi_log_sync_fail_count++;
+            if (sasi_log_sync_fail_count <= 3 || (sasi_log_sync_fail_count % 25) == 0) {
+                printf("SASI Log: flush sync failed (%d), continuing (count=%lu)\n",
+                       frs, (unsigned long)sasi_log_sync_fail_count);
+            }
+        } else {
+            sasi_log_sync_fail_count = 0;
+        }
+        sasi_log_last_sync_us = now_sync;
+    }
+
+    return true;
+}
 
 void sasi_log_flush_if_ready(const dma_registers_t *dma) {
     if (!sasi_log_enabled || !sasi_log_file_open) return;
@@ -191,49 +290,29 @@ void sasi_log_flush_if_ready(const dma_registers_t *dma) {
         return;
     }
 
-    /* Format entries into the STATIC batch buffer and write to SD */
-    int batch_pos = 0;
-    while (sasi_log_buffer.read_idx != sasi_log_buffer.write_idx) {
-        uint32_t idx = sasi_log_buffer.read_idx & (SASI_LOG_BUFFER_SIZE - 1);
-        sasi_log_entry_t *e = &sasi_log_buffer.entries[idx];
-
-        const char *event_str;
-        switch (e->event) {
-            case 0:  event_str = "CMD_START"; break;
-            case 1:  event_str = "CMD_DONE "; break;
-            case 2:  event_str = "DMA_ERROR"; break;
-            default: event_str = "UNKNOWN  "; break;
-        }
-        const char *name      = sasi_opcode_name(e->opcode);
-
-        int n = snprintf(sasi_log_batch + batch_pos,
-                         sizeof(sasi_log_batch) - batch_pos,
-                         "%s  0x%02X  %-8s  %3d  %08lX  %4u  %08lX  0x%02X     %6u  0x%02X\n",
-                         event_str,
-                         e->opcode,
-                         name,
-                         e->target,
-                         (unsigned long)e->lba,
-                         e->block_count,
-                         (unsigned long)e->dma_address,
-                         e->bus_ctrl,
-                         e->duration_ms,
-                         e->status);
-
-        if (n <= 0 || (batch_pos + n) >= (int)(sizeof(sasi_log_batch) - 1)) {
-            break;  /* buffer full, flush what we have */
-        }
-        batch_pos += n;
-        sasi_log_buffer.read_idx++;
+    // If storage path currently holds the lock, skip this flush cycle.
+    if (!fatfs_guard_try_lock()) {
+        return;
     }
 
-    if (batch_pos > 0) {
-        UINT bw;
-        f_write(&sasi_log_fil, sasi_log_batch, batch_pos, &bw);
-        f_sync(&sasi_log_fil);
-    }
+    sasi_log_flush_locked(false);
+    fatfs_guard_unlock();
 
     /* Reset idle tracker so we don't flush again immediately */
+    bus_free_since = time_us_64();
+}
+
+void sasi_log_flush_now(void) {
+    if (!sasi_log_enabled || !sasi_log_file_open) {
+        return;
+    }
+
+    fatfs_guard_lock();
+    (void)sasi_log_flush_locked(true);
+    fatfs_guard_unlock();
+
+    // Treat manual flush as an idle boundary.
+    was_bus_free = true;
     bus_free_since = time_us_64();
 }
 
