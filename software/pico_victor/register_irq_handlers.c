@@ -183,6 +183,18 @@ static inline void clear_irq_on_status_read(dma_registers_t *dma) {
     gpio_put(DMA_IRQ_PIN, DMA_IRQ_DEASSERT_LEVEL);
 }
 
+// Safety-guarded PIO TX FIFO put for use in ISR context.
+// After hundreds of DMA batch cycles (each restarting the register PIO SM),
+// there is a small risk of the SM being stuck with a full TX FIFO.
+// Using pio_sm_put_blocking() in the ISR would hang the system forever.
+// This helper skips the put if the FIFO is full — the host will see a bus
+// timeout and retry.
+static inline void pio_sm_put_isr_safe(PIO pio, uint sm, uint32_t data) {
+    if (!pio_sm_is_tx_fifo_full(pio, sm)) {
+        pio_sm_put(pio, sm, data);
+    }
+}
+
 
 
 
@@ -272,8 +284,13 @@ void __time_critical_func(register_read_irq_isr)() {
                     // 1) return current byte now, 2) advance visible cache phase now,
                     // 3) advance bus_ctrl/state now in lockstep with cache.
                     dma_registers_t *dma = &dma_registers;
-                    uint8_t cached_status_before = cached->values[REG_STATUS] & 0x1Fu;
-                    uint8_t phase_before = cached_status_before & (SASI_CTL_BIT | SASI_INP_BIT | SASI_MSG_BIT);
+                    // Read bus_ctrl directly (volatile) — this is the single source of
+                    // truth for SASI phase.  Using cached_regs.values[REG_STATUS] here
+                    // risks a race: Core 1 updates bus_ctrl before updating the cache,
+                    // so the ISR could see a stale phase and fail to advance
+                    // status→message→bus_free, causing a protocol deadlock.
+                    uint8_t bus_ctrl_snapshot = dma->bus_ctrl;
+                    uint8_t phase_before = bus_ctrl_snapshot & (SASI_CTL_BIT | SASI_INP_BIT | SASI_MSG_BIT);
 #if REG_IRQ_FAST_TRACE_ENABLE
                     uint8_t cached_data_before = cached->values[REG_DATA];
 #endif
@@ -284,7 +301,7 @@ void __time_critical_func(register_read_irq_isr)() {
                         // RESPOND TO PIO IMMEDIATELY - send data to bus before heavy
                         // state updates.  If XACK wait states aren't inserting, the 8088
                         // completes its bus cycle in ~600ns; we must beat that deadline.
-                        pio_sm_put_blocking(PIO_REGISTERS, REG_SM_CONTROL, (0xFFu << 8) | 0x00u);
+                        pio_sm_put_isr_safe(PIO_REGISTERS, REG_SM_CONTROL, (0xFFu << 8) | 0x00u);
                         response_sent = true;
                         cached->values[REG_DATA] = 0x00;
                         cached->values[REG_STATUS] = 0x00;
@@ -305,9 +322,9 @@ void __time_critical_func(register_read_irq_isr)() {
                         // read and data appearing on bus.  The 8088 samples during T3;
                         // heavy state updates (bus_ctrl, interrupts, trace) follow after
                         // the response is already in the PIO TX FIFO.
-                        pio_sm_put_blocking(PIO_REGISTERS, REG_SM_CONTROL, (0xFFu << 8) | (data & 0xFFu));
+                        pio_sm_put_isr_safe(PIO_REGISTERS, REG_SM_CONTROL, (0xFFu << 8) | (data & 0xFFu));
                         response_sent = true;
-                        uint8_t next_status = cached_status_before | SASI_MSG_BIT;
+                        uint8_t next_status = (bus_ctrl_snapshot & 0x1Fu) | SASI_MSG_BIT;
                         cached->values[REG_STATUS] = next_status;
                         cached->values[0x30] = next_status;
                         cached->values[REG_DATA] = 0x00;  // Next DATA read returns message byte.
@@ -325,20 +342,18 @@ void __time_critical_func(register_read_irq_isr)() {
                         data = cached->values[REG_DATA];
                         if (dma->state.non_dma_req) {
                             trace_flags |= FIFO_TRACE_FLAG_ERROR;
-                            reg_irq_warn("REG IRQ WARN: DATA read in unexpected phase status=0x%02X bus=0x%02X\n",
-                                         cached_status_before,
-                                         dma->bus_ctrl);
+                            reg_irq_warn("REG IRQ WARN: DATA read in unexpected phase bus_ctrl=0x%02X\n",
+                                         bus_ctrl_snapshot);
                         }
                     }
 
 #if REG_IRQ_FAST_TRACE_ENABLE
                     {
-                        uint8_t bus_ctrl_snapshot = dma->bus_ctrl;
-                        reg_irq_trace_record_data_transition(cached_status_before,
+                        reg_irq_trace_record_data_transition(bus_ctrl_snapshot & 0x1F,
                                                              cached_data_before,
-                                                             cached->values[REG_STATUS] & 0x1F,
+                                                             dma->bus_ctrl & 0x1F,
                                                              cached->values[REG_DATA],
-                                                             bus_ctrl_snapshot);
+                                                             dma->bus_ctrl);
                     }
 #endif
                     // DATA phase side effects are handled fully in this fast path.
@@ -347,7 +362,7 @@ void __time_critical_func(register_read_irq_isr)() {
                     // STATUS/0x30 reads clear IRQ latch but do not advance SASI phase.
                     data = cached->values[masked_offset];
                     // Respond to PIO before clearing IRQ for minimum latency.
-                    pio_sm_put_blocking(PIO_REGISTERS, REG_SM_CONTROL, (0xFFu << 8) | (data & 0xFFu));
+                    pio_sm_put_isr_safe(PIO_REGISTERS, REG_SM_CONTROL, (0xFFu << 8) | (data & 0xFFu));
                     response_sent = true;
                     clear_irq_on_status_read(&dma_registers);
                 } else {
@@ -360,7 +375,7 @@ void __time_critical_func(register_read_irq_isr)() {
                 // can drive BD0-7 while bookkeeping is still in progress.
                 if (!response_sent) {
                     uint32_t payload = (0xFFu << 8) | (data & 0xFFu);
-                    pio_sm_put_blocking(PIO_REGISTERS, REG_SM_CONTROL, payload);
+                    pio_sm_put_isr_safe(PIO_REGISTERS, REG_SM_CONTROL, payload);
                 }
 
                 fifo_trace_record(raw_value,

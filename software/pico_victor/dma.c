@@ -888,37 +888,55 @@ void release_victor_bus(void) {
 }
 
 // Device reset function (based on MAME implementation)
+//
+// IMPORTANT: This function is called by the Core 1 deferred worker when it
+// processes a RESET entry from the defer queue.  The ISR runs on the SAME
+// core (Core 1) as the defer worker, so bus_ctrl is only modified by the
+// defer worker itself (the ISR only modifies bus_ctrl during DATA-read
+// status/message transitions, which can't happen during RESET processing).
+//
+// The ISR DOES update the cache and dma_address/control inline, so:
+//   - DO NOT zero dma_address.full — ISR updates address bytes inline
+//   - DO NOT zero control — ISR uses for SELECT edge detection
+//   - DO zero bus_ctrl — prevents stale phase bits (e.g., MSG from a
+//     previous command's message phase) from corrupting subsequent SELECT
+//     processing.  The defer worker will rebuild bus_ctrl correctly when
+//     it processes the post-RESET SELECT entries.
+//   - DO zero non_dma_req/asserting_ack — bus protocol state must reset
+//
+// DO NOT zero the cache here or in the caller.  The ISR already set the
+// cache correctly when it detected the RESET bit (register_irq_handlers.c
+// lines 440-442), and subsequent ISR entries (SELECT, deselect) updated
+// the cache predictions further.  Zeroing the cache would destroy those
+// predictions and create a window where the host sees bus_free status
+// despite an active IRQ.
 void dma_device_reset(dma_registers_t *dma) {
+    // Clear bus protocol state — RESET returns bus to idle
+    dma->bus_ctrl = 0;
+    dma->state.non_dma_req = 0;
+    dma->state.asserting_ack = 0;
+
+    // Clear command/diagnostic state
     dma->state.dma_enabled = 0;
     dma->state.dma_dir_in = 0;
     dma->state.data_out_expected = 0;
-    dma->dma_address.full = 0;
-    dma->state.asserting_ack = 0;
-    dma->state.non_dma_req = 0;
     dma->state.status_pending = 0;
     dma->command = 0;
     dma->status = 0;
-    dma->bus_ctrl = 0;
-    dma->control = 0;
     dma->selected_target = 0;
     dma->block_count.full = 0;
     dma->logical_block.full = 0;
     dma->reset_requested = false;
 
-    // DO NOT drain the defer queue here.  The queue is FIFO: entries enqueued
-    // BEFORE this RESET have already been dequeued and processed by the time
-    // we reach this point.  Entries AFTER this RESET belong to the new command
-    // sequence (SELECT, target ID, deselect, command bytes) that DOS fires
-    // immediately after RESET.  Draining them discards the post-RESET SELECT
-    // and deselect, leaving bus_ctrl/control/non_dma_req at zero while the
-    // ISR's cached STATUS already reflects command phase — every subsequent
-    // command byte is silently ignored and the system hangs.
+    // DO NOT zero these — the ISR manages them inline:
+    //   dma->dma_address.full  — ISR updates address bytes inline
+    //   dma->control           — ISR uses for SELECT edge detection
 
     // Clear interrupt
     dma_update_interrupts(dma, false);
-    // Ensure cached status reflects bus-free after reset
-    cached_status_sync_from_bus(dma);
-    cached_set_data(0x00);
+
+    // DO NOT call cached_status_sync_from_bus() or cached_set_data() here.
+    // The ISR already set the cache correctly.  See comment block above.
 
     // Reset SASI command accumulator state
     sasi_reset_command_state();

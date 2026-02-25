@@ -408,6 +408,16 @@ static bool sd_storage_write_sector(uint8_t target_id, uint32_t lba, const uint8
     return true;
 }
 
+// Track consecutive sync failures per target.  Transient SDIO errors are
+// common (SD card internal GC, busy states) and should not permanently
+// disable the target.  Only disable after many consecutive failures which
+// indicate a genuinely broken card or corrupted file handle.
+#define SD_SYNC_MAX_RETRIES      3
+#define SD_SYNC_RETRY_DELAY_MS   5
+#define SD_SYNC_DISABLE_THRESHOLD 50
+
+static uint32_t sd_sync_fail_count[STORAGE_MAX_TARGETS];
+
 static bool sd_storage_sync(uint8_t target_id) {
     if (!sd_initialized || !sd_state || target_id >= STORAGE_MAX_TARGETS) {
         return false;
@@ -418,19 +428,41 @@ static bool sd_storage_sync(uint8_t target_id) {
         return false;
     }
 
-    fatfs_guard_lock();
-    FRESULT fr = f_sync(&target->file);
-    if (FR_OK != fr) {
-        printf("SD Storage: f_sync error: %s (%d)\n", FRESULT_str(fr), fr);
-        if (sd_storage_is_fatal_error(fr)) {
-            sd_storage_disable_target(target_id, "f_sync", fr);
-        }
+    FRESULT fr = FR_DISK_ERR;
+    for (int attempt = 0; attempt < SD_SYNC_MAX_RETRIES; attempt++) {
+        fatfs_guard_lock();
+        fr = f_sync(&target->file);
         fatfs_guard_unlock();
-        return false;
+        if (fr == FR_OK) {
+            break;
+        }
+        if (attempt + 1 < SD_SYNC_MAX_RETRIES) {
+            sleep_ms(SD_SYNC_RETRY_DELAY_MS);
+        }
     }
-    fatfs_guard_unlock();
 
-    return true;
+    if (fr == FR_OK) {
+        sd_sync_fail_count[target_id] = 0;
+        return true;
+    }
+
+    // Sync failed after retries - log but keep target mounted.
+    // Transient errors are recoverable; the next write+sync may succeed.
+    sd_sync_fail_count[target_id]++;
+    if (sd_sync_fail_count[target_id] <= 3 ||
+        (sd_sync_fail_count[target_id] % 25) == 0) {
+        printf("SD Storage: f_sync error: %s (%d), target %d (count=%lu)\n",
+               FRESULT_str(fr), fr, target_id,
+               (unsigned long)sd_sync_fail_count[target_id]);
+    }
+
+    // Only disable after sustained consecutive failures indicating
+    // a genuinely broken card or corrupted file handle.
+    if (sd_sync_fail_count[target_id] >= SD_SYNC_DISABLE_THRESHOLD) {
+        sd_storage_disable_target(target_id, "f_sync(sustained)", fr);
+    }
+
+    return false;
 }
 
 static uint32_t sd_storage_get_capacity(uint8_t target_id) {

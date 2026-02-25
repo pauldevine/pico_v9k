@@ -140,6 +140,12 @@ void sasi_log_init(void) {
 static void sasi_log_push(const sasi_log_entry_t *entry) {
     if (!sasi_log_enabled) return;
 
+    // Overflow guard: drop entry rather than overwrite one the consumer
+    // may be reading.  Unsigned subtraction handles wrap correctly.
+    if ((sasi_log_buffer.write_idx - sasi_log_buffer.read_idx) >= SASI_LOG_BUFFER_SIZE) {
+        return;
+    }
+
     uint32_t idx = sasi_log_buffer.write_idx & (SASI_LOG_BUFFER_SIZE - 1);
     sasi_log_buffer.entries[idx] = *entry;
     __dmb();
@@ -241,14 +247,13 @@ static bool sasi_log_flush_locked(bool force_sync) {
         return false;
     }
 
-    uint64_t now_sync = time_us_64();
-    bool should_sync = force_sync || ((now_sync - sasi_log_last_sync_us) >= SASI_LOG_SYNC_INTERVAL_US);
-    if (should_sync) {
+    // Only f_sync when explicitly requested (UART 'f' command).  The auto-flush
+    // path (force_sync=false) writes to FatFs buffers which reach the SD card
+    // when the buffer fills; skipping f_sync here avoids adding SD card write
+    // pressure (FAT metadata updates) during active disk image I/O.
+    if (force_sync) {
         FRESULT frs = f_sync(&sasi_log_fil);
         if (frs != FR_OK) {
-            // Sync failures can be transient under heavy SD traffic.
-            // Keep file open and continue logging; hard failures will still
-            // be caught by f_write failures above.
             sasi_log_sync_fail_count++;
             if (sasi_log_sync_fail_count <= 3 || (sasi_log_sync_fail_count % 25) == 0) {
                 printf("SASI Log: flush sync failed (%d), continuing (count=%lu)\n",
@@ -257,7 +262,6 @@ static bool sasi_log_flush_locked(bool force_sync) {
         } else {
             sasi_log_sync_fail_count = 0;
         }
-        sasi_log_last_sync_us = now_sync;
     }
 
     return true;

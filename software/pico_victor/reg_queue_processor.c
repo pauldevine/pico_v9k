@@ -198,10 +198,14 @@ void defer_process_write(dma_registers_t *dma, uint32_t raw_value) {
 
                 if (write_data & DMA_RESET_BIT) {
                     dma_device_reset(dma);
-                    // Reset cached status
-                    cached_regs.values[REG_STATUS] = 0x00;
-                    cached_regs.values[0x30] = 0x00;
-                    cached_regs.values[REG_DATA] = 0x00;
+                    // DO NOT zero the cache here.  The ISR already set cached
+                    // STATUS/DATA to 0x00 when it detected the RESET bit
+                    // (register_irq_handlers.c).  Subsequent ISR entries
+                    // (SELECT assert/deassert) updated cache predictions
+                    // further (BSY → BSY|REQ|CTL).  Zeroing the cache here
+                    // would destroy those predictions and create a window
+                    // where the host sees bus_free (0x00) despite an active
+                    // IRQ from the SELECT deassert handler.
                 } else {
                     if (write_data & DMA_ON_LATCH_BIT) {
                         dma->state.dma_enabled = (write_data & DMA_ON_VALUE_BIT) != 0;

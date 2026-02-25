@@ -40,6 +40,7 @@ T0:
 T1:   
     wait 0 GPIO ALE_PIN side 0             ; wait for ALE to go low = T0 start & wait for address to stabilize
     wait 1 GPIO ALE_PIN [7] side 0         ; wait for ALE to go high = T1 start & wait for address to stabilize
+    nop [1] side 0                         ; extra settle cycles for single-pass read timing margin
     in pins, ADDRESS_BUS_SIZE side 0       ; shift 12 bits of address into ISR
     mov osr, isr side 0                    ; use OSR to store full 20-bit address for later
     in null, 20 side 0                     ; move the address into the lower 12 bits of the register, dropping 8 LSB to leave us with 12 MSB
