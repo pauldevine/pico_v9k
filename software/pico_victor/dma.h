@@ -22,7 +22,7 @@
 #define ADDRESS_DATA_CONBIT_SIZE 29  // 20-bit address, 8-bit data, 1-bit control
 #define PIO_FULL_SIZE 32
 
-#define DMA_BATCH_SIZE 256  // Bytes per DMA batch transfer (2 batches per 512-byte sector)
+#define DMA_BATCH_SIZE 32   // Bytes per DMA batch transfer (interleaves host status polls)
 #define DMA_SHARE_WAIT_US 8   // Small bus-share pause between batches (microseconds)
 #define DMA_TIMEOUT_US 2000  // Timeout for DMA master acquisition (in microseconds)
 
@@ -277,6 +277,14 @@ uint8_t dma_read_register(dma_registers_t *dma, dma_reg_offsets_t offset);
 void dma_device_reset(dma_registers_t *dma);
 void dma_update_interrupts(dma_registers_t *dma, bool irq_state);
 void dma_handle_sasi_req(dma_registers_t *dma);
+
+// Store the board_registers PIO program offset so reset_register_pio_sm()
+// can JMP back to wrap_target (T0) after a safe restart.
+void dma_set_board_reg_program_offset(int offset);
+
+// Safe PIO0 SM0 restart: releases XACK/EXTIO, clears FIFOs, JMPs to T0.
+// Preserves Y register (0xEF3 bitmask). Call after DMA transfers or abort.
+void reset_register_pio_sm(void);
 
 // DMA read IRQ control - enable when DMA is active, disable when idle
 void enable_dma_read_irq(void);

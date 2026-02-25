@@ -15,6 +15,7 @@
 #include "logging.h"
 #include "register_irq_handlers.h"
 #include "fifo_helpers.h"
+#include "sasi.h"
 
 
 
@@ -27,7 +28,7 @@ extern cached_registers_t cached_regs;
 #define REG_FIFO_RXEMPTY_BIT (1u << (PIO_FSTAT_RXEMPTY_LSB + REG_SM_CONTROL))
 
 #ifndef REG_IRQ_FAST_TRACE_ENABLE
-#define REG_IRQ_FAST_TRACE_ENABLE 0
+#define REG_IRQ_FAST_TRACE_ENABLE 1
 #endif
 
 #ifndef REG_IRQ_WARN_ENABLE
@@ -235,6 +236,7 @@ void __time_critical_func(register_read_irq_isr)() {
     while (!(PIO_REGISTERS->fstat & REG_FIFO_RXEMPTY_BIT)) {
         uint32_t raw_value;
         uint8_t data = 0;
+        bool response_sent = false;
         uint8_t trace_flags = 0;
         uint8_t pending_before = 0;
 
@@ -279,6 +281,11 @@ void __time_critical_func(register_read_irq_isr)() {
                     if (phase_before == (SASI_CTL_BIT | SASI_INP_BIT | SASI_MSG_BIT)) {
                         // Message-in byte is always Command Complete (0x00), then bus-free.
                         data = 0x00;
+                        // RESPOND TO PIO IMMEDIATELY - send data to bus before heavy
+                        // state updates.  If XACK wait states aren't inserting, the 8088
+                        // completes its bus cycle in ~600ns; we must beat that deadline.
+                        pio_sm_put_blocking(PIO_REGISTERS, REG_SM_CONTROL, (0xFFu << 8) | 0x00u);
+                        response_sent = true;
                         cached->values[REG_DATA] = 0x00;
                         cached->values[REG_STATUS] = 0x00;
                         cached->values[0x30] = 0x00;
@@ -289,9 +296,17 @@ void __time_critical_func(register_read_irq_isr)() {
                         dma->state.asserting_ack = 0;
                         __dmb();  // Ensure bus_ctrl update is visible before IRQ line update.
                         dma_update_interrupts(dma, false);
+                        // Record bus-free transition in SASI trace for UART 't' visibility.
+                        sasi_trace_event(TRACE_BUS_FREE, 0x00, 0, 0x00);
                     } else if (phase_before == (SASI_CTL_BIT | SASI_INP_BIT)) {
                         // Status phase: serve authoritative status byte, then advance to message phase.
                         data = dma->status;
+                        // RESPOND TO PIO IMMEDIATELY - minimizes latency between FIFO
+                        // read and data appearing on bus.  The 8088 samples during T3;
+                        // heavy state updates (bus_ctrl, interrupts, trace) follow after
+                        // the response is already in the PIO TX FIFO.
+                        pio_sm_put_blocking(PIO_REGISTERS, REG_SM_CONTROL, (0xFFu << 8) | (data & 0xFFu));
+                        response_sent = true;
                         uint8_t next_status = cached_status_before | SASI_MSG_BIT;
                         cached->values[REG_STATUS] = next_status;
                         cached->values[0x30] = next_status;
@@ -303,6 +318,8 @@ void __time_critical_func(register_read_irq_isr)() {
                         dma->bus_ctrl &= ~SASI_ACK_BIT;
                         __dmb();  // Ensure bus_ctrl update is visible before IRQ line update.
                         dma_update_interrupts(dma, true);
+                        // Record message-phase transition in SASI trace for UART 't' visibility.
+                        sasi_trace_event(TRACE_MSG_PHASE, data, 0, dma->bus_ctrl);
                     } else {
                         // Command/data/bus-free path: return the currently cached DATA byte.
                         data = cached->values[REG_DATA];
@@ -329,14 +346,22 @@ void __time_critical_func(register_read_irq_isr)() {
                 } else if (masked_offset == REG_STATUS || masked_offset == 0x30) {
                     // STATUS/0x30 reads clear IRQ latch but do not advance SASI phase.
                     data = cached->values[masked_offset];
+                    // Respond to PIO before clearing IRQ for minimum latency.
+                    pio_sm_put_blocking(PIO_REGISTERS, REG_SM_CONTROL, (0xFFu << 8) | (data & 0xFFu));
+                    response_sent = true;
                     clear_irq_on_status_read(&dma_registers);
                 } else {
                     data = cached->values[masked_offset];
                 }
 
-                // PIO expects [pindirs][data] with right-shift out, so send 0xFF pindirs then data.
-                uint32_t payload = (0xFFu << 8) | (data & 0xFFu);
-                pio_sm_put_blocking(PIO_REGISTERS, REG_SM_CONTROL, payload);
+                // Send response to PIO if not already sent by an early-respond path above.
+                // Early-respond paths (DATA status/message phase, STATUS reads) put the
+                // response into the TX FIFO before doing heavy state updates, so the PIO
+                // can drive BD0-7 while bookkeeping is still in progress.
+                if (!response_sent) {
+                    uint32_t payload = (0xFFu << 8) | (data & 0xFFu);
+                    pio_sm_put_blocking(PIO_REGISTERS, REG_SM_CONTROL, payload);
+                }
 
                 fifo_trace_record(raw_value,
                                   payload_type,

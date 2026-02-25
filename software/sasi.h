@@ -28,6 +28,7 @@ typedef enum {
     TRACE_STATUS_READ,   // STATUS register read by host
     TRACE_DATA_OUT,      // Data-out byte received (for 0x0C params, etc.)
     TRACE_DATAOUT_SETUP, // Data-out phase set up (value=expected bytes, bus_ctrl=new state)
+    TRACE_DMA_RESULT,    // DMA transfer result (value: 0=ok, 1=storage_fail, 2=dma_fail)
 } sasi_trace_type_t;
 
 typedef struct {

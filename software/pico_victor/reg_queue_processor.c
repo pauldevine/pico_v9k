@@ -228,7 +228,12 @@ void defer_process_write(dma_registers_t *dma, uint32_t raw_value) {
                         defer_log("DEFER: SELECT released, bus_ctrl=0x%02x (entering cmd phase)\n", dma->bus_ctrl);
                     }
                 }
-                cached_status_sync_from_bus(dma);
+                // DO NOT call cached_status_sync_from_bus here.
+                // The ISR already set cached STATUS correctly for SELECT
+                // edges and RESET.  Syncing here can overwrite the ISR's
+                // predictions when the defer worker processes entries out
+                // of phase (e.g., SELECT entry processed before deselect
+                // temporarily rolls cached STATUS back to BSY-only).
 #if DEFER_VERBOSE_LOG
                 defer_log("DEFER: Write CONTROL = 0x%02x prev_sel=%d bus_ctrl=0x%02x\n",
                          write_data, prev_sel, dma->bus_ctrl);

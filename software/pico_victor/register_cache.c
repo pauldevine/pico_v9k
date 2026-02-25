@@ -88,10 +88,8 @@ void warm_caches(void) {
     // Small delay to let caches settle
     busy_wait_us(100);
 
-    // Clear the FIFOs so cache warming doesn't interfere with normal operation
-    pio_sm_set_enabled(register_pio, register_control, false);
-    pio_sm_clear_fifos(register_pio, register_control);
-    pio_sm_set_enabled(register_pio, register_control, true);
+    // Safe restart: clears FIFOs, releases XACK/EXTIO, JMPs to T0.
+    reset_register_pio_sm();
 
     pio_sm_set_enabled(pio_dma_master, dma_sm_control, false);
     pio_sm_clear_fifos(pio_dma_master, dma_sm_control);

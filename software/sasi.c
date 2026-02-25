@@ -126,7 +126,8 @@ void sasi_trace_event(sasi_trace_type_t type, uint8_t value, uint8_t cmd_idx, ui
 void sasi_trace_dump(void) {
     static const char *type_names[] = {
         "CMD_BYTE", "CMD_DONE", "STATUS", "MSG", "BUS_FREE",
-        "DMA_RD", "DMA_WR", "RESET", "SELECT", "DATA_RD", "STAT_RD", "DATA_OUT", "DO_SETUP"
+        "DMA_RD", "DMA_WR", "RESET", "SELECT", "DATA_RD", "STAT_RD", "DATA_OUT", "DO_SETUP",
+        "DMA_RSLT"
     };
 
     printf("\n=== SASI TRACE (last %d events) ===\n", SASI_TRACE_SIZE);
@@ -142,7 +143,7 @@ void sasi_trace_dump(void) {
     for (uint32_t i = 0; i < count; i++) {
         uint32_t idx = (start + i) & (SASI_TRACE_SIZE - 1);
         sasi_trace_entry_t *e = &sasi_trace.entries[idx];
-        const char *name = (e->type < 13) ? type_names[e->type] : "???";
+        const char *name = (e->type < 14) ? type_names[e->type] : "???";
         printf("%4lu  %-8s  %02X   %d    %02X\n",
                (unsigned long)e->seq, name, e->value, e->cmd_index, e->bus_ctrl);
     }
@@ -487,14 +488,7 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
         }
 
         uint8_t sector_data[512];
-        bool held_for_storage = false;
-        if (backend == STORAGE_BACKEND_SDCARD) {
-            held_for_storage = hold_victor_bus();
-        }
         bool sector_read_ok = read_sector_from_disk(dma, sector + i, sector_data);
-        if (held_for_storage) {
-            release_victor_bus();
-        }
         if (!sector_read_ok) {
             transfer_ok = false;
             storage_read_ok = false;
@@ -595,6 +589,10 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
     // Signal completion to host
     cached_sync_dma_address(dma);
     if (!transfer_ok) {
+        uint8_t fail_reason = !storage_read_ok ? 1 : 2;  // 1=storage, 2=dma
+        sasi_trace_event(TRACE_DMA_RESULT, fail_reason,
+                         (uint8_t)(completed_blocks & 0xFF),
+                         dma ? dma->bus_ctrl : 0);
         if (!storage_read_ok) {
             sasi_printf("SASI: READ storage failure at LBA %lu\n",
                         (unsigned long)(sector + completed_blocks));
@@ -608,6 +606,9 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
         }
         return;
     }
+    sasi_trace_event(TRACE_DMA_RESULT, 0x00,
+                     (uint8_t)(completed_blocks & 0xFF),
+                     dma ? dma->bus_ctrl : 0);
     signal_command_complete(dma);
 }
 
@@ -691,14 +692,7 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
 
         bool write_ok = false;
         if (storage_is_mounted(target)) {
-            bool held_for_storage = false;
-            if (backend == STORAGE_BACKEND_SDCARD) {
-                held_for_storage = hold_victor_bus();
-            }
             write_ok = storage_write_sector(target, sector + i, sector_data, 512);
-            if (held_for_storage) {
-                release_victor_bus();
-            }
             if (write_ok) {
                 any_storage_writes = true;
             }
@@ -732,14 +726,7 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
 
     // Sync all written sectors to persistent storage in one operation
     if (storage_write_ok && any_storage_writes && storage_is_mounted(target)) {
-        bool held_for_storage = false;
-        if (backend == STORAGE_BACKEND_SDCARD) {
-            held_for_storage = hold_victor_bus();
-        }
         storage_write_ok = storage_sync(target);
-        if (held_for_storage) {
-            release_victor_bus();
-        }
     }
 
     if (dma) {
@@ -751,6 +738,10 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
 
     cached_sync_dma_address(dma);
     if (!dma_transfer_ok || !storage_write_ok) {
+        uint8_t fail_reason = !dma_transfer_ok ? 2 : 1;  // 2=dma, 1=storage
+        sasi_trace_event(TRACE_DMA_RESULT, fail_reason,
+                         (uint8_t)(completed_blocks & 0xFF),
+                         dma ? dma->bus_ctrl : 0);
         if (!storage_write_ok) {
             sasi_printf("SASI: WRITE storage failure at LBA %lu\n",
                         (unsigned long)(sector + completed_blocks));
@@ -762,6 +753,9 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
         }
         return;
     }
+    sasi_trace_event(TRACE_DMA_RESULT, 0x00,
+                     (uint8_t)(completed_blocks & 0xFF),
+                     dma ? dma->bus_ctrl : 0);
     signal_command_complete(dma);
 }
 

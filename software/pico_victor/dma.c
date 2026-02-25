@@ -15,9 +15,47 @@
 #include "logging.h"
 #include "reg_queue_processor.h"
 #include "pico_fujinet/spi.h"
+#include "board_registers.pio.h"
 
 // Set to 1 to enable debug printf during DMA operations (WARNING: breaks timing-critical bus operations)
 #define DMA_DEBUG_PRINTF 0
+
+// Program offset for board_registers PIO program, set once during init.
+// Needed by reset_register_pio_sm() to JMP back to wrap_target (T0).
+static int board_reg_program_offset = -1;
+
+void dma_set_board_reg_program_offset(int offset) {
+    board_reg_program_offset = offset;
+}
+
+// Safe PIO0 SM0 restart that guarantees XACK/EXTIO are released and
+// the SM starts cleanly at T0.  Does NOT clear Y register (holds 0xEF3
+// bitmask loaded during preamble).
+void reset_register_pio_sm(void) {
+    PIO pio = PIO_REGISTERS;
+    uint sm = REG_SM_CONTROL;
+
+    pio_sm_set_enabled(pio, sm, false);
+    pio_sm_clear_fifos(pio, sm);
+
+    // Execute a NOP with side-set = S_NONE (bits 12:11 = 0) to release
+    // XACK and EXTIO pindirs immediately.  pio_encode_nop() produces
+    // 0xa042 whose bits 12:11 are already 0, matching S_NONE.
+    pio_sm_exec(pio, sm, pio_encode_nop());
+
+    // pio_sm_restart clears ISR, OSR, shift counters, and stall flag
+    // but preserves X/Y scratch registers (Y holds the 0xEF3 bitmask).
+    pio_sm_restart(pio, sm);
+
+    // JMP to wrap_target (T0) so the SM starts at the correct entry
+    // point without re-running the preamble (which would overwrite Y).
+    if (board_reg_program_offset >= 0) {
+        uint target = (uint)board_reg_program_offset + board_registers_wrap_target;
+        pio_sm_exec(pio, sm, pio_encode_jmp(target));
+    }
+
+    pio_sm_set_enabled(pio, sm, true);
+}
 
 #if DMA_DEBUG_PRINTF
 #define dma_printf(...) printf(__VA_ARGS__)
@@ -449,9 +487,15 @@ static inline void setup_pins_dma_control() {
     gpio_set_dir(SSO_PIN, GPIO_OUT);
 
     gpio_init(IO_M_PIN);
-    gpio_put(IO_M_PIN, low); 
+    gpio_put(IO_M_PIN, low);
     gpio_set_dir(IO_M_PIN, GPIO_OUT);
-}   
+
+    // Explicitly release XACK by switching it to SIO/input during DMA.
+    // XACK stays on PIO0 function otherwise (not in the BD0..ALE range),
+    // and frozen PIO0 pindirs could hold XACK low → READY low → DMA hangs.
+    gpio_init(XACK_PIN);
+    gpio_set_dir(XACK_PIN, GPIO_IN);
+}
 
 static inline void setup_pins_register_inputs() {
     //setup data pins BD0 to A19 to be owned by board register PIO as inputs
@@ -523,10 +567,9 @@ static void abort_dma_transfer(void) {
     pio_sm_set_enabled(PIO_DMA_MASTER, DMA_SM_CONTROL, false);
     pio_sm_clear_fifos(PIO_DMA_MASTER, DMA_SM_CONTROL);
 
-    // Restore register pins and re-enable register SM
+    // Restore register pins and safely restart register SM
     setup_pins_register_inputs();
-    pio_sm_clear_fifos(PIO_REGISTERS, REG_SM_CONTROL);
-    pio_sm_set_enabled(PIO_REGISTERS, REG_SM_CONTROL, true);
+    reset_register_pio_sm();
 
     // Release HOLD so 8088 can resume
     gpio_set_dir(HOLD_PIN, GPIO_IN);
@@ -570,6 +613,12 @@ static inline bool start_dma_control() {
                            dma_registers.bus_ctrl);
         return false;
     }
+    // Release XACK/EXTIO pindirs before disabling register SM.
+    // If the SM is mid-cycle with side S_XACK asserted, the frozen pindirs
+    // would hold XACK low → READY low → DMA PIO hangs at wait READY.
+    // pio_sm_exec() overrides the stalled instruction's side-set immediately.
+    pio_sm_exec(PIO_REGISTERS, REG_SM_CONTROL, pio_encode_nop());
+
     // Quiesce register SM before taking bus.
     pio_sm_set_enabled(PIO_REGISTERS, REG_SM_CONTROL, false);
     pio_sm_clear_fifos(PIO_REGISTERS, REG_SM_CONTROL);
@@ -587,8 +636,9 @@ static inline void release_dma_master() {
     pio_sm_clear_fifos(PIO_DMA_MASTER, DMA_SM_CONTROL);
     pio_sm_set_enabled(PIO_DMA_MASTER, DMA_SM_CONTROL, false);
     setup_pins_register_inputs();
-    pio_sm_clear_fifos(PIO_REGISTERS, REG_SM_CONTROL);
-    pio_sm_set_enabled(PIO_REGISTERS, REG_SM_CONTROL, true);
+
+    // Safe restart guarantees XACK/EXTIO are released and SM starts at T0.
+    reset_register_pio_sm();
 
     //wait for low then high so we can sync to CLOCK_5 edge to help meta-stability of board
     // Timeout protects against Victor clock stopping during release.
@@ -847,6 +897,7 @@ void dma_device_reset(dma_registers_t *dma) {
     dma->state.non_dma_req = 0;
     dma->state.status_pending = 0;
     dma->command = 0;
+    dma->status = 0;
     dma->bus_ctrl = 0;
     dma->control = 0;
     dma->selected_target = 0;
@@ -854,11 +905,14 @@ void dma_device_reset(dma_registers_t *dma) {
     dma->logical_block.full = 0;
     dma->reset_requested = false;
 
-    // Drop any deferred register operations queued before reset.
-    // This prevents stale DATA read/write events from reapplying old phase transitions.
-    uint32_t irq_state = save_and_disable_interrupts();
-    defer_queue.tail = defer_queue.head;
-    restore_interrupts(irq_state);
+    // DO NOT drain the defer queue here.  The queue is FIFO: entries enqueued
+    // BEFORE this RESET have already been dequeued and processed by the time
+    // we reach this point.  Entries AFTER this RESET belong to the new command
+    // sequence (SELECT, target ID, deselect, command bytes) that DOS fires
+    // immediately after RESET.  Draining them discards the post-RESET SELECT
+    // and deselect, leaving bus_ctrl/control/non_dma_req at zero while the
+    // ISR's cached STATUS already reflects command phase — every subsequent
+    // command byte is silently ignored and the system hangs.
 
     // Clear interrupt
     dma_update_interrupts(dma, false);

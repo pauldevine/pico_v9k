@@ -14,6 +14,8 @@
 #include "pico_victor/dma.h"
 #include "pico_victor/debug_queue.h"
 #include "pico_victor/reg_queue_processor.h"
+#include "pico_victor/register_irq_handlers.h"
+#include "hardware/structs/iobank0.h"
 #include "pico_fujinet/spi.h"
 #include "sasi.h"
 #include "sasi_log.h"
@@ -50,7 +52,60 @@ static void print_uart_help(void) {
     printf("  t   : dump SASI trace to UART\n");
     printf("  f   : force SASI_LOG.TXT flush now\n");
     printf("  a   : toggle automatic log flush\n");
+    printf("  p   : PIO0 state + XACK/EXTIO/CLK5/READY pin dump\n");
+    printf("  i   : fast IRQ DATA transition trace dump\n");
     printf("\n");
+}
+
+static void dump_pio0_and_pin_state(void) {
+    PIO pio = PIO_REGISTERS;
+    uint sm = REG_SM_CONTROL;
+
+    printf("\n=== PIO0 SM0 STATE ===\n");
+    printf("enabled=%d  stalled=%d  PC=0x%02x\n",
+           pio_sm_is_claimed(pio, sm),
+           pio_sm_is_exec_stalled(pio, sm),
+           pio_sm_get_pc(pio, sm));
+    printf("RX FIFO=%d/4  TX FIFO=%d/4\n",
+           pio_sm_get_rx_fifo_level(pio, sm),
+           pio_sm_get_tx_fifo_level(pio, sm));
+
+    // XACK (GPIO26) pin state
+    uint32_t xack_status = io_bank0_hw->io[XACK_PIN].status;
+    printf("XACK  (GPIO%d): OE=%d OUT=%d PAD=%d\n",
+           XACK_PIN,
+           !!(xack_status & IO_BANK0_GPIO0_STATUS_OETOPAD_BITS),
+           !!(xack_status & IO_BANK0_GPIO0_STATUS_OUTTOPAD_BITS),
+           !!(xack_status & IO_BANK0_GPIO0_STATUS_INFROMPAD_BITS));
+
+    // EXTIO (GPIO27) pin state
+    uint32_t extio_status = io_bank0_hw->io[EXTIO_PIN].status;
+    printf("EXTIO (GPIO%d): OE=%d OUT=%d PAD=%d\n",
+           EXTIO_PIN,
+           !!(extio_status & IO_BANK0_GPIO0_STATUS_OETOPAD_BITS),
+           !!(extio_status & IO_BANK0_GPIO0_STATUS_OUTTOPAD_BITS),
+           !!(extio_status & IO_BANK0_GPIO0_STATUS_INFROMPAD_BITS));
+
+    // READY (GPIO28) pin state
+    uint32_t ready_status = io_bank0_hw->io[READY_PIN].status;
+    printf("READY (GPIO%d): PAD=%d\n",
+           READY_PIN,
+           !!(ready_status & IO_BANK0_GPIO0_STATUS_INFROMPAD_BITS));
+
+    // CLK5 (GPIO30) - sample 3 times with 1us gaps to detect toggling
+    bool clk5_samples[3];
+    clk5_samples[0] = gpio_get(CLOCK_5_PIN);
+    busy_wait_us(1);
+    clk5_samples[1] = gpio_get(CLOCK_5_PIN);
+    busy_wait_us(1);
+    clk5_samples[2] = gpio_get(CLOCK_5_PIN);
+    bool toggling = (clk5_samples[0] != clk5_samples[1]) || (clk5_samples[1] != clk5_samples[2]);
+    printf("CLK5  (GPIO%d): samples=%d,%d,%d  %s\n",
+           CLOCK_5_PIN,
+           clk5_samples[0], clk5_samples[1], clk5_samples[2],
+           toggling ? "TOGGLING" : "STUCK");
+
+    printf("=== END PIO0 STATE ===\n\n");
 }
 
 static void handle_uart_command(int raw_ch, bool *auto_flush_enabled) {
@@ -80,6 +135,12 @@ static void handle_uart_command(int raw_ch, bool *auto_flush_enabled) {
             *auto_flush_enabled = !*auto_flush_enabled;
             printf("\nUART: automatic SASI log flush %s\n",
                    *auto_flush_enabled ? "ENABLED" : "DISABLED");
+            break;
+        case 'p':
+            dump_pio0_and_pin_state();
+            break;
+        case 'i':
+            register_irq_trace_dump("UART request");
             break;
         default:
             printf("\nUART: unknown command '%c' (0x%02X). Press 'h' for help.\n",
@@ -207,6 +268,9 @@ void initialize_uart() {
         printf("ERROR: Failed to load board_registers_program - PIO%d SM%d instruction memory full!\n", pio_get_index(register_pio), reg_sm_control);
         return -1;
     }
+
+    // Store offset so reset_register_pio_sm() can JMP to wrap_target after DMA.
+    dma_set_board_reg_program_offset(board_registers_program_offset);
 
     board_registers_program_init(register_pio, reg_sm_control, board_registers_program_offset);
 
