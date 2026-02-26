@@ -12,12 +12,17 @@
 #include "hardware/irq.h"
 #include "hardware/pio.h"
 #include "hardware/structs/systick.h"
+#include "hardware/sync.h"  // For __dmb()
 #include "dma.h"
 #include "reg_queue_processor.h"
 #include "register_irq_handlers.h"
 #include "dma_irq_handler.h"
 #include "fifo_helpers.h"
 #include "logging.h"
+#include "pico_storage/storage.h"
+#include "pico_storage/sd_storage.h"
+#include "pico_fujinet/spi.h"
+#include "sasi_log.h"
 
 void setup_irq_handlers(void) {
     //delete any data that might be in the FIFOs from cache warming
@@ -158,9 +163,87 @@ void core1_main() {
     systick_hw->csr = 0x5; // Enable, use processor clock, no interrupt
     systick_hw->rvr = 0x00FFFFFF; // Max reload value (24-bit)
 
+    // --- Storage initialization runs on Core 1 ---
+    // This ensures the SDIO library's DMA_IRQ_1 is registered on Core 1's
+    // NVIC (irq_set_enabled enables on the calling core).  Running SD init
+    // here keeps storage I/O and SASI command processing on the same core.
+    //
+    // IMPORTANT: After SDIO init, DMA_IRQ_1 must be set to a LOWER priority
+    // than PIO0_IRQ_0 (the register ISR, priority 0).  The SDIO library
+    // leaves DMA_IRQ_1 at default priority 0 (highest), which is the SAME
+    // hardware priority as the register ISR.  Equal-priority interrupts
+    // cannot preempt each other on ARM Cortex-M, so the register ISR would
+    // be blocked while the SDIO DMA handler runs.  This causes RX FIFO
+    // overflow during rapid register writes (configure_dma_mode writes 7
+    // registers in ~5us), leading to missed CONTROL writes and stale cache.
+    //
+    // While SD init runs (~300-500ms), the register ISR is already active
+    // and serves cached responses.  The defer queue accumulates entries but
+    // the 8088 sends very few register accesses this early in boot.
+#if USE_SD_STORAGE
+    printf("Core1: Initializing SD card storage backend...\n");
+    sd_storage_register();
+    if (storage_init(STORAGE_BACKEND_SDCARD)) {
+        int image_count = sd_storage_get_image_count();
+        if (image_count > 0) {
+            const char *first_image = sd_storage_get_image_name(0);
+            if (first_image) {
+                printf("Core1: Auto-mounting '%s'\n", first_image);
+                if (!storage_mount(0, first_image, false)) {
+                    printf("Core1: failed to mount '%s' on target 0\n", first_image);
+                }
+            }
+        } else {
+            printf("Core1: No images found, trying default '%s'\n", SD_DISK_IMAGE);
+            if (!storage_mount(0, SD_DISK_IMAGE, false)) {
+                printf("Core1: failed to mount '%s' on target 0\n", SD_DISK_IMAGE);
+            }
+        }
+    } else {
+        printf("Core1: SD init failed, falling back to FujiNet\n");
+        spi_bus_init();
+        if (!fujinet_config_boot(false)) {
+            printf("Core1: FujiNet failed to clear boot config\n");
+        }
+        if (!fujinet_mount_host(0, FUJINET_DISK_ACCESS_READ)) {
+            printf("Core1: FujiNet failed to mount host slot 0\n");
+        }
+        if (!fujinet_mount_disk_slot(0, FUJINET_DISK_ACCESS_READ)) {
+            printf("Core1: FujiNet failed to mount disk slot 0\n");
+        }
+    }
+#else
+    printf("Core1: Initializing FujiNet storage backend...\n");
+    spi_bus_init();
+    if (!fujinet_config_boot(false)) {
+        printf("Core1: FujiNet failed to clear boot config\n");
+    }
+    if (!fujinet_mount_host(0, FUJINET_DISK_ACCESS_READ)) {
+        printf("Core1: FujiNet failed to mount host slot 0\n");
+    }
+    if (!fujinet_mount_disk_slot(0, FUJINET_DISK_ACCESS_READ)) {
+        printf("Core1: FujiNet failed to mount disk slot 0\n");
+    }
+#endif
+
+    // CRITICAL: Lower DMA_IRQ_1 priority so the register ISR (PIO0_IRQ_0,
+    // priority 0) can always preempt the SDIO DMA completion handler.
+    // The SDIO library leaves DMA_IRQ_1 at default priority 0 (highest),
+    // which blocks the register ISR during SD card operations.
+    // RP2350 Cortex-M33 has 4 priority bits (bits 7:4), so 0x80 = level 8.
+    irq_set_priority(DMA_IRQ_1, 0x80);
+
+    sasi_log_init();
+
+    // Signal Core 0 that storage is ready for log flushing
+    extern volatile bool storage_ready;
+    storage_ready = true;
+    __dmb();
+
+    printf("Core1: Storage ready, entering defer worker loop\n");
+
     // Now run the deferred processing worker
     // This will process the queue of deferred register operations
-    printf("Starting deferred processing worker on Core1...\n");
     defer_worker_main();  // This never returns
 }
 

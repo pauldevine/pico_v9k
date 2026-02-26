@@ -673,6 +673,10 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
             break;
         }
 
+        // Ensure DMA-read data in sector_data[] is fully visible before SDIO write.
+        // Without this barrier, Core 1 may see stale cache lines from the PIO DMA.
+        __dmb();
+
 #if SASI_DMA_READ_VERIFY
         // Verify DMA read against expected test pattern (for dma_verify.c round-trip test)
         // Pattern: byte[j] = (sector + i + j) & 0xFF

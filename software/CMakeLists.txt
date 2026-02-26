@@ -67,8 +67,12 @@ target_sources(dma_board PRIVATE
 pico_set_binary_type(dma_board default)
 
 # Core 1 stack is provided explicitly via multicore_launch_core1_with_stack().
+# USE_SD_STORAGE and SD_DISK_IMAGE are shared between dma_board.c and register_cache.c
+# (storage init runs on Core 1 so SDIO DMA_IRQ_1 lands on Core 1's NVIC).
 target_compile_definitions(dma_board PRIVATE
     PICO_CORE1_STACK_SIZE=0
+    USE_SD_STORAGE=1
+    SD_DISK_IMAGE="victor.img"
 )
 
 # Generate PIO headers for cached version

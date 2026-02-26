@@ -349,6 +349,19 @@ static bool sd_storage_read_sector(uint8_t target_id, uint32_t lba, uint8_t *buf
     return true;
 }
 
+// Retry and threshold constants for write and sync operations.
+// Transient SDIO errors (card GC, busy states, cross-core IRQ timing)
+// are common and should not permanently disable the target.
+#define SD_WRITE_MAX_RETRIES       3
+#define SD_WRITE_RETRY_DELAY_MS    5
+#define SD_WRITE_DISABLE_THRESHOLD 50
+#define SD_SYNC_MAX_RETRIES        3
+#define SD_SYNC_RETRY_DELAY_MS     5
+#define SD_SYNC_DISABLE_THRESHOLD  50
+
+static uint32_t sd_write_fail_count[STORAGE_MAX_TARGETS];
+static uint32_t sd_sync_fail_count[STORAGE_MAX_TARGETS];
+
 static bool sd_storage_write_sector(uint8_t target_id, uint32_t lba, const uint8_t *buffer, size_t len) {
     if (!sd_initialized || !sd_state || target_id >= STORAGE_MAX_TARGETS) {
         return false;
@@ -371,52 +384,58 @@ static bool sd_storage_write_sector(uint8_t target_id, uint32_t lba, const uint8
         return false;
     }
 
-    fatfs_guard_lock();
-
-    // Seek to sector position
-    FSIZE_t offset = (FSIZE_t)lba * STORAGE_SECTOR_SIZE;
-    FRESULT fr = f_lseek(&target->file, offset);
-    if (FR_OK != fr) {
-        printf("SD Storage: f_lseek error: %s (%d)\n", FRESULT_str(fr), fr);
-        if (sd_storage_is_fatal_error(fr)) {
-            sd_storage_disable_target(target_id, "f_lseek(write)", fr);
-        }
-        fatfs_guard_unlock();
-        return false;
-    }
-
-    // Write the sector
-    UINT bytes_written;
     size_t write_len = (len > 0) ? len : STORAGE_SECTOR_SIZE;
-    fr = f_write(&target->file, buffer, write_len, &bytes_written);
-    if (FR_OK != fr) {
-        printf("SD Storage: f_write error: %s (%d)\n", FRESULT_str(fr), fr);
-        if (sd_storage_is_fatal_error(fr)) {
-            sd_storage_disable_target(target_id, "f_write", fr);
+    FRESULT fr = FR_DISK_ERR;
+
+    for (int attempt = 0; attempt < SD_WRITE_MAX_RETRIES; attempt++) {
+        fatfs_guard_lock();
+
+        // Seek to sector position (re-seek on each retry in case position was lost)
+        FSIZE_t offset = (FSIZE_t)lba * STORAGE_SECTOR_SIZE;
+        fr = f_lseek(&target->file, offset);
+        if (FR_OK != fr) {
+            fatfs_guard_unlock();
+            printf("SD WR LBA %lu seek attempt %d: %s (%d)\n",
+                   (unsigned long)lba, attempt, FRESULT_str(fr), fr);
+            if (attempt + 1 < SD_WRITE_MAX_RETRIES) {
+                sleep_ms(SD_WRITE_RETRY_DELAY_MS);
+                continue;
+            }
+            break;
         }
+
+        // Write the sector
+        UINT bytes_written;
+        fr = f_write(&target->file, buffer, write_len, &bytes_written);
         fatfs_guard_unlock();
-        return false;
+
+        if (fr == FR_OK && bytes_written == write_len) {
+            // Success - reset consecutive failure counter
+            sd_write_fail_count[target_id] = 0;
+            return true;
+        }
+
+        if (fr != FR_OK) {
+            printf("SD WR LBA %lu attempt %d: %s (%d)\n",
+                   (unsigned long)lba, attempt, FRESULT_str(fr), fr);
+        } else {
+            printf("SD WR LBA %lu attempt %d: short write %u of %zu\n",
+                   (unsigned long)lba, attempt, bytes_written, write_len);
+        }
+
+        if (attempt + 1 < SD_WRITE_MAX_RETRIES) {
+            sleep_ms(SD_WRITE_RETRY_DELAY_MS);
+        }
     }
 
-    fatfs_guard_unlock();
-
-    if (bytes_written != write_len) {
-        printf("SD Storage: short write: %u of %zu bytes\n", bytes_written, write_len);
-        return false;
+    // All retries exhausted — track consecutive failures
+    sd_write_fail_count[target_id]++;
+    if (sd_write_fail_count[target_id] >= SD_WRITE_DISABLE_THRESHOLD) {
+        sd_storage_disable_target(target_id, "f_write(sustained)", fr);
     }
 
-    return true;
+    return false;
 }
-
-// Track consecutive sync failures per target.  Transient SDIO errors are
-// common (SD card internal GC, busy states) and should not permanently
-// disable the target.  Only disable after many consecutive failures which
-// indicate a genuinely broken card or corrupted file handle.
-#define SD_SYNC_MAX_RETRIES      3
-#define SD_SYNC_RETRY_DELAY_MS   5
-#define SD_SYNC_DISABLE_THRESHOLD 50
-
-static uint32_t sd_sync_fail_count[STORAGE_MAX_TARGETS];
 
 static bool sd_storage_sync(uint8_t target_id) {
     if (!sd_initialized || !sd_state || target_id >= STORAGE_MAX_TARGETS) {

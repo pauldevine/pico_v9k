@@ -16,20 +16,15 @@
 #include "pico_victor/reg_queue_processor.h"
 #include "pico_victor/register_irq_handlers.h"
 #include "hardware/structs/iobank0.h"
-#include "pico_fujinet/spi.h"
 #include "sasi.h"
 #include "sasi_log.h"
-#include "pico_storage/storage.h"
-#include "pico_storage/sd_storage.h"
 #include "pico_storage/fatfs_guard.h"
 
-// Storage backend selection
-// Set to 1 to use SD card, 0 to use FujiNet
+// USE_SD_STORAGE and SD_DISK_IMAGE are provided by CMakeLists.txt
+// target_compile_definitions so both dma_board.c and register_cache.c see them.
 #ifndef USE_SD_STORAGE
 #define USE_SD_STORAGE 1
 #endif
-
-// Default disk image filename on SD card
 #ifndef SD_DISK_IMAGE
 #define SD_DISK_IMAGE "victor.img"
 #endif
@@ -39,6 +34,10 @@
 #endif
 
 extern queue_t log_queue;
+
+// Set by Core 1 after SD/FujiNet init + mount completes.
+// Core 0 main loop checks this before calling sasi_log_flush_if_ready().
+volatile bool storage_ready = false;
 
 #ifndef CORE1_STACK_WORDS
 #define CORE1_STACK_WORDS 2048u  // 8 KiB explicit Core1 stack for deferred + FatFS workload
@@ -194,63 +193,13 @@ void initialize_uart() {
     // Initialize shared FatFS lock before any SD card file operations.
     fatfs_guard_init();
 
-    // Initialize storage backend
-#if USE_SD_STORAGE
-    printf("Initializing SD card storage backend...\n");
-    sd_storage_register();
-    if (storage_init(STORAGE_BACKEND_SDCARD)) {
-        // Check for discovered disk images
-        int image_count = sd_storage_get_image_count();
-        if (image_count > 0) {
-            // Mount first discovered image on target 0
-            const char *first_image = sd_storage_get_image_name(0);
-            if (first_image) {
-                printf("SD Storage: Auto-mounting first image '%s'\n", first_image);
-                if (!storage_mount(0, first_image, false)) {
-                    printf("SD Storage: failed to mount '%s' on target 0\n", first_image);
-                }
-            }
-        } else {
-            // No images discovered, try default filename
-            printf("SD Storage: No images found, trying default '%s'\n", SD_DISK_IMAGE);
-            if (!storage_mount(0, SD_DISK_IMAGE, false)) {
-                printf("SD Storage: failed to mount '%s' on target 0\n", SD_DISK_IMAGE);
-            }
-        }
-    } else {
-        printf("SD Storage: initialization failed, falling back to FujiNet\n");
-        // Fall through to FujiNet initialization
-        spi_bus_init();
-        if (!fujinet_config_boot(false)) {
-            printf("FujiNet: failed to clear boot config\n");
-        }
-        if (!fujinet_mount_host(0, FUJINET_DISK_ACCESS_READ)) {
-            printf("FujiNet: failed to mount host slot 0\n");
-        }
-        if (!fujinet_mount_disk_slot(0, FUJINET_DISK_ACCESS_READ)) {
-            printf("FujiNet: failed to mount disk slot 0\n");
-        }
-    }
-#else
-    // Use FujiNet as primary storage
-    printf("Initializing FujiNet storage backend...\n");
-    spi_bus_init();
-    if (!fujinet_config_boot(false)) {
-        printf("FujiNet: failed to clear boot config\n");
-    }
-    if (!fujinet_mount_host(0, FUJINET_DISK_ACCESS_READ)) {
-        printf("FujiNet: failed to mount host slot 0\n");
-    }
-    if (!fujinet_mount_disk_slot(0, FUJINET_DISK_ACCESS_READ)) {
-        printf("FujiNet: failed to mount disk slot 0\n");
-    }
-#endif
+    // Storage backend init (SD card or FujiNet) and sasi_log_init() run on
+    // Core 1 so that SDIO DMA_IRQ_1 is registered on Core 1's NVIC.  This
+    // eliminates IRQ contention with Core 0's register ISR (PIO0_IRQ_0)
+    // during inter-batch DMA gaps when the 8088 polls STATUS rapidly.
+    // See register_cache.c::core1_main() for the actual init sequence.
 
-    // Initialize SASI command logging (checks for SASLOG marker on SD card)
-    sasi_log_init();
     bool sasi_log_auto_flush_enabled = SASI_LOG_AUTO_FLUSH_DEFAULT != 0;
-    printf("SASI Log: automatic flush %s (UART 'a' toggles, 'f' forces flush)\n",
-           sasi_log_auto_flush_enabled ? "ENABLED" : "DISABLED");
     print_uart_help();
 
     //configure GPIO pulls and output strenght/skew etc
@@ -327,7 +276,7 @@ void initialize_uart() {
         if (cmd >= 0) {
             handle_uart_command(cmd, &sasi_log_auto_flush_enabled);
         }
-        if (sasi_log_auto_flush_enabled) {
+        if (sasi_log_auto_flush_enabled && storage_ready) {
             sasi_log_flush_if_ready(&dma_registers);
         }
     
