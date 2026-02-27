@@ -29,17 +29,17 @@
 #define WR_PIN 22
 #define DTR_PIN 23       
 #define ALE_PIN 24      
-#define DEN_PIN 25 
-#define HOLD_PIN 26  
+#define HOLD_PIN 25
+#define XACK_PIN 26
 #define EXTIO_PIN 27
 #define READY_PIN 28
 #define HLDA_PIN 29
 #define CLOCK_5_PIN 30
 #define CLOCK_15B_PIN 31
 #define IR_4_PIN 32
-#define XACK_PIN 33
-#define IO_M_PIN 34
-#define IR_5_PIN 35
+#define UART_RX_PIN 33
+#define IR_5_PIN 34
+#define IO_M_PIN 35
 
 // DMA board IRQ line (IR4 by default; jumperable to IR5 per manual).
 #define DMA_IRQ_PIN IR_4_PIN
@@ -49,8 +49,17 @@
 #define DLATCH_PIN 37
 #define CSEN_PIN 38
 #define PHASE_2_PIN 39
+#define DEN_PIN 40
 
-#define DEBUG_PIN 46 // Was 45, but that conflicts with SDIO D3!
+#define SDIO_CLK_PIN 41
+#define SDIO_CMD_PIN 42
+#define SDIO_D0_PIN 43
+#define SDIO_D1_PIN 44
+#define SDIO_D2_PIN 45
+#define SDIO_D3_PIN 46
+
+#define UART_TX_PIN 0
+#define DEBUG_PIN 47
 
 #define ADDRESS_DIR_PINCNT 2
 #define DMA_READ 1

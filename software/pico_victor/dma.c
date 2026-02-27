@@ -393,6 +393,7 @@ void ontime_pin_setup() {
     gpio_pull_up(SSO_PIN);  // SSO is active low, so pull-up
     gpio_pull_up(DLATCH_PIN); // DLATCH is active low, so pull-up
     gpio_pull_up(EXTIO_PIN); // EXTIO is active low, so pull-up
+    gpio_pull_up(XACK_PIN);  // XACK is active low (open-drain), so pull-up
 
     // DMA IRQ line: drive low by default, assert when interrupts are pending.
     gpio_set_function(DMA_IRQ_PIN, GPIO_FUNC_SIO);
@@ -411,7 +412,7 @@ static inline void setup_pins_dma_control() {
     
     //setup data pins BD0 to A19 to be owned by PIO as inputs
     uint function = GPIO_FUNC_PIO0 + pio_get_index(PIO_DMA_MASTER);
-    for (int pin = BD0_PIN; pin <= DEN_PIN; ++pin) {
+    for (int pin = BD0_PIN; pin <= ALE_PIN; ++pin) {
         gpio_set_function(pin, function);
         pio_gpio_init(PIO_DMA_MASTER, pin);
         pio_sm_set_pins_with_mask(PIO_DMA_MASTER, DMA_SM_CONTROL, 0u, 1u << pin); // preload latch low
@@ -432,7 +433,12 @@ static inline void setup_pins_dma_control() {
     setup_pin_dma_control(EXTIO_PIN, GPIO_OUT, high);  // EXTIO/ output, preload high
 
     setup_pin_dma_control(ALE_PIN, GPIO_OUT, low);   // ALE/ output, preload low
-    setup_pin_dma_control(DEN_PIN, GPIO_OUT, low);   // DEN/ output, preload low
+
+    // DEN is at GPIO 40 (outside PIO's 0-31 range), use plain GPIO.
+    // DEN is not needed for DMA — hold inactive (high).
+    gpio_init(DEN_PIN);
+    gpio_put(DEN_PIN, 1);  // inactive (not needed for DMA)
+    gpio_set_dir(DEN_PIN, GPIO_OUT);
     
     setup_pin_dma_control(READY_PIN, GPIO_IN, low); // READY/ input, preload low
     setup_pin_dma_control(CLOCK_5_PIN, GPIO_IN, low); // CLOCK_5 input, preload low

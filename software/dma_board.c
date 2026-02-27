@@ -32,7 +32,6 @@
 
 #define UART_ID uart0
 #define BAUD_RATE 230400
-#define UART_TX_PIN 0
 #define DEBUG_GPIO 0
 
 extern queue_t log_queue;

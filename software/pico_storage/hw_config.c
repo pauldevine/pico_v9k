@@ -15,6 +15,7 @@
 
 #include "hw_config.h"
 #include "sd_card.h"
+#include "../pico_victor/dma.h"
 
 /* SDIO Interface Configuration
  * For RP2350 with GPIOs >= 32, CLK_gpio must be specified explicitly
@@ -24,9 +25,9 @@
  * For D0=42, CLK should be 40.
  */
 static sd_sdio_if_t sdio_if = {
-    .CLK_gpio = 40,           // Must specify explicitly for GPIOs >= 32
-    .CMD_gpio = 41,
-    .D0_gpio = 42,            // D1=43, D2=44, D3=45 are auto-calculated
+    .CLK_gpio = SDIO_CLK_PIN,           // Must specify explicitly for GPIOs >= 32
+    .CMD_gpio = SDIO_CMD_PIN,
+    .D0_gpio = SDIO_D0_PIN,            // D1=43, D2=44, D3=45 are auto-calculated
     .SDIO_PIO = pio2,
     .DMA_IRQ_num = DMA_IRQ_1,
     .baud_rate = 15 * 1000 * 1000,  // 15 MHz - conservative speed
