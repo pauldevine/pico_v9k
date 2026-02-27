@@ -14,6 +14,7 @@
 #include "sasi_log.h"
 #include "logging.h"
 #include "reg_queue_processor.h"
+#include "register_irq_handlers.h"
 #include "pico_fujinet/spi.h"
 #include "board_registers.pio.h"
 
@@ -934,6 +935,7 @@ void dma_device_reset(dma_registers_t *dma) {
 
     // Clear interrupt
     dma_update_interrupts(dma, false);
+    status_phase_flag = false;  // Reset diagnostic flag on device reset
 
     // DO NOT call cached_status_sync_from_bus() or cached_set_data() here.
     // The ISR already set the cache correctly.  See comment block above.

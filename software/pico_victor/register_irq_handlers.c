@@ -183,6 +183,29 @@ static inline void clear_irq_on_status_read(dma_registers_t *dma) {
     gpio_put(DMA_IRQ_PIN, DMA_IRQ_DEASSERT_LEVEL);
 }
 
+// Counter for TX FIFO full events — if non-zero after a hang, this is the
+// likely kill shot: the ISR dropped a response, the SM blocked on TX pull,
+// XACK stayed asserted, READY stayed low, and the 8088 hung permanently.
+volatile uint32_t isr_tx_fifo_full_count = 0;
+
+// Lightweight diagnostic counters — zero overhead (single volatile increment).
+// After a hang, press 'p' twice: if isr_call_count is static, the host has
+// stopped accessing registers (bug is on Victor/DOS side or XACK stuck).
+// If it's still incrementing, the host is polling but the Pico is responding wrong.
+volatile uint32_t isr_call_count = 0;         // ISR invocations
+volatile uint32_t isr_fifo_entries_count = 0;  // Total FIFO entries processed
+volatile uint32_t isr_post_status_phase_count = 0;  // ISR calls after status phase entered
+volatile bool     status_phase_flag = false;         // Set by sasi_enter_status_phase(), cleared by bus_free/reset
+
+// Detailed breakdown of what the ISR processes during status phase.
+// After a hang where post_status_phase_count is large but MSG/BUS_FREE never
+// appear in the trace, these tell us exactly which register the host reads.
+volatile uint32_t diag_status_reads = 0;   // STATUS/0x30 reads during status_phase_flag
+volatile uint32_t diag_data_reads = 0;     // DATA reads during status_phase_flag
+volatile uint32_t diag_other_reads = 0;    // Other register reads during status_phase_flag
+volatile uint32_t diag_writes = 0;         // Register writes during status_phase_flag
+volatile uint8_t  diag_last_phase = 0;     // Last phase_before value seen in DATA read path
+
 // Safety-guarded PIO TX FIFO put for use in ISR context.
 // After hundreds of DMA batch cycles (each restarting the register PIO SM),
 // there is a small risk of the SM being stuck with a full TX FIFO.
@@ -192,6 +215,8 @@ static inline void clear_irq_on_status_read(dma_registers_t *dma) {
 static inline void pio_sm_put_isr_safe(PIO pio, uint sm, uint32_t data) {
     if (!pio_sm_is_tx_fifo_full(pio, sm)) {
         pio_sm_put(pio, sm, data);
+    } else {
+        isr_tx_fifo_full_count++;
     }
 }
 
@@ -241,11 +266,16 @@ void init_register_irq_handlers(void) {
 // IRQ handler for board_registers handles FIFO_REG_READ/FIFO_REG_WRITE payloads.
 void __time_critical_func(register_read_irq_isr)() {
     static uint32_t masked_offset;
+    isr_call_count++;
+    if (status_phase_flag) {
+        isr_post_status_phase_count++;
+    }
 
     // Drain all pending FIFO entries in a single ISR invocation.
     // This avoids tail-chain overhead (~30ns per re-entry) and ensures
     // write-then-read sequences respond within the register-cycle timing budget.
     while (!(PIO_REGISTERS->fstat & REG_FIFO_RXEMPTY_BIT)) {
+        isr_fifo_entries_count++;
         uint32_t raw_value;
         uint8_t data = 0;
         bool response_sent = false;
@@ -276,6 +306,12 @@ void __time_critical_func(register_read_irq_isr)() {
                 }
 
                 masked_offset = dma_mask_offset(address - DMA_REGISTER_BASE) & 0xFFu;
+                // Status-phase diagnostic: track which registers the host reads
+                if (status_phase_flag) {
+                    if (masked_offset == REG_DATA)           diag_data_reads++;
+                    else if (masked_offset == REG_STATUS || masked_offset == 0x30) diag_status_reads++;
+                    else                                     diag_other_reads++;
+                }
                 if (!is_valid_reg_offset(masked_offset)) {
                     trace_flags |= FIFO_TRACE_FLAG_ERROR;
                     data = 0xFF;
@@ -291,6 +327,7 @@ void __time_critical_func(register_read_irq_isr)() {
                     // status→message→bus_free, causing a protocol deadlock.
                     uint8_t bus_ctrl_snapshot = dma->bus_ctrl;
                     uint8_t phase_before = bus_ctrl_snapshot & (SASI_CTL_BIT | SASI_INP_BIT | SASI_MSG_BIT);
+                    if (status_phase_flag) diag_last_phase = phase_before;
 #if REG_IRQ_FAST_TRACE_ENABLE
                     uint8_t cached_data_before = cached->values[REG_DATA];
 #endif
@@ -311,6 +348,7 @@ void __time_critical_func(register_read_irq_isr)() {
                         dma->state.non_dma_req = 0;
                         dma->state.status_pending = 0;
                         dma->state.asserting_ack = 0;
+                        status_phase_flag = false;  // Bus free — reset diagnostic flag
                         __dmb();  // Ensure bus_ctrl update is visible before IRQ line update.
                         dma_update_interrupts(dma, false);
                         // Record bus-free transition in SASI trace for UART 't' visibility.
@@ -388,6 +426,7 @@ void __time_critical_func(register_read_irq_isr)() {
             }
 
             case FIFO_REG_WRITE: {
+                if (status_phase_flag) diag_writes++;
                 uint32_t address = dma_fifo_write_address(raw_value);
                 if (address < DMA_REGISTER_BASE || address >= (DMA_REGISTER_BASE + 0x100)) {
                     trace_flags |= FIFO_TRACE_FLAG_ERROR;

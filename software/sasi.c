@@ -14,6 +14,7 @@
 #include "sasi_log.h"
 #include "pico_storage/storage.h"
 #include "pico_fujinet/spi.h"
+#include "pico_victor/register_irq_handlers.h"
 
 // Set to 1 to enable SASI debug printf (WARNING: slows Core 1 dramatically, causes queue overflow)
 #define SASI_DEBUG_PRINTF 0
@@ -127,9 +128,16 @@ void sasi_trace_dump(void) {
     static const char *type_names[] = {
         "CMD_BYTE", "CMD_DONE", "STATUS", "MSG", "BUS_FREE",
         "DMA_RD", "DMA_WR", "RESET", "SELECT", "DATA_RD", "STAT_RD", "DATA_OUT", "DO_SETUP",
-        "DMA_RSLT"
+        "DMA_RSLT", "DMA_SEC", "DMA_ADDR"
     };
 
+    // Report ISR and queue health counters before the trace
+    extern volatile uint32_t isr_tx_fifo_full_count;
+    extern defer_queue_t defer_queue;
+    printf("\n=== SASI DIAG ===\n");
+    printf("TX FIFO full drops: %lu\n", (unsigned long)isr_tx_fifo_full_count);
+    printf("Defer queue drops:  %lu  processed: %lu\n",
+           (unsigned long)defer_queue.drops, (unsigned long)defer_queue.processed);
     printf("\n=== SASI TRACE (last %d events) ===\n", SASI_TRACE_SIZE);
     printf("Seq   Type      Val  Idx  BusCtrl\n");
     printf("----  --------  ---  ---  -------\n");
@@ -143,7 +151,7 @@ void sasi_trace_dump(void) {
     for (uint32_t i = 0; i < count; i++) {
         uint32_t idx = (start + i) & (SASI_TRACE_SIZE - 1);
         sasi_trace_entry_t *e = &sasi_trace.entries[idx];
-        const char *name = (e->type < 14) ? type_names[e->type] : "???";
+        const char *name = (e->type < 16) ? type_names[e->type] : "???";
         printf("%4lu  %-8s  %02X   %d    %02X\n",
                (unsigned long)e->seq, name, e->value, e->cmd_index, e->bus_ctrl);
     }
@@ -216,6 +224,16 @@ static void sasi_enter_status_phase(dma_registers_t *dma, uint8_t status_byte) {
     // CRITICAL: Update cache BEFORE asserting interrupt!
     // Host polls immediately after seeing IR4 - cache must be ready.
     cached_status_sync_from_bus(dma);
+    // Diagnostic: mark that STATUS phase is visible to ISR.
+    // If isr_post_status_phase_count is 0 after a hang, the 8088 never
+    // polled registers after the cache showed STATUS phase.
+    isr_post_status_phase_count = 0;
+    diag_status_reads = 0;
+    diag_data_reads = 0;
+    diag_other_reads = 0;
+    diag_writes = 0;
+    diag_last_phase = 0;
+    status_phase_flag = true;
     __dmb();  // Ensure cache write is visible to Core 0
     dma_update_interrupts(dma, true);
     sasi_fastlog("SASI: status phase ready, bus_ctrl=0x%02X, irq_pend=%d\n",
@@ -293,7 +311,7 @@ void route_to_sasi_target(dma_registers_t *dma, uint8_t *cmd, int len) {
                     signal_dma_failure_status(dma);
                     break;
                 }
-                dma->dma_address.full += sizeof(params);
+                dma->dma_address.full = (dma->dma_address.full + sizeof(params)) & 0x000FFFFF;
                 cached_sync_dma_address(dma);
 
                 // Complete with GOOD status.
@@ -448,7 +466,6 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
     uint32_t sector = ((cmd[1] & 0x1F) << 16) | (cmd[2] << 8) | cmd[3];
     uint16_t blocks = cmd[4] ? cmd[4] : 256; // SASI Read(6): 0 means 256 blocks
 
-    sasi_printf("RD sectors:%u starting: %u\n", (unsigned)blocks, (unsigned)sector);
     sasi_trace_event(TRACE_DMA_READ, (uint8_t)(sector & 0xFF), blocks, dma ? dma->bus_ctrl : 0);
 
     if (dma) {
@@ -463,6 +480,14 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
     dma->bus_ctrl |= (SASI_BSY_BIT | SASI_CTL_BIT);
     __dmb();  // Ensure Core 0 sees bus_ctrl update
     cached_status_sync_from_bus(dma);
+
+    // Record full 20-bit DMA start address: value=low, cmd_idx=mid, bus_ctrl=high
+    if (dma) {
+        sasi_trace_event(TRACE_DMA_ADDR,
+                         dma->dma_address.bytes.low,
+                         dma->dma_address.bytes.mid,
+                         dma->dma_address.bytes.high);
+    }
 
     // Snapshot the DMA address into a local variable.  Core 0's ISR writes
     // individual bytes to dma->dma_address.bytes.* (address register updates),
@@ -523,6 +548,11 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
         local_dma_addr += 512;
         completed_blocks++;
 
+        // Per-sector progress: value=sector LSB, idx=completed count, bus_ctrl=DMA addr low byte
+        sasi_trace_event(TRACE_DMA_SECTOR, (uint8_t)((sector + i) & 0xFF),
+                         (uint8_t)(completed_blocks & 0xFF),
+                         (uint8_t)(local_dma_addr & 0xFF));
+
         // If more sectors remain, return to COMMAND busy while processing next sector
         if (i + 1 < blocks) {
             dma->bus_ctrl &= ~(SASI_REQ_BIT | SASI_MSG_BIT | SASI_INP_BIT | SASI_ACK_BIT);
@@ -540,41 +570,56 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
 
 #if SASI_DMA_WRITE_VERIFY
     if (transfer_ok) {
-    // Verification: verify FIRST sector to check if DMA read-back works
-    // Testing both on-board and expansion RAM
-    {
-        printf("VERIFY addr=%05lX ", (unsigned long)verify_start_addr);
+    // Verify EACH sector: re-read from SD, read back from Victor RAM via DMA,
+    // compare full 512-byte CRC.  Prints first mismatch bytes for diagnosis.
+    uint32_t vaddr = verify_start_addr;
+    for (uint16_t vi = 0; vi < completed_blocks; vi++) {
         uint8_t expected[512];
         uint8_t readback[512];
 
         // Re-read expected data from disk
-        if (!read_sector_from_disk(dma, sector, expected)) {
-            memset(expected, 0x00, sizeof(expected));
+        if (!read_sector_from_disk(dma, sector + vi, expected)) {
+            printf("VERIFY: SD re-read failed LBA %lu\n",
+                   (unsigned long)(sector + vi));
+            break;
         }
-        uint8_t expected_crc = sasi_crc8(expected, 512);
+        uint8_t src_crc = sasi_crc8(expected, 512);
 
-        // Read back just the first 8 bytes to minimize DMA time
-        dma_read_from_victor_ram(readback, 8, verify_start_addr);
+        // Read back full sector from Victor RAM
+        if (!dma_read_from_victor_ram(readback, 512, vaddr)) {
+            printf("VERIFY: DMA readback failed addr=%05lX\n",
+                   (unsigned long)vaddr);
+            break;
+        }
+        uint8_t rb_crc = sasi_crc8(readback, 512);
 
-        // Quick check: compare first 8 bytes
-        bool match = true;
-        for (int j = 0; j < 8; j++) {
-            if (expected[j] != readback[j]) {
-                match = false;
-                break;
+        if (src_crc != rb_crc) {
+            // Find first mismatch offset
+            int mismatch_off = -1;
+            int mismatch_count = 0;
+            for (int j = 0; j < 512; j++) {
+                if (expected[j] != readback[j]) {
+                    if (mismatch_off < 0) mismatch_off = j;
+                    mismatch_count++;
+                }
             }
+            printf("VERIFY FAIL LBA %lu addr=%05lX srcCRC=%02X rbCRC=%02X mismatches=%d first@%d\n",
+                   (unsigned long)(sector + vi), (unsigned long)vaddr,
+                   src_crc, rb_crc, mismatch_count, mismatch_off);
+            // Dump 16 bytes around first mismatch
+            int dstart = (mismatch_off > 0) ? mismatch_off : 0;
+            printf("  exp[%03X]:", dstart);
+            for (int j = dstart; j < dstart + 16 && j < 512; j++)
+                printf(" %02X", expected[j]);
+            printf("\n  got[%03X]:", dstart);
+            for (int j = dstart; j < dstart + 16 && j < 512; j++)
+                printf(" %02X", readback[j]);
+            printf("\n");
+        } else {
+            printf("VERIFY OK LBA %lu addr=%05lX CRC=%02X\n",
+                   (unsigned long)(sector + vi), (unsigned long)vaddr, src_crc);
         }
-
-        if (!match) {
-            printf("DMA WR VERIFY FAIL: LBA %lu addr %05lX\n",
-                   (unsigned long)sector, (unsigned long)verify_start_addr);
-            printf("  Expected: %02X %02X %02X %02X %02X %02X %02X %02X\n",
-                   expected[0], expected[1], expected[2], expected[3],
-                   expected[4], expected[5], expected[6], expected[7]);
-            printf("  Readback: %02X %02X %02X %02X %02X %02X %02X %02X\n",
-                   readback[0], readback[1], readback[2], readback[3],
-                   readback[4], readback[5], readback[6], readback[7]);
-        }
+        vaddr += 512;
     }
     }
 #endif
@@ -583,7 +628,7 @@ void handle_read_sectors(dma_registers_t *dma, uint8_t *cmd) {
         dma->logical_block.full = sector + completed_blocks;
         dma->block_count.full = transfer_ok ? 0 : (blocks - completed_blocks);
         // Write back final local address so completion log and BIOS readback are correct
-        dma->dma_address.full = local_dma_addr;
+        dma->dma_address.full = local_dma_addr & 0x000FFFFF;
     }
 
     // Signal completion to host
@@ -617,7 +662,6 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
     uint32_t sector = ((cmd[1] & 0x1F) << 16) | (cmd[2] << 8) | cmd[3];
     uint16_t blocks = cmd[4] ? cmd[4] : 256;
 
-    sasi_printf("WR sectors:%u starting: %u\n", (unsigned)blocks, (unsigned)sector);
     sasi_trace_event(TRACE_DMA_WRITE, (uint8_t)(sector & 0xFF), blocks, dma ? dma->bus_ctrl : 0);
 
     if (dma) {
@@ -632,6 +676,14 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
     dma->bus_ctrl |= (SASI_BSY_BIT | SASI_CTL_BIT);
     __dmb();  // Ensure Core 0 sees bus_ctrl update
     cached_status_sync_from_bus(dma);
+
+    // Record full 20-bit DMA start address: value=low, cmd_idx=mid, bus_ctrl=high
+    if (dma) {
+        sasi_trace_event(TRACE_DMA_ADDR,
+                         dma->dma_address.bytes.low,
+                         dma->dma_address.bytes.mid,
+                         dma->dma_address.bytes.high);
+    }
 
     uint8_t target = dma ? (dma->selected_target & 0x07) : 0;
     storage_backend_t backend = storage_get_backend();
@@ -737,7 +789,7 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
         dma->logical_block.full = sector + completed_blocks;
         dma->block_count.full = (dma_transfer_ok && storage_write_ok) ? 0 : (blocks - completed_blocks);
         // Write back final local address so completion log and BIOS readback are correct
-        dma->dma_address.full = local_dma_addr;
+        dma->dma_address.full = local_dma_addr & 0x000FFFFF;
     }
 
     cached_sync_dma_address(dma);
@@ -804,7 +856,7 @@ void handle_request_sense(dma_registers_t *dma, uint8_t *cmd) {
         signal_dma_failure_status(dma);
         return;
     }
-    dma->dma_address.full += size;
+    dma->dma_address.full = (dma->dma_address.full + size) & 0x000FFFFF;
     cached_sync_dma_address(dma);
 
     // Complete with GOOD status
@@ -829,7 +881,7 @@ void handle_mode_select(dma_registers_t *dma, uint8_t *cmd) {
             signal_dma_failure_status(dma);
             return;
         }
-        dma->dma_address.full += param_len;
+        dma->dma_address.full = (dma->dma_address.full + param_len) & 0x000FFFFF;
         cached_sync_dma_address(dma);
     }
 

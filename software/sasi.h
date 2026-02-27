@@ -29,6 +29,8 @@ typedef enum {
     TRACE_DATA_OUT,      // Data-out byte received (for 0x0C params, etc.)
     TRACE_DATAOUT_SETUP, // Data-out phase set up (value=expected bytes, bus_ctrl=new state)
     TRACE_DMA_RESULT,    // DMA transfer result (value: 0=ok, 1=storage_fail, 2=dma_fail)
+    TRACE_DMA_SECTOR,    // Per-sector progress (value=sector&0xFF, cmd_idx=completed_blocks, bus_ctrl=addr_low)
+    TRACE_DMA_ADDR,      // Full 20-bit DMA start address (value=addr_low, cmd_idx=addr_mid, bus_ctrl=addr_high)
 } sasi_trace_type_t;
 
 typedef struct {

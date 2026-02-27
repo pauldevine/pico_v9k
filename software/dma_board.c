@@ -104,6 +104,46 @@ static void dump_pio0_and_pin_state(void) {
            clk5_samples[0], clk5_samples[1], clk5_samples[2],
            toggling ? "TOGGLING" : "STUCK");
 
+    // IR4 (DMA IRQ) pin state — shows whether interrupt is asserted to 8259 PIC
+    uint32_t ir4_status = io_bank0_hw->io[DMA_IRQ_PIN].status;
+    printf("IR4   (GPIO%d): OE=%d OUT=%d PAD=%d  irq_pend=%d\n",
+           DMA_IRQ_PIN,
+           !!(ir4_status & IO_BANK0_GPIO0_STATUS_OETOPAD_BITS),
+           !!(ir4_status & IO_BANK0_GPIO0_STATUS_OUTTOPAD_BITS),
+           !!(ir4_status & IO_BANK0_GPIO0_STATUS_INFROMPAD_BITS),
+           dma_registers.state.interrupt_pending);
+
+    // SASI bus state — shows current phase from Pico's perspective
+    printf("bus_ctrl=0x%02X (BSY:%d REQ:%d CTL:%d INP:%d MSG:%d)\n",
+           dma_registers.bus_ctrl,
+           !!(dma_registers.bus_ctrl & SASI_BSY_BIT),
+           !!(dma_registers.bus_ctrl & SASI_REQ_BIT),
+           !!(dma_registers.bus_ctrl & SASI_CTL_BIT),
+           !!(dma_registers.bus_ctrl & SASI_INP_BIT),
+           !!(dma_registers.bus_ctrl & SASI_MSG_BIT));
+    printf("cached STATUS=0x%02X  cached DATA=0x%02X\n",
+           cached_regs.values[REG_STATUS],
+           cached_regs.values[REG_DATA]);
+
+    // ISR diagnostic counters — compare two 'p' dumps to see if host is still active
+    extern defer_queue_t defer_queue;
+    printf("ISR calls=%lu  FIFO entries=%lu  TX full drops=%lu\n",
+           (unsigned long)isr_call_count,
+           (unsigned long)isr_fifo_entries_count,
+           (unsigned long)isr_tx_fifo_full_count);
+    printf("post-status-phase ISR=%lu  flag=%d\n",
+           (unsigned long)isr_post_status_phase_count,
+           status_phase_flag);
+    printf("status-phase breakdown: DATA=%lu STATUS=%lu other=%lu writes=%lu last_phase=0x%02X\n",
+           (unsigned long)diag_data_reads,
+           (unsigned long)diag_status_reads,
+           (unsigned long)diag_other_reads,
+           (unsigned long)diag_writes,
+           diag_last_phase);
+    printf("Defer queue: processed=%lu  drops=%lu\n",
+           (unsigned long)defer_queue.processed,
+           (unsigned long)defer_queue.drops);
+
     printf("=== END PIO0 STATE ===\n\n");
 }
 

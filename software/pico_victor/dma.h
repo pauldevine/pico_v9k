@@ -22,8 +22,8 @@
 #define ADDRESS_DATA_CONBIT_SIZE 29  // 20-bit address, 8-bit data, 1-bit control
 #define PIO_FULL_SIZE 32
 
-#define DMA_BATCH_SIZE 32   // Bytes per DMA batch transfer (interleaves host status polls)
-#define DMA_SHARE_WAIT_US 8   // Small bus-share pause between batches (microseconds)
+#define DMA_BATCH_SIZE 128  // Bytes per DMA batch transfer (interleaves host status polls)
+#define DMA_SHARE_WAIT_US 40  // Small bus-share pause between batches (microseconds)
 #define DMA_TIMEOUT_US 2000  // Timeout for DMA master acquisition (in microseconds)
 
 #define UART_TX_PIN 0
