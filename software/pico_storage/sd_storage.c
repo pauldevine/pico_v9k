@@ -20,6 +20,7 @@
 
 #include "sd_storage.h"
 #include "storage.h"
+#include "fatfs_guard.h"
 
 // Set to 1 to enable debug printf during sector I/O (WARNING: breaks timing-critical DMA operations)
 #define SD_DEBUG_PRINTF 0
@@ -53,6 +54,33 @@ typedef struct {
 
 static sd_state_t *sd_state = NULL;
 static bool sd_initialized = false;
+
+static bool sd_storage_is_fatal_error(FRESULT fr) {
+    return fr == FR_DISK_ERR ||
+           fr == FR_INT_ERR ||
+           fr == FR_NOT_READY ||
+           fr == FR_INVALID_OBJECT;
+}
+
+static void sd_storage_disable_target(uint8_t target_id, const char *op, FRESULT fr) {
+    if (!sd_state || target_id >= STORAGE_MAX_TARGETS) {
+        return;
+    }
+
+    sd_target_t *target = &sd_state->targets[target_id];
+    if (target->mounted) {
+        FRESULT close_fr = f_close(&target->file);
+        if (close_fr != FR_OK) {
+            printf("SD Storage: f_close after %s error failed: %s (%d)\n",
+                   op, FRESULT_str(close_fr), close_fr);
+        }
+    }
+
+    target->mounted = false;
+    target->capacity_sectors = 0;
+    printf("SD Storage: target %d disabled after %s error: %s (%d)\n",
+           target_id, op, FRESULT_str(fr), fr);
+}
 
 // Forward declarations
 static bool sd_storage_init(void);
@@ -144,8 +172,11 @@ static bool sd_storage_init(void) {
     // Mount the filesystem
     // Note: f_mount with opt=1 triggers disk_initialize() internally
     printf("SD Storage: Mounting filesystem...\n");
+    fatfs_guard_init();
+    fatfs_guard_lock();
     FRESULT fr = f_mount(sd_state->fs, "", 1);
     if (FR_OK != fr) {
+        fatfs_guard_unlock();
         printf("SD Storage: f_mount error: %s (%d)\n", FRESULT_str(fr), fr);
         free(sd_state->fs);
         free(sd_state);
@@ -182,6 +213,7 @@ static bool sd_storage_init(void) {
 
         printf("SD Storage: Found %d disk image(s)\n", sd_state->file_count);
     }
+    fatfs_guard_unlock();
 
     sd_initialized = true;
     return true;
@@ -210,8 +242,10 @@ static bool sd_storage_mount(uint8_t target_id, const char *image_path, bool rea
     }
 
     printf("SD Storage: Opening '%s'...\n", image_path);
+    fatfs_guard_lock();
     FRESULT fr = f_open(&sd_state->targets[target_id].file, image_path, mode);
     if (FR_OK != fr) {
+        fatfs_guard_unlock();
         printf("SD Storage: f_open(%s) error: %s (%d)\n", image_path, FRESULT_str(fr), fr);
         return false;
     }
@@ -230,6 +264,7 @@ static bool sd_storage_mount(uint8_t target_id, const char *image_path, bool rea
     printf("SD Storage: Mounted '%s' on target %d (%lu sectors, %s)\n",
            image_path, target_id, (unsigned long)sd_state->targets[target_id].capacity_sectors,
            read_only ? "read-only" : "read-write");
+    fatfs_guard_unlock();
 
     return true;
 }
@@ -243,6 +278,7 @@ static bool sd_storage_unmount(uint8_t target_id) {
         return true; // Already unmounted
     }
 
+    fatfs_guard_lock();
     FRESULT fr = f_close(&sd_state->targets[target_id].file);
     if (FR_OK != fr) {
         printf("SD Storage: f_close error: %s (%d)\n", FRESULT_str(fr), fr);
@@ -252,6 +288,7 @@ static bool sd_storage_unmount(uint8_t target_id) {
     sd_state->targets[target_id].mounted = false;
     sd_state->targets[target_id].capacity_sectors = 0;
     printf("SD Storage: Unmounted target %d\n", target_id);
+    fatfs_guard_unlock();
 
     return true;
 }
@@ -273,11 +310,17 @@ static bool sd_storage_read_sector(uint8_t target_id, uint32_t lba, uint8_t *buf
         return false;
     }
 
+    fatfs_guard_lock();
+
     // Seek to sector position
     FSIZE_t offset = (FSIZE_t)lba * STORAGE_SECTOR_SIZE;
     FRESULT fr = f_lseek(&target->file, offset);
     if (FR_OK != fr) {
         printf("SD Storage: f_lseek error: %s (%d)\n", FRESULT_str(fr), fr);
+        if (sd_storage_is_fatal_error(fr)) {
+            sd_storage_disable_target(target_id, "f_lseek(read)", fr);
+        }
+        fatfs_guard_unlock();
         return false;
     }
 
@@ -287,8 +330,14 @@ static bool sd_storage_read_sector(uint8_t target_id, uint32_t lba, uint8_t *buf
     fr = f_read(&target->file, buffer, read_len, &bytes_read);
     if (FR_OK != fr) {
         printf("SD Storage: f_read error: %s (%d)\n", FRESULT_str(fr), fr);
+        if (sd_storage_is_fatal_error(fr)) {
+            sd_storage_disable_target(target_id, "f_read", fr);
+        }
+        fatfs_guard_unlock();
         return false;
     }
+
+    fatfs_guard_unlock();
 
     if (bytes_read != read_len) {
         // Pad with zeros if short read at end of file
@@ -299,6 +348,19 @@ static bool sd_storage_read_sector(uint8_t target_id, uint32_t lba, uint8_t *buf
            (unsigned long)lba, target_id);
     return true;
 }
+
+// Retry and threshold constants for write and sync operations.
+// Transient SDIO errors (card GC, busy states, cross-core IRQ timing)
+// are common and should not permanently disable the target.
+#define SD_WRITE_MAX_RETRIES       3
+#define SD_WRITE_RETRY_DELAY_MS    5
+#define SD_WRITE_DISABLE_THRESHOLD 50
+#define SD_SYNC_MAX_RETRIES        3
+#define SD_SYNC_RETRY_DELAY_MS     5
+#define SD_SYNC_DISABLE_THRESHOLD  50
+
+static uint32_t sd_write_fail_count[STORAGE_MAX_TARGETS];
+static uint32_t sd_sync_fail_count[STORAGE_MAX_TARGETS];
 
 static bool sd_storage_write_sector(uint8_t target_id, uint32_t lba, const uint8_t *buffer, size_t len) {
     if (!sd_initialized || !sd_state || target_id >= STORAGE_MAX_TARGETS) {
@@ -322,29 +384,57 @@ static bool sd_storage_write_sector(uint8_t target_id, uint32_t lba, const uint8
         return false;
     }
 
-    // Seek to sector position
-    FSIZE_t offset = (FSIZE_t)lba * STORAGE_SECTOR_SIZE;
-    FRESULT fr = f_lseek(&target->file, offset);
-    if (FR_OK != fr) {
-        printf("SD Storage: f_lseek error: %s (%d)\n", FRESULT_str(fr), fr);
-        return false;
-    }
-
-    // Write the sector
-    UINT bytes_written;
     size_t write_len = (len > 0) ? len : STORAGE_SECTOR_SIZE;
-    fr = f_write(&target->file, buffer, write_len, &bytes_written);
-    if (FR_OK != fr) {
-        printf("SD Storage: f_write error: %s (%d)\n", FRESULT_str(fr), fr);
-        return false;
+    FRESULT fr = FR_DISK_ERR;
+
+    for (int attempt = 0; attempt < SD_WRITE_MAX_RETRIES; attempt++) {
+        fatfs_guard_lock();
+
+        // Seek to sector position (re-seek on each retry in case position was lost)
+        FSIZE_t offset = (FSIZE_t)lba * STORAGE_SECTOR_SIZE;
+        fr = f_lseek(&target->file, offset);
+        if (FR_OK != fr) {
+            fatfs_guard_unlock();
+            printf("SD WR LBA %lu seek attempt %d: %s (%d)\n",
+                   (unsigned long)lba, attempt, FRESULT_str(fr), fr);
+            if (attempt + 1 < SD_WRITE_MAX_RETRIES) {
+                sleep_ms(SD_WRITE_RETRY_DELAY_MS);
+                continue;
+            }
+            break;
+        }
+
+        // Write the sector
+        UINT bytes_written;
+        fr = f_write(&target->file, buffer, write_len, &bytes_written);
+        fatfs_guard_unlock();
+
+        if (fr == FR_OK && bytes_written == write_len) {
+            // Success - reset consecutive failure counter
+            sd_write_fail_count[target_id] = 0;
+            return true;
+        }
+
+        if (fr != FR_OK) {
+            printf("SD WR LBA %lu attempt %d: %s (%d)\n",
+                   (unsigned long)lba, attempt, FRESULT_str(fr), fr);
+        } else {
+            printf("SD WR LBA %lu attempt %d: short write %u of %zu\n",
+                   (unsigned long)lba, attempt, bytes_written, write_len);
+        }
+
+        if (attempt + 1 < SD_WRITE_MAX_RETRIES) {
+            sleep_ms(SD_WRITE_RETRY_DELAY_MS);
+        }
     }
 
-    if (bytes_written != write_len) {
-        printf("SD Storage: short write: %u of %zu bytes\n", bytes_written, write_len);
-        return false;
+    // All retries exhausted -- track consecutive failures
+    sd_write_fail_count[target_id]++;
+    if (sd_write_fail_count[target_id] >= SD_WRITE_DISABLE_THRESHOLD) {
+        sd_storage_disable_target(target_id, "f_write(sustained)", fr);
     }
 
-    return true;
+    return false;
 }
 
 static bool sd_storage_sync(uint8_t target_id) {
@@ -357,13 +447,41 @@ static bool sd_storage_sync(uint8_t target_id) {
         return false;
     }
 
-    FRESULT fr = f_sync(&target->file);
-    if (FR_OK != fr) {
-        printf("SD Storage: f_sync error: %s (%d)\n", FRESULT_str(fr), fr);
-        return false;
+    FRESULT fr = FR_DISK_ERR;
+    for (int attempt = 0; attempt < SD_SYNC_MAX_RETRIES; attempt++) {
+        fatfs_guard_lock();
+        fr = f_sync(&target->file);
+        fatfs_guard_unlock();
+        if (fr == FR_OK) {
+            break;
+        }
+        if (attempt + 1 < SD_SYNC_MAX_RETRIES) {
+            sleep_ms(SD_SYNC_RETRY_DELAY_MS);
+        }
     }
 
-    return true;
+    if (fr == FR_OK) {
+        sd_sync_fail_count[target_id] = 0;
+        return true;
+    }
+
+    // Sync failed after retries - log but keep target mounted.
+    // Transient errors are recoverable; the next write+sync may succeed.
+    sd_sync_fail_count[target_id]++;
+    if (sd_sync_fail_count[target_id] <= 3 ||
+        (sd_sync_fail_count[target_id] % 25) == 0) {
+        printf("SD Storage: f_sync error: %s (%d), target %d (count=%lu)\n",
+               FRESULT_str(fr), fr, target_id,
+               (unsigned long)sd_sync_fail_count[target_id]);
+    }
+
+    // Only disable after sustained consecutive failures indicating
+    // a genuinely broken card or corrupted file handle.
+    if (sd_sync_fail_count[target_id] >= SD_SYNC_DISABLE_THRESHOLD) {
+        sd_storage_disable_target(target_id, "f_sync(sustained)", fr);
+    }
+
+    return false;
 }
 
 static uint32_t sd_storage_get_capacity(uint8_t target_id) {

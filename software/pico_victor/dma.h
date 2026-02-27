@@ -59,7 +59,12 @@
 #define SDIO_D3_PIN 46
 
 #define UART_TX_PIN 0
+#define UART_RX_PIN_NUM 33  // UART RX pin (shared with IR_5 alternate use)
 #define DEBUG_PIN 47
+
+// UART configuration (shared across files)
+#define UART_ID uart0
+#define BAUD_RATE 230400
 
 #define ADDRESS_DIR_PINCNT 2
 #define DMA_READ 1
@@ -267,10 +272,20 @@ void core1_main();
 void setup_bus_control();
 // Global DMA registers — lives in scratch_x RAM for contention-free Core 1 access.
 extern dma_registers_t dma_registers;
-void dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_address);
-void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_address);
+bool dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_address);
+bool dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_address);
 void dma_process_deferred_events(void);
 void dma_process_deferred_events_cached(void);
+
+// Store the board_registers program offset for reset_register_pio_sm()
+void dma_set_board_reg_program_offset(int offset);
+
+// Safely restart the register PIO SM (clears FIFOs, releases XACK/EXTIO, jumps to wrap_target)
+void reset_register_pio_sm(void);
+
+// Hold/release the Victor 8088 bus via HOLD/HLDA handshake (without PIO)
+bool hold_victor_bus(void);
+void release_victor_bus(void);
 
 void dma_write_register(dma_registers_t *dma, dma_reg_offsets_t offset, uint8_t value);
 uint8_t dma_read_register(dma_registers_t *dma, dma_reg_offsets_t offset);

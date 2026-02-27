@@ -3,13 +3,13 @@
  * Required by no-OS-FatFS-SD-SDIO-SPI-RPi-Pico library
  *
  * Pin configuration for Pimoroni PGA2350 (RP2350):
- *   CLK  = GPIO 40
- *   CMD  = GPIO 41
- *   D0   = GPIO 42
- *   D1   = GPIO 43 (auto-calculated)
- *   D2   = GPIO 44 (auto-calculated)
- *   D3   = GPIO 45 (auto-calculated)
- *   PIO  = pio1
+ *   CLK  = GPIO 41 (SDIO_CLK_PIN)
+ *   CMD  = GPIO 42 (SDIO_CMD_PIN)
+ *   D0   = GPIO 43 (SDIO_D0_PIN)
+ *   D1   = GPIO 44 (auto-calculated)
+ *   D2   = GPIO 45 (auto-calculated)
+ *   D3   = GPIO 46 (auto-calculated)
+ *   PIO  = pio2
  *   DMA  = DMA_IRQ_1
  */
 
@@ -30,7 +30,7 @@ static sd_sdio_if_t sdio_if = {
     .D0_gpio = SDIO_D0_PIN,            // D1=43, D2=44, D3=45 are auto-calculated
     .SDIO_PIO = pio2,
     .DMA_IRQ_num = DMA_IRQ_1,
-    .baud_rate = 15 * 1000 * 1000,  // 15 MHz - conservative speed
+    .baud_rate = 5 * 1000 * 1000,   // 5 MHz - lowered for write reliability
 };
 
 /* Hardware Configuration of the SD Card socket "object" */
