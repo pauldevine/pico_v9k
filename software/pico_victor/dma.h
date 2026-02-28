@@ -51,12 +51,12 @@
 #define PHASE_2_PIN 39
 #define DEN_PIN 40
 
-#define SDIO_CLK_PIN 41
-#define SDIO_CMD_PIN 42
-#define SDIO_D0_PIN 43
-#define SDIO_D1_PIN 44
-#define SDIO_D2_PIN 45
-#define SDIO_D3_PIN 46
+// SD card SPI interface pins (hardware SPI1 on RP2350)
+#define SD_CS_PIN   41  // Manual GPIO chip select -> SD DAT3/CS
+#define SD_SCK_PIN  42  // SPI1_SCK              -> SD CLK
+#define SD_MOSI_PIN 43  // SPI1_TX               -> SD CMD/DI
+#define SD_MISO_PIN 44  // SPI1_RX               -> SD DAT0/DO
+// GPIO 45, 46 are now free
 
 #define UART_TX_PIN 0
 #define UART_RX_PIN_NUM 33  // UART RX pin (shared with IR_5 alternate use)

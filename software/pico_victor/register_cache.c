@@ -172,16 +172,10 @@ void core1_main() {
     systick_hw->rvr = 0x00FFFFFF; // Max reload value (24-bit)
 
     // --- Storage initialization runs on Core 1 ---
-    // This ensures the SDIO library's DMA_IRQ_1 is registered on Core 1's
-    // NVIC (irq_set_enabled enables on the calling core).  Running SD init
-    // here keeps storage I/O and SASI command processing on the same core.
-    //
-    // IMPORTANT: After SDIO init, DMA_IRQ_1 must be set to a LOWER priority
-    // than PIO0_IRQ_0 (the register ISR, priority 0).  The SDIO library
-    // leaves DMA_IRQ_1 at default priority 0 (highest), which is the SAME
-    // hardware priority as the register ISR.  Equal-priority interrupts
-    // cannot preempt each other on ARM Cortex-M, so the register ISR would
-    // be blocked while the SDIO DMA handler runs.
+    // Running SD init here keeps storage I/O and SASI command processing
+    // on the same core.  With SPI mode the SD library uses the hardware
+    // SPI1 peripheral (no PIO, no DMA IRQ handler), so there is no
+    // interrupt priority conflict with the register ISR on PIO0_IRQ_0.
 #if USE_SD_STORAGE
     printf("Core1: Initializing SD card storage backend...\n");
     sd_storage_register();
@@ -227,10 +221,6 @@ void core1_main() {
         printf("Core1: FujiNet failed to mount disk slot 0\n");
     }
 #endif
-
-    // CRITICAL: Lower DMA_IRQ_1 priority so the register ISR (PIO0_IRQ_0,
-    // priority 0) can always preempt the SDIO DMA completion handler.
-    irq_set_priority(DMA_IRQ_1, 0x80);
 
     sasi_log_init();
 

@@ -750,9 +750,15 @@ void handle_write_sectors(dma_registers_t *dma, uint8_t *cmd) {
         return;
     }
 
-    // Sync all written sectors to persistent storage in one operation
+    // Sync all written sectors to persistent storage in one operation.
+    // CRITICAL: check return value -- if sync fails the data never reached
+    // the SD card and we must report CHECK_CONDITION to DOS.
     if (any_storage_writes && transfer_ok && storage_is_mounted(target)) {
-        storage_sync(target);
+        if (!storage_sync(target)) {
+            transfer_ok = false;
+            sasi_trace_event(TRACE_DMA_RESULT, 3, completed_blocks,
+                             dma ? dma->bus_ctrl : 0);
+        }
     }
 
     if (dma) {

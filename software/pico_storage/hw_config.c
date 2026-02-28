@@ -1,42 +1,42 @@
 /* hw_config.c
- * Hardware configuration for SD card SDIO interface
+ * Hardware configuration for SD card SPI interface
  * Required by no-OS-FatFS-SD-SDIO-SPI-RPi-Pico library
  *
- * Pin configuration for Pimoroni PGA2350 (RP2350):
- *   CLK  = GPIO 41 (SDIO_CLK_PIN)
- *   CMD  = GPIO 42 (SDIO_CMD_PIN)
- *   D0   = GPIO 43 (SDIO_D0_PIN)
- *   D1   = GPIO 44 (auto-calculated)
- *   D2   = GPIO 45 (auto-calculated)
- *   D3   = GPIO 46 (auto-calculated)
- *   PIO  = pio2
- *   DMA  = DMA_IRQ_1
+ * Pin configuration for Pimoroni PGA2350 (RP2350) using hardware SPI1:
+ *   CS   = GPIO 41 (manual GPIO)   -> SD DAT3/CS
+ *   SCK  = GPIO 42 (SPI1_SCK)      -> SD CLK
+ *   MOSI = GPIO 43 (SPI1_TX)       -> SD CMD/DI
+ *   MISO = GPIO 44 (SPI1_RX)       -> SD DAT0/DO
+ *
+ * Uses hardware SPI peripheral (no PIO, no DMA IRQ).
  */
 
 #include "hw_config.h"
 #include "sd_card.h"
 #include "../pico_victor/dma.h"
 
-/* SDIO Interface Configuration
- * For RP2350 with GPIOs >= 32, CLK_gpio must be specified explicitly
- * since the normal D0+offset calculation doesn't work for pins above 32.
- *
- * The relationship is: CLK = D0 - 2 (in mod32 arithmetic)
- * For D0=42, CLK should be 40.
- */
-static sd_sdio_if_t sdio_if = {
-    .CLK_gpio = SDIO_CLK_PIN,           // Must specify explicitly for GPIOs >= 32
-    .CMD_gpio = SDIO_CMD_PIN,
-    .D0_gpio = SDIO_D0_PIN,            // D1=43, D2=44, D3=45 are auto-calculated
-    .SDIO_PIO = pio2,
-    .DMA_IRQ_num = DMA_IRQ_1,
-    .baud_rate = 5 * 1000 * 1000,   // 5 MHz - lowered for write reliability
+/* SPI hardware instance configuration.
+ * Uses SPI1 peripheral on RP2350 — completely independent of PIO.
+ * The library handles slow-clock init (100-400 kHz) internally,
+ * then switches to this baud_rate for data transfers. */
+static spi_t spi = {
+    .hw_inst = spi1,
+    .sck_gpio = SD_SCK_PIN,
+    .mosi_gpio = SD_MOSI_PIN,
+    .miso_gpio = SD_MISO_PIN,
+    .baud_rate = 25 * 1000 * 1000,   // 25 MHz — standard SD SPI max
+};
+
+/* SPI interface configuration (slave select / chip select) */
+static sd_spi_if_t spi_if = {
+    .spi = &spi,
+    .ss_gpio = SD_CS_PIN,
 };
 
 /* Hardware Configuration of the SD Card socket "object" */
 static sd_card_t sd_card = {
-    .type = SD_IF_SDIO,
-    .sdio_if_p = &sdio_if,
+    .type = SD_IF_SPI,
+    .spi_if_p = &spi_if,
     // Card detect not used - assume card is always present
     .use_card_detect = false,
 };
