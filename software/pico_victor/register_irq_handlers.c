@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "dma.h"
+#include "sasi.h"
 #include "reg_queue_processor.h"
 #include "logging.h"
 #include "register_irq_handlers.h"
@@ -27,12 +28,36 @@ extern cached_registers_t cached_regs;
 #define REG_FIFO_RXEMPTY_BIT (1u << (PIO_FSTAT_RXEMPTY_LSB + REG_SM_CONTROL))
 
 #ifndef REG_IRQ_FAST_TRACE_ENABLE
-#define REG_IRQ_FAST_TRACE_ENABLE 0
+#define REG_IRQ_FAST_TRACE_ENABLE 1
 #endif
 
 #ifndef REG_IRQ_WARN_ENABLE
 #define REG_IRQ_WARN_ENABLE 0
 #endif
+
+// Diagnostic counters (declared extern in register_irq_handlers.h)
+volatile uint32_t isr_call_count = 0;
+volatile uint32_t isr_fifo_entries_count = 0;
+volatile uint32_t isr_tx_fifo_full_count = 0;
+volatile uint32_t isr_post_status_phase_count = 0;
+volatile bool status_phase_flag = false;
+
+// Status-phase breakdown counters
+volatile uint32_t diag_status_reads = 0;
+volatile uint32_t diag_data_reads = 0;
+volatile uint32_t diag_other_reads = 0;
+volatile uint32_t diag_writes = 0;
+volatile uint32_t diag_last_phase = 0;
+
+// Safe PIO TX FIFO put: skip if full (ISR must never block).
+// Increments isr_tx_fifo_full_count on overflow for diagnostics.
+static inline void pio_sm_put_isr_safe(PIO pio, uint sm, uint32_t data) {
+    if (pio_sm_is_tx_fifo_full(pio, sm)) {
+        isr_tx_fifo_full_count++;
+        return;
+    }
+    pio_sm_put(pio, sm, data);
+}
 
 #if REG_IRQ_WARN_ENABLE
 #define reg_irq_warn(...) fast_log(__VA_ARGS__)
@@ -232,10 +257,13 @@ void init_register_irq_handlers(void) {
 void __time_critical_func(register_read_irq_isr)() {
     static uint32_t masked_offset;
 
+    isr_call_count++;
+
     // Drain all pending FIFO entries in a single ISR invocation.
     // This avoids tail-chain overhead (~30ns per re-entry) and ensures
     // write-then-read sequences respond within the 530ns timing budget.
     while (!(PIO_REGISTERS->fstat & REG_FIFO_RXEMPTY_BIT)) {
+        isr_fifo_entries_count++;
         uint32_t raw_value;
         uint8_t data = 0;
         uint8_t trace_flags = 0;
@@ -291,7 +319,7 @@ void __time_critical_func(register_read_irq_isr)() {
 
                 // pio outputs 8 bits of data first then 8 bits of pindirs (0xFF for output)
                 uint32_t payload = (0xFF << 8) | (data & 0xFF);
-                pio_sm_put_blocking(PIO_REGISTERS, REG_SM_CONTROL, payload);
+                pio_sm_put_isr_safe(PIO_REGISTERS, REG_SM_CONTROL, payload);
 
                 uint8_t pending_after = (uint8_t)fifo_pending_prefetch;
                 fifo_trace_record(raw_value, payload_type, pending_before, pending_after, trace_flags, data);
@@ -362,6 +390,10 @@ void __time_critical_func(register_read_irq_isr)() {
                     // All work done here in fast handler - no need to enqueue.
                     dma_registers_t *dma = &dma_registers;
                     clear_irq_on_status_read(dma);
+                    if (status_phase_flag) {
+                        diag_status_reads++;
+                        isr_post_status_phase_count++;
+                    }
                 }
                 // Address register reads have no side effects - don't enqueue
 

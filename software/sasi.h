@@ -28,6 +28,9 @@ typedef enum {
     TRACE_STATUS_READ,   // STATUS register read by host
     TRACE_DATA_OUT,      // Data-out byte received (for 0x0C params, etc.)
     TRACE_DATAOUT_SETUP, // Data-out phase set up (value=expected bytes, bus_ctrl=new state)
+    TRACE_DMA_RESULT,    // DMA transfer result (value: 0=ok, 1=storage_fail, 2=dma_fail)
+    TRACE_DMA_SECTOR,    // Per-sector progress (value=sector&0xFF, cmd_idx=completed_blocks, bus_ctrl=addr_low)
+    TRACE_DMA_ADDR,      // Full 20-bit DMA start address (value=addr_low, cmd_idx=addr_mid, bus_ctrl=addr_high)
 } sasi_trace_type_t;
 
 typedef struct {
@@ -76,8 +79,8 @@ bool handle_sasi_data_out_byte(dma_registers_t *dma, uint8_t data_byte);
 void handle_test_unit_ready(dma_registers_t *dma);
 void handle_xebec_diagnostic(dma_registers_t *dma, uint8_t diagnostic_type);
 
-// Disk read (uses FujiNet when available)
-void read_sector_from_disk(dma_registers_t *dma, uint32_t sector, uint8_t *buffer);
+// Disk read (uses FujiNet when available). Returns false on fatal error.
+bool read_sector_from_disk(dma_registers_t *dma, uint32_t sector, uint8_t *buffer);
 
 // Command lifecycle
 bool command_complete(uint8_t *command_buffer, int cmd_index);

@@ -26,8 +26,8 @@ endif()
 set(PICO_BOARD pimoroni_pga2350 CACHE STRING "Board type")
 set(PICO_PLATFORM "rp2350-arm-s")
 set(PICO_NUM_GPIOS 48)
-set(PICO_DEFAULT_UART_RX_PIN 45)
-set(PICO_DEFAULT_UART_TX_PIN 46)
+set(PICO_DEFAULT_UART_RX_PIN 33)
+set(PICO_DEFAULT_UART_TX_PIN 0)
 
 
 # Pull in Raspberry Pi Pico SDK (must be before project)
@@ -60,10 +60,20 @@ target_sources(dma_board PRIVATE
     pico_victor/debug_queue.c
     pico_fujinet/spi.c
     pico_storage/storage.c
+    pico_storage/fatfs_guard.c
     pico_storage/sd_storage.c
     pico_storage/hw_config.c)
 
 pico_set_binary_type(dma_board default)
+
+# Core 1 stack is provided explicitly via multicore_launch_core1_with_stack().
+# USE_SD_STORAGE and SD_DISK_IMAGE are shared between dma_board.c and register_cache.c
+# (storage init runs on Core 1 so SDIO DMA_IRQ_1 lands on Core 1's NVIC).
+target_compile_definitions(dma_board PRIVATE
+    PICO_CORE1_STACK_SIZE=0
+    USE_SD_STORAGE=1
+    SD_DISK_IMAGE="victor.img"
+)
 
 # Generate PIO headers for cached version
 pico_generate_pio_header(dma_board ${CMAKE_CURRENT_LIST_DIR}/pico_victor/board_registers.pio)

@@ -8,7 +8,10 @@
 #include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
+#include "hardware/sync.h"
 #include "dma.h"
+#include "register_irq_handlers.h"
+#include "board_registers.pio.h"
 #include "sasi.h"
 #include "sasi_log.h"
 #include "logging.h"
@@ -26,6 +29,36 @@
 #endif
 
 #define SASI_SECTOR_SIZE 512
+
+// Stored board_registers program offset for reset_register_pio_sm()
+static int board_reg_program_offset = -1;
+
+void dma_set_board_reg_program_offset(int offset) {
+    board_reg_program_offset = offset;
+}
+
+// Safely restart the register PIO SM: disable, clear FIFOs, release
+// XACK/EXTIO pindirs via NOP exec, restart SM at wrap_target, re-enable.
+void reset_register_pio_sm(void) {
+    pio_sm_set_enabled(PIO_REGISTERS, REG_SM_CONTROL, false);
+    pio_sm_clear_fifos(PIO_REGISTERS, REG_SM_CONTROL);
+
+    // Release XACK/EXTIO pindirs by executing a NOP with no side-set.
+    // If the SM was mid-cycle with side S_XACK asserted, the frozen pindirs
+    // would hold XACK low -> READY low -> DMA PIO hangs at wait READY.
+    pio_sm_exec(PIO_REGISTERS, REG_SM_CONTROL, pio_encode_nop());
+
+    // Restart SM at wrap_target for a clean T0 entry
+    pio_sm_restart(PIO_REGISTERS, REG_SM_CONTROL);
+    if (board_reg_program_offset >= 0) {
+        pio_sm_exec(PIO_REGISTERS, REG_SM_CONTROL,
+                    pio_encode_jmp(board_registers_wrap_target + board_reg_program_offset));
+    }
+    pio_sm_set_enabled(PIO_REGISTERS, REG_SM_CONTROL, true);
+
+    // Reset xack_twice-specific bookkeeping
+    fifo_pending_prefetch = 0;
+}
 
 void debug_dump_pin(uint pin) {
     uint32_t ctrl   = iobank0_hw->io[pin].ctrl;    // contains FUNCSEL, INOVER, OEOVER, OUTOVER
@@ -393,6 +426,7 @@ void ontime_pin_setup() {
     gpio_pull_up(SSO_PIN);  // SSO is active low, so pull-up
     gpio_pull_up(DLATCH_PIN); // DLATCH is active low, so pull-up
     gpio_pull_up(EXTIO_PIN); // EXTIO is active low, so pull-up
+    gpio_pull_up(XACK_PIN);  // XACK is active low (open-drain), so pull-up
 
     // DMA IRQ line: drive low by default, assert when interrupts are pending.
     gpio_set_function(DMA_IRQ_PIN, GPIO_FUNC_SIO);
@@ -411,7 +445,7 @@ static inline void setup_pins_dma_control() {
     
     //setup data pins BD0 to A19 to be owned by PIO as inputs
     uint function = GPIO_FUNC_PIO0 + pio_get_index(PIO_DMA_MASTER);
-    for (int pin = BD0_PIN; pin <= DEN_PIN; ++pin) {
+    for (int pin = BD0_PIN; pin <= ALE_PIN; ++pin) {
         gpio_set_function(pin, function);
         pio_gpio_init(PIO_DMA_MASTER, pin);
         pio_sm_set_pins_with_mask(PIO_DMA_MASTER, DMA_SM_CONTROL, 0u, 1u << pin); // preload latch low
@@ -432,7 +466,12 @@ static inline void setup_pins_dma_control() {
     setup_pin_dma_control(EXTIO_PIN, GPIO_OUT, high);  // EXTIO/ output, preload high
 
     setup_pin_dma_control(ALE_PIN, GPIO_OUT, low);   // ALE/ output, preload low
-    setup_pin_dma_control(DEN_PIN, GPIO_OUT, low);   // DEN/ output, preload low
+
+    // DEN is at GPIO 40 (outside PIO's 0-31 range), use plain GPIO.
+    // DEN is not needed for DMA — hold inactive (high).
+    gpio_init(DEN_PIN);
+    gpio_put(DEN_PIN, 1);  // inactive (not needed for DMA)
+    gpio_set_dir(DEN_PIN, GPIO_OUT);
     
     setup_pin_dma_control(READY_PIN, GPIO_IN, low); // READY/ input, preload low
     setup_pin_dma_control(CLOCK_5_PIN, GPIO_IN, low); // CLOCK_5 input, preload low
@@ -443,9 +482,15 @@ static inline void setup_pins_dma_control() {
     gpio_set_dir(SSO_PIN, GPIO_OUT);
 
     gpio_init(IO_M_PIN);
-    gpio_put(IO_M_PIN, low); 
+    gpio_put(IO_M_PIN, low);
     gpio_set_dir(IO_M_PIN, GPIO_OUT);
-}   
+
+    // Explicitly release XACK by switching it to SIO/input during DMA.
+    // XACK stays on PIO0 function otherwise (not in the BD0..ALE range),
+    // and frozen PIO0 pindirs could hold XACK low -> READY low -> DMA hangs.
+    gpio_init(XACK_PIN);
+    gpio_set_dir(XACK_PIN, GPIO_IN);
+}
 
 static inline void setup_pins_register_inputs() {
     //setup data pins BD0 to A19 to be owned by board register PIO as inputs
@@ -466,18 +511,13 @@ static inline void setup_pins_register_inputs() {
 
 
 // Timeout for individual PIO blocking operations (per bus cycle, not per sector).
-// A single DMA bus cycle completes in <10us.  5ms gives enormous margin for
-// bus timing variations (wait states, bus contention) while still detecting a
-// genuinely-stuck PIO SM (e.g. Victor rebooted mid-DMA, bus signals are dead).
-// Safe to be generous because the 8088's BIOS timeout counter PAUSES during
-// DMA HOLD — longer PIO waits don't consume BIOS timeout budget.
-// History: 200us caused ~33% false DMA aborts; 50ms blocked Core 1 too long
-// (before local_dma_addr fix prevented cross-core address corruption).
-#define PIO_OP_TIMEOUT_US 5000
+// Keep this above normal wait-state variance to avoid false timeout aborts on
+// long boot-time reads, but still bounded to recover from a genuinely stuck SM.
+#define PIO_OP_TIMEOUT_US 15000
 
 // Shorter timeout for FIFO drain after the last batch entry.  The FIFO
 // empties within microseconds when PIO is running; this is a safety net.
-#define PIO_DRAIN_TIMEOUT_US 10000
+#define PIO_DRAIN_TIMEOUT_US 25000
 
 // Timeout-protected pio_sm_put.  Returns false if the TX FIFO didn't drain
 // within PIO_OP_TIMEOUT_US (PIO SM is stuck).
@@ -522,10 +562,9 @@ static void abort_dma_transfer(void) {
     pio_sm_set_enabled(PIO_DMA_MASTER, DMA_SM_CONTROL, false);
     pio_sm_clear_fifos(PIO_DMA_MASTER, DMA_SM_CONTROL);
 
-    // Restore register pins and re-enable register SM
+    // Restore register pins and safely restart register SM
     setup_pins_register_inputs();
-    pio_sm_clear_fifos(PIO_REGISTERS, REG_SM_CONTROL);
-    pio_sm_set_enabled(PIO_REGISTERS, REG_SM_CONTROL, true);
+    reset_register_pio_sm();
 
     // Release HOLD so 8088 can resume
     gpio_set_dir(HOLD_PIN, GPIO_IN);
@@ -569,10 +608,14 @@ static inline bool start_dma_control() {
                            dma_registers.bus_ctrl);
         return false;
     }
-    // Quiesce register SM before taking bus, and drain any queued events
+    // Release XACK/EXTIO pindirs before disabling register SM.
+    // If the SM is mid-cycle with side S_XACK asserted, the frozen pindirs
+    // would hold XACK low -> READY low -> DMA PIO hangs at wait READY.
+    pio_sm_exec(PIO_REGISTERS, REG_SM_CONTROL, pio_encode_nop());
+
+    // Quiesce register SM before taking bus
     pio_sm_set_enabled(PIO_REGISTERS, REG_SM_CONTROL, false);
     pio_sm_clear_fifos(PIO_REGISTERS, REG_SM_CONTROL);
-    fifo_pending_prefetch = 0;  // Reset stale prefetch count after FIFO clear
 
     //setup all the pins to be controlled by PIO DMA SM
     setup_pins_dma_control();
@@ -587,8 +630,9 @@ static inline void release_dma_master() {
     pio_sm_clear_fifos(PIO_DMA_MASTER, DMA_SM_CONTROL);
     pio_sm_set_enabled(PIO_DMA_MASTER, DMA_SM_CONTROL, false);
     setup_pins_register_inputs();
-    pio_sm_clear_fifos(PIO_REGISTERS, REG_SM_CONTROL);
-    pio_sm_set_enabled(PIO_REGISTERS, REG_SM_CONTROL, true);
+
+    // Safe restart guarantees XACK/EXTIO are released and SM starts at T0.
+    reset_register_pio_sm();
 
     //wait for low then high so we can sync to CLOCK_5 edge to help meta-stability of board
     // Timeout protects against Victor clock stopping during release.
@@ -610,14 +654,18 @@ static inline void release_dma_master() {
 // Write function using two-word FIFO protocol:
 //  Word 1: bits 0=W/R flag (1=write), bits 1-20=address A0-A19
 //  Word 2: bits 0-7=data byte, bits 8-19=address A8-A19 (MSB)
-void dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_address) {
+bool dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_address) {
 #if DMA_DEBUG_PRINTF
     dma_printf("DMA WR ");
     print_segment_offset(start_address);
 #endif
 
-    if (!data || length == 0) {
-        return;
+    if (!data) {
+        return false;
+    }
+
+    if (length == 0) {
+        return true;
     }
 
     // debug_pio_state(PIO_DMA_MASTER, DMA_SM_CONTROL);
@@ -627,7 +675,7 @@ void dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_addres
 
     for (uint32_t batch = 0; batch < full_batch_count; batch++) {
         if (!start_dma_control()) {
-            return;
+            return false;
         }
 
         bool pio_stuck = false;
@@ -656,7 +704,7 @@ void dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_addres
 
         if (pio_stuck) {
             abort_dma_transfer();
-            return;
+            return false;
         }
 
         // Wait for TX FIFO to empty before releasing DMA master
@@ -664,45 +712,49 @@ void dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_addres
         while (pio_sm_get_tx_fifo_level(PIO_DMA_MASTER, DMA_SM_CONTROL) > 0) {
             if (absolute_time_diff_us(get_absolute_time(), drain_deadline) <= 0) {
                 abort_dma_transfer();
-                return;
+                return false;
             }
             tight_loop_contents();
         }
         sleep_us(3); // small delay to ensure last data is processed
 
         release_dma_master();
-        
+
         // give 8088 time to work background interrupts like serial port or other I/O before resuming DMA
         sleep_us(DMA_SHARE_WAIT_US);
     }
-   
-    return;
+
+    return true;
 }
 
 // Read function (PIO-based) using two-word FIFO protocol:
 //  Word 1: bits 0=W/R flag (0=read), bits 1-20=address A0-A19
 //  Word 2: pindirs control value 0xFFF00 (A8-A19 outputs, BD0-BD7 inputs)
-void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_address) {
+bool dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_address) {
 
 #if DMA_DEBUG_PRINTF
     dma_printf("DMA RD Length: %zu, start_address: %d ", length, start_address);
     print_segment_offset(start_address);
 #endif
 
-    if (!data || length == 0) {
-        return;
+    if (!data) {
+        return false;
+    }
+
+    if (length == 0) {
+        return true;
     }
 
 #if DMA_DEBUG_PRINTF
     debug_pio_state(PIO_DMA_MASTER, DMA_SM_CONTROL);
 #endif
-    
+
     // Use ceiling division to get correct batch count.
     uint32_t full_batch_count = (length + (DMA_BATCH_SIZE - 1)) / DMA_BATCH_SIZE;
 
     for (uint32_t batch = 0; batch < full_batch_count; batch++) {
         if (!start_dma_control()) {
-            return;
+            return false;
         }
 
         bool pio_stuck = false;
@@ -738,7 +790,7 @@ void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_addre
 
         if (pio_stuck) {
             abort_dma_transfer();
-            return;
+            return false;
         }
 
         // Wait for all responses to be received before releasing DMA master
@@ -746,37 +798,45 @@ void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_addre
         while (pio_sm_get_rx_fifo_level(PIO_DMA_MASTER, DMA_SM_CONTROL) > 0) {
             if (absolute_time_diff_us(get_absolute_time(), drain_deadline) <= 0) {
                 abort_dma_transfer();
-                return;
+                return false;
             }
             tight_loop_contents();
         }
         sleep_us(3); // small delay to ensure all data is processed
 
         release_dma_master();
-        
+
         // give 8088 time to work background interrupts like serial port or other I/O before resuming DMA
         sleep_us(DMA_SHARE_WAIT_US);
     }
 
-    return;
+    return true;
 }
 #else
 // Unit-test in-memory Victor RAM model (64 KiB to fit SRAM)
 static uint8_t test_victor_ram[1 << 16];
 static const size_t TEST_VICTOR_RAM_SIZE = (1 << 16);
 
-void dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_address) {
+bool dma_write_to_victor_ram(uint8_t *data, size_t length, uint32_t start_address) {
+    if (!data) {
+        return false;
+    }
     for (size_t i = 0; i < length; i++) {
         uint32_t addr = (start_address + i) & 0xFFFFF;
         if (addr < TEST_VICTOR_RAM_SIZE) test_victor_ram[addr] = data[i];
     }
+    return true;
 }
 
-void dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_address) {
+bool dma_read_from_victor_ram(uint8_t *data, size_t length, uint32_t start_address) {
+    if (!data) {
+        return false;
+    }
     for (size_t i = 0; i < length; i++) {
         uint32_t addr = (start_address + i) & 0xFFFFF;
         data[i] = (addr < TEST_VICTOR_RAM_SIZE) ? test_victor_ram[addr] : 0x00;
     }
+    return true;
 }
 
 uint8_t* test_get_victor_ram() { return test_victor_ram; }
@@ -784,28 +844,55 @@ size_t test_get_victor_ram_size() { return TEST_VICTOR_RAM_SIZE; }
 #endif
 
 // Device reset function (based on MAME implementation)
+//
+// IMPORTANT: This function is called by the Core 1 deferred worker when it
+// processes a RESET entry from the defer queue.  The ISR runs on the SAME
+// core (Core 1) as the defer worker, so bus_ctrl is only modified by the
+// defer worker itself (the ISR only modifies bus_ctrl during DATA-read
+// status/message transitions, which can't happen during RESET processing).
+//
+// The ISR DOES update the cache and dma_address/control inline, so:
+//   - DO NOT zero dma_address.full -- ISR updates address bytes inline
+//   - DO NOT zero control -- ISR uses for SELECT edge detection
+//   - DO zero bus_ctrl -- prevents stale phase bits (e.g., MSG from a
+//     previous command's message phase) from corrupting subsequent SELECT
+//     processing.  The defer worker will rebuild bus_ctrl correctly when
+//     it processes the post-RESET SELECT entries.
+//   - DO zero non_dma_req/asserting_ack -- bus protocol state must reset
+//
+// DO NOT zero the cache here or in the caller.  The ISR already set the
+// cache correctly when it detected the RESET bit, and subsequent ISR entries
+// (SELECT, deselect) updated the cache predictions further.  Zeroing the
+// cache would destroy those predictions and create a window where the host
+// sees bus_free status despite an active IRQ.
 void dma_device_reset(dma_registers_t *dma) {
+    // Clear bus protocol state -- RESET returns bus to idle
+    dma->bus_ctrl = 0;
+    dma->state.non_dma_req = 0;
+    dma->state.asserting_ack = 0;
+
+    // Clear command/diagnostic state
     dma->state.dma_enabled = 0;
     dma->state.dma_dir_in = 0;
     dma->state.data_out_expected = 0;
-    dma->dma_address.full = 0;
-    dma->state.asserting_ack = 0;
-    dma->state.non_dma_req = 0;
     dma->state.status_pending = 0;
     dma->command = 0;
-    dma->bus_ctrl = 0;
-    dma->control = 0;
+    dma->status = 0;
     dma->selected_target = 0;
     dma->block_count.full = 0;
     dma->logical_block.full = 0;
     dma->reset_requested = false;
 
+    // DO NOT zero these -- the ISR manages them inline:
+    //   dma->dma_address.full  -- ISR updates address bytes inline
+    //   dma->control           -- ISR uses for SELECT edge detection
+
     // Clear interrupt
     dma_update_interrupts(dma, false);
-    fifo_pending_prefetch = 0;
-    // Ensure cached status reflects bus-free after reset
-    cached_status_sync_from_bus(dma);
-    cached_set_data(0x00);
+    status_phase_flag = false;  // Reset diagnostic flag on device reset
+
+    // DO NOT call cached_status_sync_from_bus() or cached_set_data() here.
+    // The ISR already set the cache correctly.  See comment block above.
 
     // Reset SASI command accumulator state
     sasi_reset_command_state();
@@ -823,6 +910,44 @@ void dma_update_interrupts(dma_registers_t *dma, bool irq_state) {
         // In real implementation, this would trigger actual interrupt to CPU
         //printf("DMA interrupt %s\n", irq_state ? "asserted" : "cleared");
     }
+}
+
+// Hold the Victor 8088 via HOLD/HLDA handshake without touching PIO state machines.
+// Use around slow SD card I/O so the BIOS timeout counter cannot advance.
+bool hold_victor_bus(void) {
+    // Sync to CLOCK_5 rising edge for clean bus transition
+    absolute_time_t clk_deadline = make_timeout_time_us(DMA_TIMEOUT_US);
+    while (gpio_get(CLOCK_5_PIN)) {
+        if (absolute_time_diff_us(get_absolute_time(), clk_deadline) <= 0) return false;
+        tight_loop_contents();
+    }
+    while (!gpio_get(CLOCK_5_PIN)) {
+        if (absolute_time_diff_us(get_absolute_time(), clk_deadline) <= 0) return false;
+        tight_loop_contents();
+    }
+
+    // Assert HOLD/ (open-drain)
+    gpio_init(HOLD_PIN);
+    gpio_put(HOLD_PIN, 0);
+    gpio_set_dir(HOLD_PIN, GPIO_OUT);
+    gpio_init(HLDA_PIN);
+    gpio_set_dir(HLDA_PIN, GPIO_IN);
+
+    // Wait for 8088 to acknowledge with HLDA
+    absolute_time_t deadline = make_timeout_time_us(DMA_TIMEOUT_US);
+    while (!gpio_get(HLDA_PIN)) {
+        if (absolute_time_diff_us(get_absolute_time(), deadline) <= 0) {
+            gpio_set_dir(HOLD_PIN, GPIO_IN);  // release on timeout
+            return false;
+        }
+        tight_loop_contents();
+    }
+    return true;
+}
+
+// Release HOLD/ so the 8088 resumes execution.
+void release_victor_bus(void) {
+    gpio_set_dir(HOLD_PIN, GPIO_IN);  // float high via pull-up
 }
 
 // Handle SASI REQ signal and DMA transfers (based on MAME ctrl_change_handler)
