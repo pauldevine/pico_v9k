@@ -28,12 +28,15 @@ Read for this document (all current as of 2026-09-03):
 - `fujinet-hardware` (`INTV/FujiNet-INTV-Rev0`, `MSX/Prototype-2`).
 - `fujinet-msdos` (formerly `fujinet-rs232`: `fujinet.sys`, INT F5, `fujicom`) and
   `fujinet-lib/msdos`.
+- **`FozzTexx/fujinet-lib-experimental`** (last commit 2026-09-03): the FujiBus-native
+  client library the bring-up guide calls the template for a new platform, plus its
+  `testing/` on-machine integration suite.
 - This repo's README, Technical Overview, CLAUDE.md, `pico_fujinet/spi.*`, `pico_storage/*`,
   `sasi.c`, and the KiCad schematic net list.
 
 Not reachable from the build container: `~/Documents/Victor9k/FujiNet/`, the Discord
-exports, `mastodon.fozztexx.com`, msx.org, and the `fujinet-lib-experimental` repo (not
-public). Two wiki-versus-code notes: the Intellivision mailbox wiki page still describes
+exports, `mastodon.fozztexx.com`, and msx.org. Two wiki-versus-code notes: the
+Intellivision mailbox wiki page still describes
 `rs232Disk::mountROM()`, which moved to `lib/media/rs232/diskTypeROM.cpp` in August 2026;
 and the `fujinet-bringup` README promises an `rp2350/` relay directory that does not exist
 in the repo yet (only `esp32/` and `iotest/` do). Where documents disagree, this follows
@@ -192,6 +195,32 @@ Returns `AL` = 'C', 'E' or 'N'. The older `fujinet-bios.md` register layout is o
 `fujinet-bringup/iotest/src/msdos/portio.s` is the same `portio` contract on an 8250 UART,
 built with Open Watcom via `makefiles/platforms/msdos.mk`. Only that file changes for the
 Victor.
+
+### 1.6a fujinet-lib-experimental: the client library and its test suite
+
+`FozzTexx/fujinet-lib-experimental` is v5.0.0 of `fujinet-lib`, rebuilt around FujiBus.
+Layout: `common/` (network, JSON, Fuji, clock, AppKey, QR code, shared verbatim),
+`bus/<platform>/` (one backend each for adam, apple2, atari, c64, coco, lynx, msdos, msx),
+`include/` (`fujinet-bus.h`, `fujinet-commands.h`, `fujinet-bus-ezcall.h` with the
+`DEVCALL_*`/`FUJICALL_*`/`NETCALL_*` macros keyed by field descriptor). CI builds all
+eight in the `fozztexx/defoogi` container. Two backends matter for the Victor:
+
+- **`bus/msdos/`** does no framing at all: `fuji_bus_call()` is a `#pragma aux` wrapper
+  around `INT F5`, so it depends on `fujinet.sys` being loaded. `portio.s` there is the
+  8250 version.
+- **`bus/msx/`** is the byte-pipe backend: `fujinet-bus-msx.c` builds the header, packs
+  AUX fields, computes the checksum, SLIP-encodes in place, streams out through
+  `port_putbuf()`, then reads back to the closing `END` with `port_get_until()` and
+  validates the reply. `portio.s` is nine memory-mapped Z80 routines against `0xBFFC`.
+  It is self-contained and needs no driver.
+
+`testing/` is the acceptance suite the project runs on real machines: `flibtest`,
+`fnettest`, `fclktest`, `fdsktest`, `fqrctest`, `fnfstest`, `fapktest`, `devlist`, one
+binary per test group, `PASS`/`FAIL` per check, abort on first failure, and a `fntests`
+disk image per platform. `msdos` is a supported target; its image is a 360 KB
+`mformat`/`mcopy` FAT12 floppy. Tests need a live FujiNet with WiFi, host slot 0 pointing
+at a TNFS share, and an SD host slot. `constants.h` records a per-bus quirk you inherit:
+on the RS232 device set the extended directory entry header is 12 bytes, not 13.
 
 ### 1.7 Open items in FEP-004 you will meet
 
@@ -452,14 +481,22 @@ a corner.
 
 ## 6. Victor MS-DOS software plan
 
-1. **`iotest` first.** Add `iotest/src/victor9k/portio.s` to `fujinet-bringup`: the same
-   seven routines as the msdos one, but memory-mapped reads and writes of the four byte-pipe
-   registers instead of 8250 port I/O. Build with the existing Open Watcom `msdos.mk`
-   (which is the toolchain in `test/dos_dma_test/makefile.wc`). This is guide milestone 3.
-2. **`fujinet-lib` backend.** The guide's template is `fujinet-lib-experimental/bus/<plat>/`
-   with `portio.*` and `fujinet-bus-<plat>.c`; that repo is not public, so ask on Discord
-   for access or for where the msdos backend now lives. Until then, `fujinet-lib/msdos`
-   plus INT F5 is the working equivalent.
+One Victor `portio.s` (8088, Open Watcom `wasm`, memory-mapped reads and writes of the
+four byte-pipe registers instead of 8250 port I/O) serves three consumers in turn. The
+toolchain is the one in `test/dos_dma_test/makefile.wc`; the shared makefiles compile with
+`wcc -0 -bt=dos`, so nothing above 8086 is emitted.
+
+1. **`iotest` first.** Add `iotest/src/victor9k/portio.s` to `fujinet-bringup`, seven
+   routines, and a `makefiles/platforms/victor9k.mk` copied from `msdos.mk`. Guide
+   milestone 3.
+2. **Driverless `fujinet-lib` backend.** Add `bus/victor9k/` to
+   `fujinet-lib-experimental`, cloned from `bus/msx/` rather than `bus/msdos/`:
+   `fujinet-bus-victor9k.c` is the MSX C framing code with the MSX jiffy-timeout macros
+   swapped for a DOS tick source, and `portio.s` grows the two extra routines the MSX
+   backend uses (`port_discard_until`, `port_get_until`). Add `victor9k` to `PLATFORMS`
+   with `BUILD_VICTOR9K`, and pick the `fuji_bus_call` prototype in `fujinet-bus.h` (the
+   varargs form the MSX uses is fine on Open Watcom). This gives the guide's milestone 5
+   Hello World with no driver installed, and lets `testing/` build for the Victor.
 3. **INT F5 shim and `fujinet.sys` port.** Confirm INT F5 is free on Victor MS-DOS (the
    Victor uses INT 41h for the SIO and INT FFh for boot; check `ROMNOTES.txt` and
    `BT1INFO.DOC` in `notes/`). Build `fujinet-msdos/sys` for a `victor9k` target: replace
@@ -469,10 +506,21 @@ a corner.
    FujiBus reads. Slots also mapped to SASI targets must not be exposed twice (two caches
    over one image will corrupt it). Use the DBC "which targets are mapped" query so the
    driver skips those units.
-5. **Tools.** `fmount`, `nget`, `ncopy`, `nput`, `setssid`, `fujitime` and
-   `fujinet-lib/msdos` are INT F5 clients and should run unchanged if they only use DOS
-   console I/O. Anything touching PC BIOS video or ports needs a Victor variant.
-6. **CONFIG.** Last, per 5.3.
+   Once the driver is in, `fujinet-lib-experimental/bus/msdos/` works on the Victor as is,
+   since it only calls INT F5.
+5. **Run the acceptance suite.** `make -C testing victor9k` (or `msdos` once the driver is
+   loaded) produces the eight test binaries. Getting them onto the Victor is easy in the
+   FujiNet world: mount the 360 KB `fntests.img` read-only in a device slot and copy the
+   files across with DOS `COPY`, since `fujinet.sys` presents the slot as a FAT12 drive
+   letter and the Victor's DOS reads FAT12 regardless of where the image came from. Run
+   `flibtest` first (Fuji device), then `fdsktest`, then `fnettest`, matching the
+   Definition of Done order. Remove the video-init and screen assumptions in
+   `testing/src/init_video.c` only if they trip on the Victor; today it does nothing for
+   msdos.
+6. **Tools.** `fmount`, `nget`, `ncopy`, `nput`, `setssid`, `fujitime` are INT F5 clients
+   and should run unchanged if they only use DOS console I/O. Anything touching PC BIOS
+   video or ports needs a Victor variant.
+7. **CONFIG.** Last, per 5.3.
 
 ## 7. Milestones (aligned with the guide's ladder)
 
@@ -484,6 +532,7 @@ a corner.
 | M7 | Boot from FujiNet | Victor boots MS-DOS 3.1 from an image mounted over TNFS via the SASI path; latency measured |
 | M7b | Writes and resilience | Writes verified; SD fallback with no S3; survives Victor resets and S3 reboots |
 | M8 | `N:` from DOS | `fujinet.sys` loads, `nget` fetches a file, `fmount` mounts a slot |
+| M8b | Acceptance | `flibtest`, `fdsktest`, `fnettest`, `fclktest` from `fujinet-lib-experimental/testing` pass on the Victor |
 | H1 | Rev B hardware | On-board S3, published to `fujinet-hardware`, platform entry in `fujinet-firmware` |
 | M6 | CONFIG on the Victor | Boots into CONFIG, sets WiFi, mounts and boots an image |
 
@@ -493,12 +542,14 @@ first is the shorter path to a usable machine.
 
 ## 8. Risks and questions to settle on Discord
 
-- Confirm: status of PICOBOOT-over-S3 (`intv-combined-flash`); where
-  `fujinet-lib-experimental` lives and whether an 8088/ISA `portio` or PIO exists beyond
-  the guide's design exercise (the proto board has an ISA footprint, and the guide's ISA
-  chapter reads like someone intends to build it); whether `ACMChannel` will gain a
-  default VID/PID filter; appetite for multi-sector reads; whether the byte-pipe register
-  order or `CONTROL` semantics are being standardized.
+- Confirm: status of PICOBOOT-over-S3 (`intv-combined-flash`); whether an 8088/ISA
+  `portio` or PIO exists beyond the guide's design exercise (the proto board has an ISA
+  footprint, and the guide's ISA chapter reads like someone intends to build it); whether
+  `ACMChannel` will gain a default VID/PID filter; appetite for multi-sector reads; whether
+  the byte-pipe register order or `CONTROL` semantics are being standardized; and whether
+  a self-framing `bus/victor9k/` in `fujinet-lib-experimental` (MSX style) is welcome
+  alongside the INT F5 `bus/msdos/`, or whether they would rather every x86 target go
+  through the driver.
 - License of this repo. Pulling `fujibus.c` in makes the firmware GPLv3.
 - WiFi range inside the Victor chassis.
 - VBUS behaviour of the S3 dev board's host port.
