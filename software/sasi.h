@@ -88,6 +88,7 @@ void signal_command_complete(dma_registers_t *dma);
 
 // Reset SASI command state (call on device reset)
 void sasi_reset_command_state(void);
+void sasi_discard_partial_command(void);
 
 // Per-command timing diagnostics (updated by Core 1, read by UART dump)
 extern volatile uint32_t sasi_last_cmd_us;
