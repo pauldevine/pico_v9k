@@ -40,6 +40,10 @@
 #define MAX_IMG_FILES 8
 #define FILENAME_MAX_LENGTH 64
 
+// Link map capacity per image: 2 DWORDs per contiguous fragment plus the header.
+// A badly fragmented image that needs more falls back to normal seeking.
+#define SD_LINKMAP_DWORDS 64
+
 // Per-target disk image state
 typedef struct {
     bool mounted;
@@ -47,6 +51,9 @@ typedef struct {
     char image_path[FILENAME_MAX_LENGTH];
     FIL file;
     uint32_t capacity_sectors;
+    // FatFS fast-seek cluster link map (tbl[0] = size in DWORDs). Without it every
+    // f_lseek walks the FAT chain, which is slow for backward seeks in big images.
+    DWORD cltbl[SD_LINKMAP_DWORDS];
 } sd_target_t;
 
 // SD card state
@@ -59,6 +66,22 @@ typedef struct {
 
 static sd_state_t *sd_state = NULL;
 static bool sd_initialized = false;
+
+// Build the fast-seek link map for an open image. Caller holds the FatFS guard.
+// Failure is non-fatal: cltbl stays NULL and seeks use the regular FAT walk.
+static void sd_build_linkmap(sd_target_t *t) {
+    t->file.cltbl = NULL;
+    t->cltbl[0] = SD_LINKMAP_DWORDS;
+    t->file.cltbl = t->cltbl;
+    FRESULT fr = f_lseek(&t->file, CREATE_LINKMAP);
+    if (fr != FR_OK) {
+        t->file.cltbl = NULL;
+        // FatFS leaves the required item count in cltbl[0] even on failure.
+        printf("SD Storage: fast-seek map unavailable for '%s' (%s, needs %lu of %d items), using slow seek\n",
+               t->image_path, FRESULT_str(fr),
+               (unsigned long)t->cltbl[0], SD_LINKMAP_DWORDS);
+    }
+}
 
 static bool sd_storage_is_fatal_error(FRESULT fr) {
     return fr == FR_DISK_ERR ||
@@ -74,7 +97,10 @@ static void sd_storage_disable_target(uint8_t target_id, const char *op, FRESULT
 
     sd_target_t *target = &sd_state->targets[target_id];
     if (target->mounted) {
+        // Callers have already released the guard; FatFS is not reentrant.
+        fatfs_guard_lock();
         FRESULT close_fr = f_close(&target->file);
+        fatfs_guard_unlock();
         if (close_fr != FR_OK) {
             printf("SD Storage: f_close after %s error failed: %s (%d)\n",
                    op, FRESULT_str(close_fr), close_fr);
@@ -145,6 +171,7 @@ static bool sd_storage_try_remount(void) {
             sd_state->targets[t].capacity_sectors = 0;
             all_ok = false;
         } else {
+            sd_build_linkmap(&sd_state->targets[t]);
             /* Refresh capacity in case it changed */
             FSIZE_t file_size = f_size(&sd_state->targets[t].file);
             sd_state->targets[t].capacity_sectors =
@@ -336,6 +363,7 @@ static bool sd_storage_mount(uint8_t target_id, const char *image_path, bool rea
     sd_state->targets[target_id].image_path[sizeof(sd_state->targets[target_id].image_path) - 1] = '\0';
     sd_state->targets[target_id].read_only = read_only;
     sd_state->targets[target_id].mounted = true;
+    sd_build_linkmap(&sd_state->targets[target_id]);
 
     printf("SD Storage: Mounted '%s' on target %d (%lu sectors, %s)\n",
            image_path, target_id, (unsigned long)sd_state->targets[target_id].capacity_sectors,
@@ -426,17 +454,14 @@ static bool sd_storage_read_sector(uint8_t target_id, uint32_t lba, uint8_t *buf
             return true;
         }
 
-        if (fr == FR_OK && bytes_read < read_len) {
-            // Short read at end of file — pad and succeed
-            memset(buffer + bytes_read, 0, read_len - bytes_read);
-            sd_read_fail_count[target_id] = 0;
-            sd_consecutive_io_errors = 0;
-            return true;
-        }
-
         if (fr != FR_OK) {
             printf("SD RD LBA %lu attempt %d: %s (%d)\n",
                    (unsigned long)lba, attempt, FRESULT_str(fr), fr);
+        } else {
+            // LBA is range-checked against capacity, so a short read means the
+            // image/filesystem is inconsistent. Fail rather than return zeros.
+            printf("SD RD LBA %lu attempt %d: short read %u of %zu\n",
+                   (unsigned long)lba, attempt, bytes_read, read_len);
         }
 
         if (attempt + 1 < SD_READ_MAX_RETRIES) {
