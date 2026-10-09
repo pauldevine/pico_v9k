@@ -231,6 +231,12 @@ void sasi_reset_command_state(void) {
     sasi_trace_event(TRACE_RESET, 0, 0, 0);
 }
 
+// Drop any partially collected CDB (new SELECT after an abandoned command).
+// Unlike sasi_reset_command_state() this leaves the trace/reset bookkeeping alone.
+void sasi_discard_partial_command(void) {
+    sasi_cmd_index = 0;
+}
+
 static void sasi_apply_command_delay(dma_registers_t *dma) {
     if (!dma || SASI_COMMAND_DELAY_US == 0) {
         return;

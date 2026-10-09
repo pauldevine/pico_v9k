@@ -18,7 +18,7 @@
 #define DEFER_VERBOSE_LOG 0
 
 #if DEFER_VERBOSE_LOG
-#define defer_log(...) defer_log(__VA_ARGS__)
+#define defer_log(...) fast_log(__VA_ARGS__)
 #else
 #define defer_log(...) ((void)0)
 #endif
@@ -249,6 +249,11 @@ void defer_process_write(dma_registers_t *dma, uint32_t raw_value) {
                     bool now_sel = (write_data & DMA_SELECT_BIT) != 0;
                     if (now_sel && !prev_sel) {
                         // Selection phase starting (SASI selection byte is a bit mask)
+                        // A new selection always starts a fresh CDB; drop any bytes
+                        // left over from a command the host abandoned without RESET.
+                        sasi_discard_partial_command();
+                        dma->state.data_out_expected = 0;
+                        dma->buffer.index = 0;
                         dma->bus_ctrl |= SASI_SEL_BIT;
                         dma->selected_target = sasi_extract_target_id(dma->command);
                         dma->bus_ctrl |= SASI_BSY_BIT;

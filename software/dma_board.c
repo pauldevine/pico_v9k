@@ -519,7 +519,7 @@ void initialize_uart() {
 }
 
 
-    int main() {
+        int main() {
     set_sys_clock_khz(200000, true);
     stdio_init_all();
     initialize_uart();
@@ -628,10 +628,15 @@ void initialize_uart() {
 
     printf("waiting for DMA register access...\n");
 
-    // Stuck-state detector state
+    // Stuck-state detector state. The window must be well above the slowest
+    // legitimate command (~0.5 s seen with SD write/sync stalls), because the
+    // host spins on status reads (ISR-only, never queued) while Core 1 is busy.
+    const uint64_t STUCK_WINDOW_US = 2000000;
+    const uint32_t STUCK_MIN_ISR_CALLS = 20000;
     uint32_t last_defer_processed = 0;
     uint32_t last_isr_calls = 0;
     uint64_t last_defer_check_us = time_us_64();
+    uint64_t last_stuck_check_us = last_defer_check_us;
     bool stuck_already_reported = false;
     bool stack_overflow_reported = false;
     bool fault_info_dumped = false;
@@ -646,18 +651,21 @@ void initialize_uart() {
             sasi_log_flush_if_ready(&dma_registers);
         }
 
-        // Auto stuck-state detector: every ~100ms check if Core 1 is making progress
+        // Auto stuck-state detector: every ~2s check if Core 1 is making progress
         uint64_t now = time_us_64();
-        if (now - last_defer_check_us > 100000) {
+        if (now - last_stuck_check_us > STUCK_WINDOW_US) {
             uint32_t current_processed = defer_queue.processed;
             uint32_t current_isr_calls = isr_call_count;
+            bool queue_pending = defer_queue.head != defer_queue.tail;
 
             if (storage_ready &&
                 !sasi_in_dma_transfer &&
+                queue_pending &&
                 current_processed == last_defer_processed &&
-                current_isr_calls > last_isr_calls + 1000 &&
+                current_isr_calls > last_isr_calls + STUCK_MIN_ISR_CALLS &&
                 !stuck_already_reported) {
-                // ISR is busy but Core 1 is not processing — stuck!
+                // Work is queued and the host is active, but Core 1 hasn't
+                // retired anything for a full window — stuck!
                 printf("\n!!! STUCK DETECTED: ISR calls=%lu (+%lu) defer_processed=%lu (stalled) !!!\n",
                        (unsigned long)current_isr_calls,
                        (unsigned long)(current_isr_calls - last_isr_calls),
@@ -673,6 +681,12 @@ void initialize_uart() {
                 stuck_already_reported = false;
             }
 
+            last_defer_processed = current_processed;
+            last_isr_calls = current_isr_calls;
+            last_stuck_check_us = now;
+        }
+
+        if (now - last_defer_check_us > 100000) {
             // Stack canary check (runs every ~100ms, very cheap)
             if (!stack_overflow_reported) {
                 uint32_t canary_intact = stack_canary_check();
@@ -684,8 +698,6 @@ void initialize_uart() {
                 }
             }
 
-            last_defer_processed = current_processed;
-            last_isr_calls = current_isr_calls;
             last_defer_check_us = now;
         }
 
