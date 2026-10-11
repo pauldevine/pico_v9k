@@ -460,6 +460,7 @@ void one_time_pin_setup() {
     gpio_pull_up(DLATCH_PIN); // DLATCH is active low, so pull-up
     gpio_pull_up(EXTIO_PIN); // EXTIO is active low, so pull-up
     gpio_pull_up(XACK_PIN);  // XACK is active low (open-drain), so pull-up
+    gpio_disable_pulls(HOLD_PIN);  //HOLD has a pullup on the motherboard
 
     // DMA IRQ line: drive low by default, assert when interrupts are pending.
     gpio_set_function(DMA_IRQ_PIN, GPIO_FUNC_SIO);
@@ -482,11 +483,8 @@ static inline void setup_pins_dma_control() {
     //
     // The original DMA card had pull-ups R2/R3/R4 on RD/, WR/, DT/R/
     // and a pull-down on ALE to prevent floating during bus exchange
-    // (Victor 9000 Hard Disk Subsystem manual, §2.1.3.3).  Our Pico
-    // board replaces the DMA card, so those pull-ups don't exist.
-    // Without explicit ordering, there's a window where the address bus
-    // is driven (to 0x00000) while RD/, WR/, ALE float — a spurious
-    // write to the interrupt vector table.
+    // (Victor 9000 Hard Disk Subsystem manual, §2.1.3.3).  We have the
+    // same setup on this board.
     //
     // Strategy: pre-configure PIO1's output registers and pindirs for
     // control signals, then switch the pin mux.  The instant the mux
@@ -594,6 +592,9 @@ static inline void prepare_register_pio_handoff_locked(void) {
     // Release IO/M so the CPU can drive it during normal register cycles.
     gpio_set_function(IO_M_PIN, GPIO_FUNC_SIO);
     gpio_set_dir(IO_M_PIN, GPIO_IN);
+
+    gpio_set_dir(SSO_PIN, GPIO_IN);
+    gpio_set_dir(DEN_PIN, GPIO_IN);
 }
 
 static inline void finish_register_pio_handoff_locked(void) {
